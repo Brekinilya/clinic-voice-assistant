@@ -1,0 +1,823 @@
+# Реплики ассистента по регламенту. Эталон — примеры диалогов раздела 5, скрипты разделов 3, 6, 7.
+# Шаблон — не больше 20 слов (раздел 3.2); тест считает слова с учётом подстановок.
+# Шаблон без expect — сообщение: за ним в той же реплике идёт вопрос (например, recording.off,
+# затем повтор последнего вопроса; home_visit.safety, затем ident.ask_patient).
+#
+# Подстановки: {имя} или {имя:форма}. Значения приходят в Reply.parts, озвучивает speech.render.
+#   date   — по умолчанию «в пятницу, второго октября»; nomn — «пятница, второе октября»;
+#            accs — «пятницу, второе октября» (после «на»); gent — «второго октября»;
+#            short — «в пятницу», «во вторник», «завтра»; short_accs — «пятницу», «завтра» (после «на»)
+#   time   — по умолчанию «в девять тридцать»; nomn — «девять тридцать»; gent — «девяти тридцати»
+#   doctor — фамилия врача; full — фамилия, имя, отчество; падежи nomn, gent, datv, accs, ablt, loct
+#   text, number — падежи как у doctor; число озвучивается словами
+#   options — варианты из Reply.options через запятую и «или»; options: N у шаблона — сколько их влезает
+#
+# Поля шаблона: text — реплика; retry — другими словами, если пациента не поняли (раздел 3.2);
+# expect — какой ответ ждём (подсказка для разбора, диалог может задать свой); route — правило перевода;
+# end — после реплики звонок завершается; src — откуда в регламенте.
+
+# Тип подстановки и сколько слов она обычно занимает (для date, time и options длину считает код по форме).
+parts:
+  patient: {type: text, words: 2}       # имя и отчество пациента
+  doctor: {type: doctor, words: 1}
+  substitute: {type: doctor, words: 1}  # замещающий врач
+  specialty: {type: text, words: 1}
+  date: {type: date}
+  old_date: {type: date}                # дата прежней записи
+  next_day: {type: date}                # ближайший рабочий день
+  time: {type: time}
+  start: {type: time}
+  end: {type: time}
+  room: {type: number, words: 2}
+  price: {type: number, words: 2}
+  minutes: {type: number, words: 1}
+  options: {type: options}
+  period: {type: text, words: 2}        # «утром», «после обеда», «на следующей неделе»
+  days: {type: text, words: 2}          # «по будням», «по понедельникам и средам»
+  preferences: {type: text, words: 4}   # пожелания для листа ожидания: «утро, любой будний день»
+  service: {type: text, words: 3}
+  test: {type: text, words: 3}          # название анализа
+  summary: {type: text, words: 8}       # итоги нескольких действий в одном звонке
+
+templates:
+
+  # Начало разговора, раздел 3.3 и 3.4
+
+  greeting.inbound:
+    text: Здравствуйте! Регистратура поликлиники номер семь, виртуальный помощник. Разговор записывается. Чем могу помочь?
+    expect: free
+    src: "3.3"
+
+  greeting.repeat_call:
+    text: Здравствуйте! Регистратура поликлиники номер семь, виртуальный помощник. Разговор записывается. Вы недавно звонили — продолжим тот вопрос или у вас новый?
+    expect: free
+    src: "3.3"
+
+  recording.off:
+    text: Хорошо, запись разговора отключена.
+    src: "3.4"
+
+  robot.answer:
+    text: Да, я виртуальный помощник регистратуры. Если хотите, соединю с сотрудником.
+    expect: yes_no
+    src: "3.2"
+
+  # Идентификация, раздел 3.5
+
+  ident.ask:
+    text: Назовите, пожалуйста, фамилию, имя, отчество и дату рождения.
+    retry: Повторите, пожалуйста, полностью фамилию, имя, отчество и дату рождения.
+    expect: full_name
+    src: "3.5"
+
+  ident.ask_child:
+    text: Назовите, пожалуйста, фамилию, имя, отчество и дату рождения ребёнка.
+    retry: Повторите, пожалуйста, полностью фамилию, имя, отчество и дату рождения ребёнка.
+    expect: full_name
+    src: С-12
+
+  ident.ask_patient:
+    text: Назовите, пожалуйста, фамилию, имя, отчество и дату рождения пациента.
+    retry: Повторите, пожалуйста, полностью фамилию, имя, отчество и дату рождения пациента.
+    expect: full_name
+    src: С-06
+
+  ident.ask_name:
+    text: Назовите, пожалуйста, фамилию, имя и отчество.
+    retry: Скажите ещё раз фамилию, имя и отчество.
+    expect: full_name
+    src: "3.5"
+
+  ident.ask_birth_date:
+    text: Назовите, пожалуйста, дату рождения.
+    retry: Скажите дату рождения полностью — число, месяц и год.
+    expect: birth_date
+    src: "3.5"
+
+  ident.not_found:
+    text: Не получается найти карту по этим данным. Назовите фамилию по буквам и дату рождения.
+    expect: full_name
+    src: "3.5"
+
+  ident.ask_policy:
+    text: Назовите, пожалуйста, номер полиса ОМС — шестнадцать цифр. Можно ввести с клавиатуры телефона.
+    expect: free
+    src: "3.5"
+
+  ident.relation:
+    text: Спасибо. Кем вы приходитесь пациенту?
+    expect: free
+    src: С-12
+
+  ident.under_15:
+    text: Записаться самостоятельно можно с пятнадцати лет. Пусть позвонит кто-то из взрослых, например родители.
+    src: "3.5"
+
+  # Общие ситуации разговора, разделы 3.2, 3.6, 3.7
+
+  reask.first:
+    text: Простите, не удалось разобрать. Скажите, пожалуйста, другими словами.
+    expect: free
+    src: "3.2"
+
+  reask.offer_operator:
+    text: Похоже, я вас плохо понимаю. Соединить с сотрудником?
+    expect: yes_no
+    src: R-05
+
+  confirm.retry:
+    text: Ответьте, пожалуйста, да или нет.
+    expect: yes_no
+    src: "3.2"
+
+  choice.retry:
+    text: Какой вариант удобнее — {options}?
+    options: 3
+    expect: choice
+    src: "3.2"
+
+  silence.first:
+    text: Вы меня слышите?
+    expect: free
+    src: "3.2"
+
+  silence.final:
+    text: Вас не слышно. Перезвоните, пожалуйста.
+    end: true
+    route: R-17
+    src: "3.2"
+
+  wait.schedule:
+    text: Одну секунду, проверяю расписание.
+    src: "3.7"
+
+  wait.generic:
+    text: Одну секунду, проверяю.
+    src: "3.7"
+
+  dates.confirm:
+    text: На {date:accs}, верно?
+    expect: yes_no
+    src: "3.2"
+
+  dates.beyond_horizon:
+    text: Запись открыта на две недели вперёд, до {date:gent}. Подобрать время в эти дни?
+    expect: yes_no
+    src: С-01
+
+  dates.sunday:
+    text: В воскресенье поликлиника не работает. Подобрать время в другой день?
+    expect: yes_no
+    src: "2.2"
+
+  closing.anything_else:
+    text: Могу ещё чем-то помочь?
+    expect: free
+    src: "3.6"
+
+  closing.summary:
+    text: Итак, {summary}. Могу ещё чем-то помочь?
+    expect: free
+    src: "4"
+
+  closing.goodbye:
+    text: Всего доброго, будьте здоровы!
+    end: true
+    src: "3.6"
+
+  closing.goodbye_short:
+    text: Хорошо. Всего доброго!
+    end: true
+    src: С-07
+
+  # Запись на приём, С-01
+
+  booking.ask_specialty:
+    text: К какому врачу вас записать?
+    retry: Скажите, к какому специалисту нужно — например, терапевт, лор или окулист.
+    expect: free
+    src: С-01
+
+  booking.offer_first:
+    text: "{patient}, к {specialty:datv} {doctor:datv} есть время: {options}. Что удобнее?"
+    options: 2
+    expect: choice
+    src: С-01
+
+  booking.offer:
+    text: Есть {options}. Что удобнее?
+    options: 3
+    expect: choice
+    src: С-01
+
+  booking.offer_period:
+    text: "{period}: {options}. Что удобнее?"
+    options: 2
+    expect: choice
+    src: С-01
+
+  booking.offer_nearest:
+    text: "Ближайшее время к {specialty:datv}: {options}. Что удобнее?"
+    options: 2
+    expect: choice
+    src: С-01
+
+  booking.no_slots_period:
+    text: На это время свободного приёма нет. Могу предложить {options}.
+    options: 2
+    expect: choice
+    src: С-01
+
+  booking.confirm:
+    text: "Записываю: {specialty} {doctor}, {date:nomn}, {time:nomn}, кабинет {room}. Верно?"
+    expect: yes_no
+    src: С-01
+
+  booking.done:
+    text: Готово, вы записаны. SMS придёт на ваш номер, накануне напомним. Возьмите паспорт и полис. Что-нибудь ещё?
+    expect: free
+    src: С-01
+
+  booking.slot_taken:
+    text: Извините, это время только что заняли. Могу предложить {options}.
+    options: 2
+    expect: choice
+    src: С-01
+
+  booking.already_has_visit:
+    text: У вас уже есть запись к {specialty:datv} {date}. Хотите её перенести?
+    expect: yes_no
+    src: С-01
+
+  booking.not_attached:
+    text: По полису ОМС плановый приём доступен после прикрепления к поликлинике. Могу рассказать, как прикрепиться, или записать на платный приём.
+    expect: free
+    src: С-01
+
+  booking.other_district:
+    text: Запись идёт к участковому врачу вашего участка. Сменить врача можно по заявлению раз в год. Записать к {doctor:datv}?
+    expect: yes_no
+    src: С-01
+
+  booking.done_child:
+    text: Готово, ребёнок записан. Возьмите полис ребёнка и свой паспорт. Что-нибудь ещё?
+    expect: free
+    src: С-12
+
+  booking.child_escort:
+    text: Записываю. На приём ребёнка должен сопровождать законный представитель или человек с доверенностью.
+    src: С-12
+
+  # Запись по направлению, С-02
+
+  referral.found:
+    text: "{patient}, вижу ваше направление к {specialty:datv}. Ближайшее время: {options}."
+    options: 2
+    expect: choice
+    src: С-02
+
+  referral.missing:
+    text: К {specialty:datv} запись идёт по направлению лечащего врача. Сначала нужен приём участкового терапевта. Записать вас к нему?
+    expect: yes_no
+    src: С-02
+
+  referral.expired:
+    text: Срок действия направления истёк. Нужно получить новое у лечащего врача. Записать к терапевту?
+    expect: yes_no
+    src: С-02
+
+  referral.paper:
+    text: Бумажное направление оформляет регистратор. Соединяю.
+    route: R-08
+    src: С-02
+
+  referral.no_slots:
+    text: Мы позвоним, как только появится время. Срок ожидания по закону — не более четырнадцати рабочих дней, мы его контролируем.
+    src: С-02
+
+  referral.done:
+    text: Готово. Возьмите паспорт, полис и результаты обследований, если они есть на руках. Что-нибудь ещё?
+    expect: free
+    src: С-02
+
+  # Перенос, С-03
+
+  reschedule.found_one:
+    text: "{patient}, у вас запись к {specialty:datv} {doctor:datv} {date:short} {time}. Переносим её?"
+    expect: yes_no
+    src: С-03
+
+  reschedule.which:
+    text: Какую запись перенести — {options}?
+    options: 3
+    expect: choice
+    src: С-03
+
+  reschedule.which_specialty:
+    text: У вас несколько записей. Скажите, к какому врачу запись, которую переносим?
+    expect: free
+    src: С-03
+
+  reschedule.offer:
+    text: "{period}: {options}. Что удобнее?"
+    options: 3
+    expect: choice
+    src: С-03
+
+  reschedule.no_slots_doctor:
+    text: У {doctor:gent} свободного времени нет. Могу записать к другому врачу или поставить в лист ожидания.
+    expect: free
+    src: С-03
+
+  reschedule.confirm:
+    text: Переношу на {date:accs}, {time:nomn}, кабинет {room}. Запись на {old_date:short_accs} отменяю. Верно?
+    expect: yes_no
+    src: С-03
+
+  reschedule.done:
+    text: Готово, запись перенесена. SMS придёт на ваш номер. Что-нибудь ещё?
+    expect: free
+    src: С-03
+
+  reschedule.failed:
+    text: Извините, не получилось перенести. Ваша запись на {old_date:short_accs} остаётся в силе. Соединяю с регистратором.
+    route: R-06
+    src: С-03
+
+  visits.none:
+    text: Активных записей не найдено. Хотите записаться?
+    expect: yes_no
+    src: С-03
+
+  # Отмена, С-04
+
+  cancel.offer_reschedule:
+    text: "{patient}, у вас запись к {specialty:datv} {date:short} {time}. Могу перенести вместо отмены. Перенести или отменить?"
+    expect: free
+    src: С-04
+
+  cancel.which:
+    text: Какую запись отменить — {options}?
+    options: 3
+    expect: choice
+    src: С-04
+
+  cancel.confirm:
+    text: Отменяю запись к {specialty:datv} на {date:short_accs}. Верно?
+    expect: yes_no
+    src: С-04
+
+  cancel.done:
+    text: Готово, запись отменена. Спасибо, что предупредили — это время достанется другому пациенту. Что-нибудь ещё?
+    expect: free
+    src: С-04
+
+  cancel.past:
+    text: Время этой записи уже прошло, отменить её нельзя. Хотите записаться заново?
+    expect: yes_no
+    src: С-04
+
+  # Проверка записи, С-05
+
+  my_visits.one:
+    text: "{patient}, вы записаны к {specialty:datv} {doctor:datv} {date}, {time}, кабинет {room}. Что-нибудь ещё?"
+    expect: free
+    src: С-05
+
+  my_visits.many:
+    text: "{patient}, у вас несколько записей: {options}. Про какую рассказать?"
+    options: 2
+    expect: choice
+    src: С-05
+
+  my_visits.third_party:
+    text: Сведения о записях я могу сообщить только самому пациенту. Могу отправить SMS на номер пациента из карты.
+    expect: yes_no
+    src: С-05
+
+  my_visits.sms_sent:
+    text: Отправлено. Что-нибудь ещё?
+    expect: free
+    src: С-05
+
+  # Вызов врача на дом, С-06
+
+  home_visit.safety:
+    text: Сначала важное. Если сейчас сильная боль в груди, трудно дышать или человек теряет сознание — звоните сто три.
+    src: С-06
+
+  home_visit.ask_address:
+    text: "{patient}, назовите адрес, куда должен прийти врач."
+    expect: free
+    src: С-06
+
+  home_visit.address_temporary:
+    text: Это временный адрес?
+    expect: yes_no
+    src: С-06
+
+  home_visit.ask_reason:
+    text: Спасибо. Коротко скажите своими словами, что случилось. Я передам врачу.
+    expect: free
+    src: С-06
+
+  home_visit.ask_can_come:
+    text: Передам врачу. Вы можете сами прийти в поликлинику?
+    expect: yes_no
+    src: С-06
+
+  home_visit.come_yourself:
+    text: Тогда быстрее будет прийти на приём. Записать вас к терапевту на сегодня или завтра?
+    expect: free
+    src: С-06
+
+  home_visit.accepted:
+    text: Заявка принята на {date:short_accs}. Врач придёт до восемнадцати часов. Регистратор перезвонит при необходимости. Телефон для связи этот?
+    expect: yes_no
+    src: С-06
+
+  home_visit.late:
+    text: Заявки на сегодня уже не принимаются. Могу оформить вызов на {next_day:short_accs}. При ухудшении — кабинет неотложной помощи или сто три.
+    expect: yes_no
+    src: С-06
+
+  home_visit.duplicate:
+    text: Заявка на сегодня уже принята {time}. Врач придёт до восемнадцати часов.
+    src: С-06
+
+  home_visit.closed_day:
+    text: В воскресенье и праздники заявки на дом не принимаются. При ухудшении звоните сто три.
+    src: С-06
+
+  home_visit.done:
+    text: Хорошо. Если станет хуже — звоните сто три. Выздоравливайте!
+    end: true
+    src: С-06
+
+  home_visit.no_assessment:
+    text: Оценить, нужен ли визит, может только медицинский работник. Я оформлю заявку и передам ваши слова врачу.
+    src: "6.3"
+
+  # График работы, С-07
+
+  schedule.doctor:
+    text: "{doctor} принимает {days} с {start:gent} до {end:gent}, кабинет {room}. Записать вас?"
+    expect: yes_no
+    src: С-07
+
+  schedule.absent:
+    text: "{doctor} не принимает до {date:gent}. Пациентов принимает {substitute}. Записать к {substitute:datv}?"
+    expect: yes_no
+    src: С-07
+
+  schedule.not_found:
+    text: Такого врача в расписании нет. Могу записать к другому врачу этой специальности.
+    expect: yes_no
+    src: С-07
+
+  # Анализы, С-08
+
+  labs.ready:
+    text: "{test}: результат готов."
+    src: С-08
+
+  labs.pending:
+    text: "{test}: результат будет {date}."
+    src: С-08
+
+  labs.how_to_get:
+    text: Результаты есть на Госуслугах, в окне номер три с двенадцати до девятнадцати или у врача на приёме.
+    src: С-08
+
+  labs.no_values:
+    text: Я не вижу значений результатов и не могу их оценивать — это сделает врач. Записать вас к терапевту?
+    expect: yes_no
+    src: С-08
+
+  labs.by_phone:
+    text: По телефону результаты не сообщаются — это врачебная тайна. Они доступны на Госуслугах, в окне номер три или у врача.
+    src: С-08
+
+  labs.delayed:
+    text: Результат задерживается. Я передам вопрос в лабораторию, вам перезвонят.
+    route: R-08
+    src: С-08
+
+  labs.not_patient:
+    text: Эти сведения я могу сообщить только самому пациенту.
+    src: С-08
+
+  # Платные услуги, С-09
+
+  paid.price:
+    text: "{service} стоит {price:accs} рублей. Записать вас?"
+    expect: yes_no
+    src: С-09
+
+  paid.unknown_service:
+    text: Эту услугу уточнит платное отделение. Соединяю.
+    route: R-10
+    src: С-09
+
+  paid.free_option:
+    text: По ОМС эта услуга доступна по направлению лечащего врача. Записать вас к участковому терапевту?
+    expect: yes_no
+    src: С-09
+
+  paid.done:
+    text: Готово, вы записаны. Оплата в кассе платного отделения перед приёмом, можно картой. Возьмите паспорт.
+    src: С-09
+
+  # Исходящее напоминание, С-10
+
+  remind.greeting:
+    text: Здравствуйте! Это виртуальный помощник поликлиники номер семь, разговор записывается. Я говорю с {patient:ablt}?
+    expect: yes_no
+    src: С-10
+
+  remind.details:
+    text: Напоминаю, у вас запись к {specialty:datv} {doctor:datv} {date}, {time}, кабинет {room}. Вы придёте?
+    expect: yes_no
+    src: С-10
+
+  remind.confirmed:
+    text: Отлично, ждём вас. Возьмите паспорт и полис. До свидания!
+    end: true
+    src: С-10
+
+  remind.offer_reschedule:
+    text: Давайте перенесу. Есть время {options}.
+    options: 2
+    expect: choice
+    src: С-10
+
+  remind.cancel_or_move:
+    text: Могу перенести запись на другой день. Перенести или отменить?
+    expect: free
+    src: С-10
+
+  remind.maybe:
+    text: Если планы изменятся, позвоните, пожалуйста, в регистратуру — время достанется другому пациенту. Всего доброго!
+    end: true
+    src: С-10
+
+  remind.wrong_person:
+    text: Передайте, пожалуйста, {patient:datv} просьбу перезвонить в поликлинику номер семь. Всего доброго!
+    end: true
+    src: С-10
+
+  remind.voicemail:
+    text: Здравствуйте, это поликлиника номер семь. Пожалуйста, перезвоните в регистратуру по номеру семьсот, ноль семь, ноль семь.
+    end: true
+    src: С-10
+
+  remind.opt_out:
+    text: Хорошо, больше не буду звонить с напоминаниями. Вы будете получать только SMS.
+    src: С-10
+
+  remind.done_moved:
+    text: Готово, SMS придёт на ваш номер. Спасибо, что предупредили. Всего доброго!
+    end: true
+    src: С-10
+
+  remind.done_cancelled:
+    text: Запись отменена. Спасибо, что предупредили. Всего доброго!
+    end: true
+    src: С-10
+
+  remind.escalate:
+    text: Этот вопрос лучше решит сотрудник. Соединить вас?
+    expect: yes_no
+    src: С-10
+
+  remind.escalate_callback:
+    text: Я передам ваш вопрос, вам перезвонят в рабочее время.
+    src: С-10
+
+  remind.deceased:
+    text: Примите мои соболезнования. Запись отменю, больше беспокоить не будем.
+    end: true
+    src: С-10
+
+  remind.in_hospital:
+    text: Желаем скорейшего выздоровления. Запись отменю, больше беспокоить не будем.
+    end: true
+    src: С-10
+
+  # Лист ожидания, С-11
+
+  waitlist.offer:
+    text: К {specialty:datv} свободного времени пока нет. Могу записать в лист ожидания — мы позвоним, как только появится время. Записать?
+    expect: yes_no
+    src: С-11
+
+  waitlist.ask_when:
+    text: В какие дни и в какое время вам удобно?
+    expect: date_time
+    src: С-11
+
+  waitlist.done:
+    text: "Готово: {specialty}, {preferences}. Позвоню на этот номер, когда время освободится."
+    src: С-11
+
+  waitlist.slot_offer:
+    text: Освободилось время к {specialty:datv} {date}, {time}. Записать вас?
+    expect: yes_no
+    src: С-11
+
+  # Прикрепление, С-13
+
+  attach.how:
+    text: Прикрепиться можно на Госуслугах или в окне номер один. Нужны паспорт, полис и СНИЛС, срок — до трёх рабочих дней.
+    src: С-13
+
+  attach.before:
+    text: Неотложную помощь окажут в любом случае. Плановый приём по ОМС — после прикрепления или платно. Рассказать о платном приёме?
+    expect: yes_no
+    src: С-13
+
+  attach.out_of_area:
+    text: Прикрепление вне района проживания — с согласия главного врача. Подробности уточнит регистратор. Соединяю.
+    route: R-08
+    src: С-13
+
+  attach.no_policy:
+    text: Полис оформляется в страховой медицинской организации. Без полиса доступна экстренная помощь и платные услуги.
+    src: С-13
+
+  attach.other_region:
+    text: Полис ОМС действует по всей России. Прикрепиться можно по тем же правилам.
+    src: С-13
+
+  # Экстренная ситуация, С-14 и раздел 7.4
+
+  emergency.call_103:
+    text: Немедленно звоните в скорую — сто три или сто двенадцать. Повторяю — сто три или сто двенадцать. Не ждите приёма в поликлинике.
+    route: R-01
+    src: С-14
+
+  emergency.insist:
+    text: Сейчас нужна скорая помощь — она приедет быстрее. Звоните сто три. Соединяю с регистратором, но звоните в скорую сразу.
+    route: R-01
+    src: С-14
+
+  emergency.weak_caller:
+    text: Звоните сто три или сто двенадцать. Сейчас соединяю с сотрудником.
+    route: R-01
+    src: С-14
+
+  emergency.self_harm:
+    text: Мне важно, чтобы вы были в безопасности. Пожалуйста, позвоните сто двенадцать прямо сейчас. Я соединяю вас с сотрудником.
+    route: R-01
+    src: С-14
+
+  emergency.ambulance_called:
+    text: Хорошо. Дождитесь скорую. Если нужно, позвоните нам позже.
+    end: true
+    src: С-14
+
+  emergency.false_alarm:
+    text: Если сейчас всё в порядке, я помогу с вашим вопросом.
+    expect: free
+    src: С-14
+
+  emergency.no_answer:
+    text: Сотрудник не ответил. Пожалуйста, звоните сто три или сто двенадцать прямо сейчас.
+    end: true
+    src: С-14
+
+  # Жалоба, С-15
+
+  complaint.ack:
+    text: Мне жаль, что так вышло. Соединяю вас со старшим администратором — суть обращения уже передана, повторять не придётся.
+    route: R-03
+    src: С-15
+
+  complaint.callback:
+    text: Старший администратор перезвонит вам {next_day:short} до десяти утра. Суть обращения уже передана.
+    src: С-15
+
+  complaint.written:
+    text: Письменное обращение можно оставить на сайте, в книге отзывов в холле или в приёмной главврача. Ответ — до тридцати дней.
+    src: С-15
+
+  complaint.offer_transfer:
+    text: Могу соединить вас со старшим администратором. Соединить?
+    expect: yes_no
+    src: С-15
+
+  gratitude.ack:
+    text: Спасибо, обязательно передам.
+    src: С-15
+
+  # Медицинские вопросы, раздел 3.8
+
+  medical.boundary:
+    text: Медицинские советы может дать только врач. Если резко ухудшилось — звоните сто три. Записать вас к {specialty:datv}?
+    expect: yes_no
+    src: "3.8"
+
+  medical.which_doctor:
+    text: Начните с приёма у {specialty:gent} — он осмотрит и при необходимости направит к нужному специалисту. Записать вас?
+    expect: yes_no
+    src: "3.8"
+
+  medical.drugs:
+    text: Я не могу советовать лекарства. Это решит врач на приёме. Записать вас?
+    expect: yes_no
+    src: "3.7"
+
+  # Переводы и обратный звонок, раздел 7
+
+  transfer.operator:
+    text: Соединяю с сотрудником. Суть вопроса уже передана, повторять не придётся. Оставайтесь на линии.
+    route: R-02
+    src: "7.7"
+
+  transfer.medical:
+    text: Понимаю. Соединяю вас с регистратором — он подскажет, как быстрее попасть к врачу.
+    route: R-04
+    src: R-04
+
+  transfer.not_understood:
+    text: Похоже, я вас плохо понимаю. Соединю с сотрудником — так будет быстрее.
+    route: R-05
+    src: R-05
+
+  transfer.mis_down:
+    text: Извините, система не отвечает. Соединяю с регистратором.
+    route: R-06
+    src: R-06
+
+  transfer.not_identified:
+    text: Не получается найти вас в базе. Соединяю с регистратором.
+    route: R-07
+    src: R-07
+
+  transfer.other:
+    text: С этим вопросом поможет регистратор. Соединяю.
+    route: R-08
+    src: R-08
+
+  transfer.dental:
+    text: Соединяю со стоматологическим отделением — вас примут в день обращения.
+    route: R-09
+    src: R-09
+
+  transfer.paid:
+    text: Соединяю с платным отделением.
+    route: R-10
+    src: R-10
+
+  transfer.urgent:
+    text: Соединяю с регистратором, он организует срочную помощь. Если станет хуже — сразу звоните сто три.
+    route: R-11
+    src: "7.4"
+
+  transfer.ministry:
+    text: Этот вопрос решает региональный колл-центр Минздрава, номер сто двадцать два.
+    route: R-12
+    src: R-12
+
+  transfer.insurer:
+    text: Полис оформляет страховая компания, телефон указан на полисе.
+    route: R-13
+    src: R-13
+
+  transfer.administration:
+    text: Соединяю с администрацией.
+    route: R-14
+    src: R-14
+
+  transfer.assist:
+    text: Соединяю с сотрудником, он вам поможет.
+    route: R-15
+    src: R-15
+
+  transfer.pd_request:
+    text: Этот запрос оформляется письменно. Соединяю с администратором.
+    route: R-16
+    src: R-16
+
+  transfer.queue:
+    text: Все сотрудники заняты, вы следующий в очереди.
+    src: "7.5"
+
+  transfer.outside_hours:
+    text: Сотрудники регистратуры сейчас не работают. Могу записать ваш вопрос, и вам перезвонят {next_day:short} после восьми утра.
+    expect: yes_no
+    src: "3.3"
+
+  callback.offer:
+    text: Все сотрудники сейчас заняты. Могу записать ваш вопрос — вам перезвонят в течение {minutes:gent} минут. Перезвонить на этот номер?
+    expect: yes_no
+    src: "7.6"
+
+  callback.mis_down:
+    text: Извините, система не отвечает. Я запишу ваш вопрос — вам перезвонят.
+    route: R-06
+    src: R-06
+
+  callback.created:
+    text: Хорошо, вопрос записан. Вам перезвонят на этот номер.
+    src: "7.6"
