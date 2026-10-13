@@ -1,6 +1,7 @@
 """Загрузка словарей из config/: красные флаги, сигналы для safety.check, синонимы приложения А."""
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -30,6 +31,7 @@ def read_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+@lru_cache(maxsize=None)
 def load_red_flags(path: Path = RED_FLAGS_PATH) -> Lexicon:
     """Ключи записей — «red_a.heart», «red_b.fever» и т. п."""
     raw = read_yaml(path)
@@ -44,11 +46,13 @@ def load_red_flags(path: Path = RED_FLAGS_PATH) -> Lexicon:
     return Lexicon(entries, raw["window"])
 
 
+@lru_cache(maxsize=None)
 def load_flags(path: Path = FLAGS_PATH) -> Lexicon:
     raw = read_yaml(path)
     return Lexicon([Entry.from_dict(k, v) for k, v in raw["flags"].items()], raw["window"])
 
 
+@lru_cache(maxsize=None)
 def load_specialties(path: Path = SYNONYMS_PATH) -> dict[str, Specialty]:
     specialties = {}
     for name, data in read_yaml(path)["specialties"].items():
@@ -61,18 +65,22 @@ def load_specialties(path: Path = SYNONYMS_PATH) -> dict[str, Specialty]:
     return specialties
 
 
+@lru_cache(maxsize=None)
 def specialty_lexicon(path: Path = SYNONYMS_PATH) -> Lexicon:
     return _section_lexicon(path, "specialties")
 
 
+@lru_cache(maxsize=None)
 def service_lexicon(path: Path = SYNONYMS_PATH) -> Lexicon:
     return _section_lexicon(path, "services")
 
 
+@lru_cache(maxsize=None)
 def action_lexicon(path: Path = SYNONYMS_PATH) -> Lexicon:
     return _section_lexicon(path, "actions")
 
 
+@lru_cache(maxsize=None)
 def day_part_lexicon(path: Path = SYNONYMS_PATH) -> Lexicon:
     return _section_lexicon(path, "day_parts")
 
