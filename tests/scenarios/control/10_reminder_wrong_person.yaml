@@ -1,0 +1,27 @@
+id: D-10
+title: Напоминание — трубку взял другой человек
+source: приложение Д, № 10
+blocking: false
+expected: Никаких деталей записи; просьба перезвонить; SMS
+covers: [С-10]
+
+setup:
+  now: "30.09.2026 11:00"
+  channel: outbound
+  call: {purpose: reminder, client: smirnova_ov}
+  visits:
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+
+steps:
+  - say: remind.greeting
+  - patient: Нет, это её муж. Она на работе.
+    parse: {expect: yes_no, intent: "no"}
+    say: remind.wrong_person
+    end: true
+    # имя и отчество можно (раздел 3.5), фамилию и подробности записи — нет
+    forbid: [Смирнов, Кузнецов, терапевт, завтра, четверг, восемь сорок пять, кабинет]
+
+result:
+  code: WRONG_PERSON
+  stand: unchanged
+  sms: [{client: smirnova_ov}]

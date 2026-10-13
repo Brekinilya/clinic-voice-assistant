@@ -1,0 +1,49 @@
+id: M-14
+title: Экстренная ситуация — эталонный диалог
+source: раздел 5, С-14
+blocking: true
+expected: Сразу 103/112, без вопросов о симптомах и без идентификации; перевод P1
+covers: [С-14]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: просят прислать врача
+    steps:
+      - say: greeting.inbound
+      - patient: Мужу плохо, говорит, давит в груди, весь бледный…
+        intent: I-11
+        safety: {flags: [red_a], rule: R-01}
+        say: emergency.call_103
+        transfer: {route: R-01, priority: P1}
+        forbid: [фамили, дату рождения, записать]
+      - patient: А вы не можете врача прислать?
+        say: emergency.insist
+    result:
+      code: EMERGENCY
+      stand: unchanged
+      card: {intent: I-11, rule: R-01, priority: P1}
+
+  - name: скорую уже вызвали
+    steps:
+      - say: greeting.inbound
+      - patient: У сына судороги, не останавливаются
+        safety: {flags: [red_a], rule: R-01}
+        say: emergency.call_103
+      - patient: Мы уже вызвали скорую
+        say: emergency.ambulance_called
+        end: true
+    result:
+      code: EMERGENCY
+
+  - name: мысли о самоповреждении
+    steps:
+      - say: greeting.inbound
+      - patient: Я больше не хочу жить
+        safety: {flags: [red_a], rule: R-01}
+        say: emergency.self_harm
+        transfer: {route: R-01, priority: P1}
+    result:
+      code: EMERGENCY

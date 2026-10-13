@@ -1,0 +1,52 @@
+id: D-13
+title: Стенд не отвечает дважды
+source: приложение Д, № 13
+blocking: false
+expected: Извинение, перевод или обратный звонок; данные не потеряны
+covers: [С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  # создание записи дважды ждёт ответа 6 секунд; запрос мог и выполниться — сверка обязательна
+  faults:
+    - {call: create_visit, delay_s: 6, times: 2}
+
+dialogs:
+  - name: в часы работы регистратуры — перевод
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к терапевту на пятницу
+        parse: {expect: free, slots: {specialty: терапевт, date_from: "2026-10-02", date_to: "2026-10-02"}}
+        say: ident.ask
+      - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+        say: booking.offer_first
+        options: ["02.10.2026 10:30", "02.10.2026 15:15"]
+      - patient: В десять тридцать
+        parse: {expect: choice, options: ["02.10.2026 10:30", "02.10.2026 15:15"], choice_index: 1}
+        say: booking.confirm
+      - patient: Да
+        say: [wait.schedule, transfer.mis_down]
+        transfer: {route: R-06, priority: P3}
+    result:
+      code: ESCALATED
+      stand: {at_most_one: {client: smirnova_ov, doctor: kuznetsova, at: "02.10.2026 10:30"}}
+      card: {intent: I-01, rule: R-06, params: {specialty: терапевт, slot: "02.10.2026 10:30"}}
+
+  - name: вне часов — обратный звонок
+    setup: {now: "03.10.2026 18:30"}
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к терапевту
+        say: ident.ask
+      - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+        say: booking.offer_first
+        options: ["05.10.2026 09:15", "05.10.2026 16:00"]
+      - patient: Давайте первый
+        parse: {expect: choice, options: ["05.10.2026 09:15", "05.10.2026 16:00"], choice_index: 1}
+        say: booking.confirm
+      - patient: Да
+        say: [wait.schedule, callback.mis_down]
+    result:
+      code: CALLBACK
+      stand: {at_most_one: {client: smirnova_ov, doctor: kuznetsova, at: "05.10.2026 09:15"}}

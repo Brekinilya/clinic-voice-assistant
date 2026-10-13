@@ -1,0 +1,29 @@
+id: D-12
+title: Пациент дважды говорит неразборчиво
+source: приложение Д, № 12
+blocking: false
+expected: Переспрос, затем предложение оператора, на третий раз перевод
+covers: ["3.2"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: кх... м-м... это самое
+    intent: unknown
+    parse: {expect: yes_no, intent: null}
+    say: reask.first
+  - patient: ну вот это, как его
+    intent: unknown
+    say: reask.offer_operator
+  - patient: э-э м-м
+    intent: unknown
+    say: transfer.not_understood
+    transfer: {route: R-05, priority: P3}
+
+result:
+  code: ESCALATED
+  stand: unchanged
+  card: {rule: R-05}
