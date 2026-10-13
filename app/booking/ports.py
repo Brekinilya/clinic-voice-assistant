@@ -1,0 +1,26 @@
+"""Бизнес-логика зависит от границ, а не от SQL, HTTP или способа ввода."""
+
+from datetime import datetime
+from typing import Protocol
+
+from app.booking.models import ActionState, Approval, BookingAction, Slot
+
+
+class BookingStore(Protocol):
+    async def available(self, slot: Slot, now: datetime) -> bool: ...
+    async def hold(
+        self, call_id: str, client_id: int, slot: Slot, now: datetime
+    ) -> BookingAction: ...
+    async def get(self, action_id: str) -> BookingAction: ...
+    async def claim(self, approval: Approval, now: datetime) -> tuple[BookingAction, bool]: ...
+    async def finish(
+        self, action_id: str, state: ActionState, visit_id: int | None = None
+    ) -> BookingAction: ...
+    async def cancel(self, action_id: str, call_id: str) -> BookingAction: ...
+
+
+class Schedule(Protocol):
+    """Только явно загруженное расписание, отсутствующее расписание не придумываем."""
+
+    def slots(self) -> tuple[Slot, ...]: ...
+    def eligible(self, client_id: int, slot: Slot) -> bool: ...
