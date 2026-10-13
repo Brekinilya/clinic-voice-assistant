@@ -52,7 +52,10 @@ def create_app(
     application = FastAPI(
         title="Голосовой ассистент регистратуры",
         version="0.1.0",
-        description="Каркас сервиса. Диалог и операции МИС подключаются отдельными компонентами.",
+        description=(
+            "Ассистент регистратуры с автономным текстовым стендом. "
+            "Стенд включается явно и работает с вымышленными данными."
+        ),
         lifespan=lifespan,
     )
     application.include_router(health_router)

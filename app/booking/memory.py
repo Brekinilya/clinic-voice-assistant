@@ -16,9 +16,10 @@ from app.booking.models import (
 
 
 class MemoryBookingStore:
-    def __init__(self) -> None:
+    def __init__(self, guard_reader=None) -> None:
         self.actions: dict[str, BookingAction] = {}
         self._lock = asyncio.Lock()
+        self._guard_reader = guard_reader
 
     def _expire(self, now: datetime) -> None:
         for key, action in self.actions.items():
@@ -91,6 +92,10 @@ class MemoryBookingStore:
             if action is None:
                 raise BookingError("ACTION_NOT_FOUND")
             check_approval(action, approval)
+            if approval.guard_version is not None:
+                if self._guard_reader is None:
+                    raise BookingError("DIALOGUE_GUARD_REQUIRED")
+                await self._guard_reader.check_guard(approval)
             if action.state in {
                 ActionState.ARCHIVED,
                 ActionState.COMMITTING,
@@ -131,6 +136,20 @@ class MemoryBookingStore:
             if action.state != ActionState.HELD:
                 raise BookingError("HOLD_NOT_ACTIVE")
             action = action.model_copy(update={"state": ActionState.CANCELLED})
+            self.actions[action_id] = action
+            return action
+
+    async def restore_unsent(self, action_id: str, confirmed_turn: int) -> BookingAction:
+        async with self._lock:
+            action = self.actions.get(action_id)
+            if (
+                action is None
+                or action.state != ActionState.COMMITTING
+                or action.confirmed_turn != confirmed_turn
+            ):
+                raise BookingError("ACTION_NOT_UNSENT")
+            # Срок первоначальной брони не продлеваем ожиданием бюджета.
+            action = action.model_copy(update={"state": ActionState.HELD, "confirmed_turn": None})
             self.actions[action_id] = action
             return action
 

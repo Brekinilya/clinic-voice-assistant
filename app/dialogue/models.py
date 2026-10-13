@@ -6,9 +6,12 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field, StrictBool, field_validator
 
 from app.booking.models import BookingModel, Slot
+from app.booking.preferences import SlotPreferences
 from app.mis.models import MisId
 
-CallId = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
+CallId = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+]
 
 
 class Phase(StrEnum):
@@ -18,6 +21,10 @@ class Phase(StrEnum):
     HELD = "held"
     INTERRUPTED = "interrupted"
     ENDED = "ended"
+    IDENTIFYING = "identifying"
+    BOOKED = "booked"
+    RECONCILING = "reconciling"
+    HANDOFF = "handoff"
 
 
 class Turn(BookingModel):
@@ -38,6 +45,22 @@ class Proposal(BookingModel):
     revision: int
     slot: Slot
     expires_at: AwareDatetime
+    doctor_name: str | None = None
+
+
+class WriteAuthorization(BookingModel):
+    turn_id: int
+    version: int
+    input_epoch: int
+    action_id: str
+    revision: int
+
+
+class TransferRequest(BookingModel):
+    route: str
+    priority: Literal["P1", "P2", "P3"]
+    status: Literal["requested"] = "requested"
+    action_id: str | None = None
 
 
 class DialogueState(BookingModel):
@@ -50,6 +73,16 @@ class DialogueState(BookingModel):
     options: tuple[Slot, ...] = Field(default=(), max_length=3)
     proposal: Proposal | None = None
     retry_at: AwareDatetime | None = None
+    input_epoch: int = 0
+    observed_turn_id: int = 0
+    observed_digest: str | None = Field(default=None, repr=False)
+    authorization: WriteAuthorization | None = None
+    specialty: str | None = None
+    preferences: SlotPreferences = Field(default_factory=SlotPreferences)
+    misunderstandings: int = 0
+    recording_opt_out: bool = False
+    transfer: TransferRequest | None = None
+    visit_id: int | None = None
 
 
 class Reply(BookingModel):
@@ -63,6 +96,8 @@ class Reply(BookingModel):
     proposal: Proposal | None = None
     code: str | None = None
     retry_at: AwareDatetime | None = None
+    transfer: TransferRequest | None = None
+    visit_id: int | None = None
 
     @field_validator("utterances")
     @classmethod
@@ -90,6 +125,8 @@ def reply(
         retry_at=state.retry_at,
         code=code,
         kind=kind,
+        transfer=state.transfer,
+        visit_id=state.visit_id,
     )
 
 

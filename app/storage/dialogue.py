@@ -6,7 +6,16 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.dialogue.models import Claim, DialogueError, DialogueState, Phase, Reply, reply
+from app.dialogue.models import (
+    Claim,
+    DialogueError,
+    DialogueState,
+    Phase,
+    Reply,
+    TransferRequest,
+    reply,
+)
+from app.dialogue.transitions import authorize_write, handoff_reply, observe_input, preempt_state
 from app.storage.schema import dialogue_receipts as receipts
 from app.storage.schema import dialogue_sessions as sessions
 
@@ -60,7 +69,7 @@ class PostgresDialogueStore:
                     raise DialogueError("TURN_CONTENT_CONFLICT")
                 cached = None if receipt.reply is None else Reply.model_validate(receipt.reply)
                 return Claim(state=state, acquired=False, cached=cached)
-            if state.phase == Phase.ENDED:
+            if state.phase in {Phase.ENDED, Phase.HANDOFF}:
                 raise DialogueError("CALL_ENDED")
             if row.pending_turn is not None:
                 raise DialogueError("TURN_IN_PROGRESS")
@@ -83,11 +92,20 @@ class PostgresDialogueStore:
         async with self._locked(state.call_id) as (connection, row):
             current = DialogueState.model_validate(row.state)
             if (
-                current.phase == Phase.ENDED
+                current.phase in {Phase.ENDED, Phase.HANDOFF}
                 or current.version != state.version
                 or row.pending_turn != turn_id
             ):
                 return False
+            stale = current.input_epoch != state.input_epoch
+            if stale:
+                state = current
+                result = reply(
+                    state,
+                    turn_id,
+                    "Поступила новая реплика. Уточните выбор или подтвердите заново.",
+                    code="TURN_INTERRUPTED",
+                )
             state = state.model_copy(update={"last_turn_id": turn_id, "pending_turn_id": None})
             await connection.execute(
                 update(sessions)
@@ -99,7 +117,7 @@ class PostgresDialogueStore:
                 .where(receipts.c.call_id == state.call_id, receipts.c.turn_id == turn_id)
                 .values(reply=result.model_dump(mode="json"))
             )
-            return True
+            return not stale
 
     async def end(self, call_id: str) -> DialogueState:
         async with self._locked(call_id) as (connection, row):
@@ -116,6 +134,7 @@ class PostgresDialogueStore:
                     "proposal": None,
                     "options": (),
                     "retry_at": None,
+                    "authorization": None,
                 }
             )
             await connection.execute(
@@ -125,6 +144,50 @@ class PostgresDialogueStore:
             )
             if row.pending_turn is not None:
                 result = reply(state, row.pending_turn, "Разговор завершён.", code="CALL_ENDED")
+                await connection.execute(
+                    update(receipts)
+                    .where(receipts.c.call_id == call_id, receipts.c.turn_id == row.pending_turn)
+                    .values(reply=result.model_dump(mode="json"))
+                )
+            return state
+
+    async def observe(self, call_id: str, turn_id: int, digest: str) -> DialogueState:
+        async with self._locked(call_id) as (connection, row):
+            state = observe_input(DialogueState.model_validate(row.state), turn_id, digest)
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"))
+            )
+            return state
+
+    async def authorize(self, call_id: str, version: int, epoch: int, turn_id: int) -> bool:
+        async with self._locked(call_id) as (connection, row):
+            state = authorize_write(
+                DialogueState.model_validate(row.state), version, epoch, turn_id
+            )
+            if state is None:
+                return False
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"))
+            )
+            return True
+
+    async def preempt(self, call_id: str, turn_id: int, transfer: TransferRequest) -> DialogueState:
+        async with self._locked(call_id) as (connection, row):
+            current = DialogueState.model_validate(row.state)
+            if turn_id < current.observed_turn_id or current.phase in {Phase.ENDED, Phase.HANDOFF}:
+                return current
+            state = preempt_state(current, transfer)
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"), pending_turn=None)
+            )
+            if row.pending_turn is not None:
+                result = handoff_reply(state, row.pending_turn)
                 await connection.execute(
                     update(receipts)
                     .where(receipts.c.call_id == call_id, receipts.c.turn_id == row.pending_turn)

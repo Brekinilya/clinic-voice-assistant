@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.booking.guard import check_dialogue_guard
 from app.booking.models import (
     ActionState,
     Approval,
@@ -25,13 +26,14 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
-from app.mis.ports import MisError
+from app.mis.ports import BudgetExhausted
 from app.storage.schema import (
     SCHEMA_VERSION,
     actions,
     active,
     budget_blocks,
     budget_requests,
+    dialogue_sessions,
     metadata,
     schema_versions,
 )
@@ -164,6 +166,16 @@ class PostgresBookingStore:
                 raise BookingError("ACTION_NOT_FOUND")
             action = _decode(row)
             check_approval(action, approval)
+            if approval.guard_version is not None:
+                # Блокировку строки разговора держим до commit COMMITTING в той же транзакции.
+                state = (
+                    await connection.execute(
+                        select(dialogue_sessions.c.state)
+                        .where(dialogue_sessions.c.call_id == approval.call_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                check_dialogue_guard(state, approval)
             if action.state in {
                 ActionState.ARCHIVED,
                 ActionState.COMMITTING,
@@ -226,6 +238,24 @@ class PostgresBookingStore:
                 raise BookingError("HOLD_NOT_ACTIVE")
             return _decode(row)
 
+    async def restore_unsent(self, action_id: str, confirmed_turn: int) -> BookingAction:
+        async with self._transaction() as connection:
+            row = (
+                await connection.execute(
+                    update(actions)
+                    .where(
+                        actions.c.action_id == action_id,
+                        actions.c.state == "committing",
+                        actions.c.confirmed_turn == confirmed_turn,
+                    )
+                    .values(state="held", confirmed_turn=None)
+                    .returning(actions)
+                )
+            ).first()
+            if row is None:
+                raise BookingError("ACTION_NOT_UNSENT")
+            return _decode(row)
+
     async def release_call_holds(self, call_id: str) -> None:
         async with self._transaction() as connection:
             await connection.execute(
@@ -282,7 +312,7 @@ class PostgresBudget:
             if len(requests) >= self.limit:
                 delay = max(delay, 60 - (now - requests[0]).total_seconds())
             if delay > 0:
-                raise MisError("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
+                raise BudgetExhausted("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
             await connection.execute(
                 insert(budget_requests).values(scope=self.scope, requested_at=now)
             )

@@ -51,7 +51,13 @@ async def open_backend(settings: Settings, schedule: Schedule):
                     settings.mis_rate_limit_per_min,
                 ),
             )
-            yield BookingService(mis, PostgresBookingStore(engine), schedule, ClinicClock())
+            yield BookingService(
+                mis,
+                PostgresBookingStore(engine),
+                schedule,
+                ClinicClock(),
+                require_dialogue_guard=True,
+            )
     finally:
         await engine.dispose()
 

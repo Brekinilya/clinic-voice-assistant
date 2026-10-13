@@ -1,14 +1,16 @@
-"""Машина состояний командного стенда: внешние изменяющие действия закрыты."""
+"""Общий цикл диалога: квитанции, прерывание, safety и сменный сценарий разговора."""
 
 import hashlib
 import hmac
-from datetime import timedelta
 
-from app.booking.models import BookingError
+from app.booking.models import ActionState, BookingError
 from app.booking.service import BookingService
+from app.dialogue.failures import mis_failure
 from app.dialogue.input import CommandInterpreter, InputInterpreter, Operation
-from app.dialogue.models import DialogueState, Phase, Proposal, Reply, Turn, reply
-from app.dialogue.ports import DialogueStore
+from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
+from app.dialogue.ports import Conversation, DialogueStore, SafetyChecker
+from app.dialogue.safety_adapter import route_for
+from app.dialogue.transitions import handoff_reply
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
 
@@ -21,6 +23,8 @@ class DialogueService:
         hash_key: bytes,
         *,
         interpreter: InputInterpreter | None = None,
+        safety: SafetyChecker | None = None,
+        conversation: Conversation | None = None,
     ) -> None:
         if len(hash_key) < 32:
             raise ValueError("ключ квитанций должен содержать хотя бы 32 байта")
@@ -28,6 +32,8 @@ class DialogueService:
         self.store = store
         self._hash_key = hash_key
         self.interpreter = interpreter if interpreter is not None else CommandInterpreter()
+        self.safety = safety
+        self.conversation = conversation
 
     def _digest(self, call_id: str, turn: Turn) -> str:
         # ФИО и дата рождения не сохраняются в журнале команд даже в виде обычного SHA256.
@@ -38,6 +44,40 @@ class DialogueService:
         ).hexdigest()
 
     async def handle(self, call_id: str, turn: Turn) -> Reply:
+        digest = self._digest(call_id, turn)
+        if self.safety is not None:
+            current = await self.store.observe(call_id, turn.turn_id, digest)
+            if current.phase == Phase.ENDED:
+                return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
+            if current.phase == Phase.HANDOFF:
+                return handoff_reply(current, turn.turn_id)
+            if turn.turn_id >= current.observed_turn_id:
+                try:
+                    decision = self.safety.evaluate(call_id, turn)
+                    if (
+                        decision.call_id != call_id
+                        or decision.turn_id != turn.turn_id
+                        or decision.final != turn.is_final
+                    ):
+                        raise ValueError("решение safety не соответствует реплике")
+                    transfer = route_for(decision)
+                except Exception:
+                    # При неисправном проверяющем компоненте запрещаем дальнейшие действия.
+                    current = await self.store.preempt(
+                        call_id, turn.turn_id, TransferRequest(route="R-08", priority="P3")
+                    )
+                    await self.booking.store.release_call_holds(call_id)
+                    return reply(
+                        current,
+                        turn.turn_id,
+                        "Проверка безопасности недоступна. Автоматическая запись остановлена.",
+                        "Подготовлен запрос регистратору.",
+                        code="SAFETY_UNAVAILABLE",
+                    )
+                if transfer is not None:
+                    current = await self.store.preempt(call_id, turn.turn_id, transfer)
+                    await self.booking.store.release_call_holds(call_id)
+                    return handoff_reply(current, turn.turn_id)
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
@@ -45,8 +85,12 @@ class DialogueService:
                     state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED", kind="partial"
                 )
             return reply(state, turn.turn_id, "Ожидаю завершения команды.", kind="partial")
-        claim = await self.store.claim(call_id, turn.turn_id, self._digest(call_id, turn))
+        claim = await self.store.claim(call_id, turn.turn_id, digest)
         if not claim.acquired:
+            if self.safety is not None:
+                current = await self.store.inspect(call_id)
+                if current.phase == Phase.HANDOFF:
+                    return handoff_reply(current, turn.turn_id)
             return claim.cached or reply(
                 claim.state, turn.turn_id, "Команда ещё обрабатывается.", kind="processing"
             )
@@ -70,6 +114,15 @@ class DialogueService:
         if not await self.store.complete(state, turn.turn_id, result):
             await self.booking.store.release_call_holds(call_id)
             current = await self.store.inspect(call_id)
+            if current.phase == Phase.HANDOFF:
+                return handoff_reply(current, turn.turn_id)
+            if current.phase != Phase.ENDED:
+                return reply(
+                    current,
+                    turn.turn_id,
+                    "Поступила новая реплика. Уточните выбор или подтвердите заново.",
+                    code="TURN_INTERRUPTED",
+                )
             return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
         return result
 
@@ -80,7 +133,9 @@ class DialogueService:
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
 
     async def _process(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
-        command = await self.interpreter.interpret(state, turn)
+        command = (
+            None if self.conversation is not None else await self.interpreter.interpret(state, turn)
+        )
         now = self.booking.clock.now()
         if state.phase == Phase.INTERRUPTED:
             return state, reply(
@@ -89,22 +144,38 @@ class DialogueService:
                 "Обработка прервана. Завершите разговор.",
                 code="PROCESSING_INTERRUPTED",
             )
-        if state.proposal is not None and state.proposal.expires_at <= now:
-            await self.booking.store.release_call_holds(state.call_id)
-            state = state.model_copy(
-                update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
-            )
+        if state.phase == Phase.HELD and state.proposal is not None:
+            action = await self.booking.store.get(state.proposal.action_id)
+            if action.state in {
+                ActionState.COMMITTING,
+                ActionState.RECONCILING,
+                ActionState.BOOKED,
+            }:
+                state = state.model_copy(update={"phase": Phase.RECONCILING})
+            elif state.proposal.expires_at <= now:
+                await self.booking.store.release_call_holds(state.call_id)
+                state = state.model_copy(
+                    update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
+                )
+        if self.conversation is not None:
+            shortcut = self.conversation.short_reply(state, turn)
+            if shortcut is not None:
+                return shortcut
         if state.retry_at is not None:
-            if state.retry_at > now and command.operation not in {Operation.STATUS, Operation.HELP}:
+            if state.retry_at > now and (
+                command is None or command.operation not in {Operation.STATUS, Operation.HELP}
+            ):
                 return state, reply(
                     state,
                     turn.turn_id,
-                    "Лимит запросов исчерпан. Повторите команду после указанного времени.",
+                    "Лимит запросов исчерпан. Повторите просьбу после указанного времени.",
                     code="WAIT_MIS",
                 )
             if state.retry_at <= now:
                 state = state.model_copy(update={"retry_at": None})
         try:
+            if self.conversation is not None:
+                return await self.conversation.step(state, turn)
             if command.operation == Operation.HELP:
                 return state, reply(
                     state,
@@ -209,21 +280,7 @@ class DialogueService:
                 code="UNKNOWN_COMMAND",
             )
         except MisError as error:
-            if error.retry_after is not None:
-                state = state.model_copy(
-                    update={
-                        "retry_at": self.booking.clock.now() + timedelta(seconds=error.retry_after)
-                    }
-                )
-                return state, reply(
-                    state,
-                    turn.turn_id,
-                    "Лимит запросов исчерпан. Повторите команду после указанного времени.",
-                    code="WAIT_MIS",
-                )
-            return state, reply(
-                state, turn.turn_id, "МИС недоступна. Действие остановлено.", code="MIS_UNAVAILABLE"
-            )
+            return mis_failure(state, turn, self.booking.clock.now(), error)
         except BookingError:
             return state, reply(
                 state,

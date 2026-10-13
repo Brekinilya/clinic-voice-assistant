@@ -6,7 +6,9 @@ from pathlib import Path
 
 import yaml
 
-CATALOG_PATH = Path(__file__).resolve().parents[2] / "config" / "intents.yaml"
+from app.resource_paths import config_directory
+
+CATALOG_PATH = config_directory() / "intents.yaml"
 
 MODES = {"auto", "semi", "operator", "emergency"}
 SERVICE_INTENTS = ("yes", "no", "choice", "repeat", "maybe", "opt_out", "unknown")

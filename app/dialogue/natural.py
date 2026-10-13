@@ -1,0 +1,390 @@
+"""С-01 текстом: распознавание делегировано Илье, правила действий принадлежат backend."""
+
+from typing import Literal
+
+from app.booking.models import ActionState, Approval, BookingError
+from app.booking.preferences import SlotPreferences
+from app.booking.service import BookingService
+from app.dialogue.failures import mis_failure
+from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
+from app.dialogue.nlu_adapter import RulesInput
+from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
+from app.dialogue.safety_adapter import route_for
+from app.dialogue.transitions import handoff_reply
+from app.mis.models import format_datetime
+from app.mis.ports import MisError
+
+
+class BookingConversation:
+    def __init__(
+        self,
+        booking: BookingService,
+        store: DialogueStore,
+        safety: SafetyChecker,
+        *,
+        nlu: NluInterpreter | None = None,
+    ) -> None:
+        self.booking = booking
+        self.store = store
+        self.safety = safety
+        self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
+
+    def short_reply(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
+        decision = self.safety.evaluate(state.call_id, turn)
+        if "robot" in decision.flags:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Я виртуальный помощник регистратуры. Могу помочь с записью или подготовить запрос сотруднику.",
+                code="ROBOT_DISCLOSED",
+            )
+        if "no_recording" in decision.flags:
+            state = state.model_copy(update={"recording_opt_out": True, "authorization": None})
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Пожелание не записывать разговор сохранено. Продолжим запись к врачу?",
+                code="RECORDING_OPT_OUT",
+            )
+        return None
+
+    async def transfer(
+        self,
+        state: DialogueState,
+        turn: Turn,
+        route: str,
+        priority: Literal["P1", "P2", "P3"] = "P3",
+    ) -> tuple[DialogueState, Reply]:
+        state = await self.store.preempt(
+            state.call_id, turn.turn_id, TransferRequest(route=route, priority=priority)
+        )
+        await self.booking.store.release_call_holds(state.call_id)
+        return state, handoff_reply(state, turn.turn_id)
+
+    async def offer(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
+        await self.booking.store.release_call_holds(state.call_id)
+        state = state.model_copy(
+            update={
+                "proposal": None,
+                "authorization": None,
+                "options": (),
+                "phase": Phase.IDENTIFIED,
+            }
+        )
+        try:
+            options = await self.booking.options(
+                state.client_id, state.specialty, state.preferences, limit=2
+            )
+            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+        except MisError as error:
+            # Отменённая старая бронь и новые предпочтения должны сохраниться даже при ожидании.
+            return mis_failure(state, turn, self.booking.clock.now(), error)
+        except BookingError:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Подбор недоступен. Уточните данные или попросите регистратора.",
+                code="BOOKING_REJECTED",
+            )
+        state = state.model_copy(
+            update={"options": options, "phase": Phase.OFFERED if options else Phase.IDENTIFIED}
+        )
+        if not options:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Подходящих подтверждённых слотов нет. Уточните предпочтения или попросите регистратора.",
+                code="NO_SLOTS",
+            )
+        phrases = tuple(
+            f"{i}. {format_datetime(s.scheduled_at)}, {doctors[s.doctor_id].full_name}, {s.specialty}."
+            for i, s in enumerate(options, 1)
+        )
+        return state, reply(state, turn.turn_id, *phrases, "Какой вариант вам удобен?")
+
+    async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
+        result = await self.input.parse(state, turn)
+        if result.call_id != state.call_id or result.turn_id != turn.turn_id:
+            raise RuntimeError("результат NLU не относится к текущей реплике")
+        decision = self.safety.evaluate(state.call_id, turn, result.flags)
+        transfer = route_for(decision)
+        if transfer:
+            return await self.transfer(state, turn, transfer.route, transfer.priority)
+        if "robot" in decision.flags:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Я виртуальный помощник регистратуры. Могу помочь с записью или подготовить запрос сотруднику.",
+                code="ROBOT_DISCLOSED",
+            )
+        if "no_recording" in decision.flags:
+            state = state.model_copy(update={"recording_opt_out": True, "authorization": None})
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Пожелание не записывать разговор сохранено. Продолжим запись к врачу?",
+                code="RECORDING_OPT_OUT",
+            )
+        slots, intents = result.slots, set(result.intents)
+        if "I-04" in intents:
+            if state.proposal is not None:
+                known = await self.booking.store.get(state.proposal.action_id)
+                if known.state == ActionState.HELD:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Запись пока не создана. Подтвердите выбранный приём.",
+                        code="CONFIRMATION_REQUIRED",
+                    )
+                action = await self.booking.reconcile(state.proposal.action_id)
+                if action.state == ActionState.BOOKED:
+                    confirmed = self.booked_phrase(action, state.proposal.doctor_name)
+                    state = state.model_copy(
+                        update={
+                            "phase": Phase.BOOKED,
+                            "visit_id": action.visit_id,
+                            "proposal": None,
+                            "options": (),
+                        }
+                    )
+                    return state, reply(state, turn.turn_id, confirmed, code="BOOKED")
+                state = state.model_copy(update={"phase": Phase.RECONCILING})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Результат всё ещё уточняется. Повторную запись не отправляю.",
+                    code="RECONCILING",
+                )
+            return await self.transfer(state, turn, "R-08")
+        if state.phase == Phase.RECONCILING:
+            if "no" in intents or intents & {"I-01", "I-02", "I-03"}:
+                # Уже отправленная операция не отменяется местным снятием брони.
+                return await self.transfer(state, turn, "R-08")
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Результат ещё уточняется. Для сверки спросите: на когда я записана?",
+                code="RECONCILING",
+            )
+        if intents & {
+            "I-02",
+            "I-03",
+            "I-05",
+            "I-06",
+            "I-07",
+            "I-08",
+            "I-09",
+            "I-10",
+            "I-12",
+            "I-13",
+            "I-14",
+        }:
+            return await self.transfer(state, turn, "R-08")
+        if slots.on_behalf in {"other", "child"}:
+            return await self.transfer(state, turn, "R-16")
+        if slots.policy_number is not None:
+            return await self.transfer(state, turn, "R-07")
+        if result.alternatives:
+            await self.booking.store.release_call_holds(state.call_id)
+            state = state.model_copy(
+                update={
+                    "phase": Phase.IDENTIFYING,
+                    "client_id": None,
+                    "proposal": None,
+                    "options": (),
+                    "authorization": None,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Дата рождения неоднозначна. Назовите ФИО и дату рождения с четырёхзначным годом.",
+                code="BIRTH_DATE_AMBIGUOUS",
+            )
+        if slots.last_name and slots.first_name and slots.birth_date:
+            patient = await self.booking.identify(
+                slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
+            )
+            state = state.model_copy(
+                update={"client_id": patient.id, "phase": Phase.IDENTIFIED, "misunderstandings": 0}
+            )
+            if state.specialty:
+                return await self.offer(state, turn)
+            return state, reply(
+                state, turn.turn_id, "Пациент найден. К какому специалисту хотите записаться?"
+            )
+        preference_fields = {
+            "date_from",
+            "date_to",
+            "time_from",
+            "time_to",
+            "time_pref",
+            "exclude_weekdays",
+        } & slots.model_fields_set
+        if (
+            slots.specialty is not None
+            or slots.doctor is not None
+            or preference_fields
+            or "I-01" in intents
+        ):
+            changes = {field: getattr(slots, field) for field in preference_fields}
+            if slots.doctor is not None:
+                doctors = [
+                    d
+                    for d in await self.booking.mis.doctors()
+                    if d.full_name.split()[0].casefold() == slots.doctor.casefold()
+                ]
+                if not doctors:
+                    raise BookingError("DOCTOR_UNAVAILABLE")
+                changes["doctor_ids"] = tuple(d.id for d in doctors)
+                specialties = {d.specialty for d in doctors}
+                if len(specialties) != 1:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Уточните специальность врача.",
+                        code="DOCTOR_AMBIGUOUS",
+                    )
+                if slots.specialty is None:
+                    state = state.model_copy(update={"specialty": next(iter(specialties))})
+            if slots.specialty is not None:
+                if state.specialty != slots.specialty:
+                    state = state.model_copy(update={"preferences": SlotPreferences()})
+                state = state.model_copy(update={"specialty": slots.specialty})
+            state = state.model_copy(
+                update={
+                    "preferences": state.preferences.model_copy(update=changes),
+                    "misunderstandings": 0,
+                }
+            )
+            if state.client_id is None:
+                state = state.model_copy(update={"phase": Phase.IDENTIFYING})
+                return state, reply(
+                    state, turn.turn_id, "Назовите фамилию, имя, отчество и дату рождения."
+                )
+            if state.specialty:
+                return await self.offer(state, turn)
+        if "choice" in intents and state.phase == Phase.OFFERED:
+            index = slots.choice_index
+            if index is None or not 1 <= index <= len(state.options):
+                raise BookingError("INVALID_CHOICE")
+            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+            action = await self.booking.propose(
+                state.call_id, state.client_id, state.options[index - 1]
+            )
+            state = state.model_copy(
+                update={
+                    "phase": Phase.HELD,
+                    "proposal": Proposal(
+                        action_id=action.action_id,
+                        revision=action.revision,
+                        slot=action.slot,
+                        expires_at=action.expires_at,
+                        doctor_name=doctors[action.slot.doctor_id].full_name,
+                    ),
+                    "misunderstandings": 0,
+                }
+            )
+            return state, await self.confirmation_phrase(state, turn)
+        if "yes" in intents and state.phase == Phase.HELD and state.proposal is not None:
+            if not decision.final or not await self.store.authorize(
+                state.call_id, state.version, state.input_epoch, turn.turn_id
+            ):
+                raise BookingError("CONFIRMATION_INTERRUPTED")
+            action = await self.booking.confirm(
+                Approval(
+                    call_id=state.call_id,
+                    action_id=state.proposal.action_id,
+                    revision=state.proposal.revision,
+                    turn_id=turn.turn_id,
+                    is_final=True,
+                    permitted=True,
+                    guard_version=state.version,
+                    input_epoch=state.input_epoch,
+                )
+            )
+            state = state.model_copy(update={"authorization": None})
+            if action.state == ActionState.BOOKED:
+                confirmed = self.booked_phrase(action, state.proposal.doctor_name)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.BOOKED,
+                        "visit_id": action.visit_id,
+                        "options": (),
+                        "proposal": None,
+                    }
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    confirmed,
+                    code="BOOKED",
+                )
+            if action.state in {ActionState.COMMITTING, ActionState.RECONCILING}:
+                state = state.model_copy(update={"phase": Phase.RECONCILING})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Результат уточняется. Повторную запись не отправляю.",
+                    code="RECONCILING",
+                )
+            state = state.model_copy(
+                update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "МИС отклонила запись. Запросите новые варианты.",
+                code="BOOKING_REJECTED",
+            )
+        if "no" in intents:
+            if state.phase == Phase.BOOKED:
+                state = await self.store.end(state.call_id)
+                return state, reply(state, turn.turn_id, "Всего доброго.", code="CALL_ENDED")
+            await self.booking.store.release_call_holds(state.call_id)
+            state = state.model_copy(
+                update={
+                    "phase": Phase.IDENTIFIED if state.client_id else Phase.READY,
+                    "proposal": None,
+                    "options": (),
+                    "authorization": None,
+                }
+            )
+            return state, reply(state, turn.turn_id, "Бронь снята. Уточните удобное время.")
+        if "repeat" in intents:
+            if state.phase == Phase.HELD:
+                return state, await self.confirmation_phrase(state, turn)
+            if state.client_id and state.specialty:
+                return await self.offer(state, turn)
+        count = state.misunderstandings + 1
+        state = state.model_copy(update={"misunderstandings": count, "authorization": None})
+        if count >= 3:
+            return await self.transfer(state, turn, "R-05")
+        return state, reply(
+            state,
+            turn.turn_id,
+            "Не поняла. Повторите, пожалуйста."
+            if count == 1
+            else "Не удалось понять. Могу подготовить запрос регистратору.",
+            code="NOT_UNDERSTOOD",
+        )
+
+    @staticmethod
+    def booked_phrase(action, doctor_name: str | None) -> str:
+        return (
+            f"Вы записаны: {action.slot.specialty}, {doctor_name or 'выбранный врач'}, "
+            f"{format_datetime(action.slot.scheduled_at)}."
+        )
+
+    async def confirmation_phrase(self, state: DialogueState, turn: Turn) -> Reply:
+        slot = state.proposal.slot
+        doctor_name = state.proposal.doctor_name
+        if doctor_name is None:
+            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+            doctor_name = doctors[slot.doctor_id].full_name
+        return reply(
+            state,
+            turn.turn_id,
+            f"Подтвердите: {slot.specialty}, {doctor_name}, {format_datetime(slot.scheduled_at)}. Всё верно?",
+            code="CONFIRMATION_REQUIRED",
+        )

@@ -1,4 +1,4 @@
-"""Автономная сборка командного API; реальный HTTP-клиент МИС здесь не создаётся."""
+"""Автономная сборка текстового API с явным выбором сценария и хранилища."""
 
 from contextlib import asynccontextmanager
 from secrets import token_bytes
@@ -12,6 +12,8 @@ from app.booking.schedule import JsonSchedule
 from app.booking.service import BookingService
 from app.demo import DemoSchedule, EmulatorBudget, demo_emulator
 from app.dialogue.memory import MemoryDialogueStore
+from app.dialogue.natural import BookingConversation
+from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
 from app.mis.http import HttpMedicalSystem
 from app.ports import Clock
@@ -44,8 +46,8 @@ async def open_command_backend(settings: Settings, clock: Clock):
             dialogue_store = PostgresDialogueStore(engine)
             key = settings.dialogue_hash_key.get_secret_value().encode()
         else:
-            booking_store = MemoryBookingStore()
             dialogue_store = MemoryDialogueStore()
+            booking_store = MemoryBookingStore(guard_reader=dialogue_store)
             key = token_bytes(32)
         emulator = demo_emulator(clock)
         async with httpx.AsyncClient(
@@ -54,9 +56,19 @@ async def open_command_backend(settings: Settings, clock: Clock):
             transport=emulator.transport(),
         ) as client:
             booking = BookingService(
-                HttpMedicalSystem(client, EmulatorBudget()), booking_store, schedule, clock
+                HttpMedicalSystem(client, EmulatorBudget()),
+                booking_store,
+                schedule,
+                clock,
+                require_dialogue_guard=settings.dialogue_mode == "natural",
             )
-            yield DialogueService(booking, dialogue_store, key)
+            safety = RulesSafety(clock) if settings.dialogue_mode == "natural" else None
+            conversation = (
+                BookingConversation(booking, dialogue_store, safety) if safety is not None else None
+            )
+            yield DialogueService(
+                booking, dialogue_store, key, safety=safety, conversation=conversation
+            )
     finally:
         if engine is not None:
             await engine.dispose()

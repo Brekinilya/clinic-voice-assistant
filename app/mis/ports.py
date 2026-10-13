@@ -15,6 +15,10 @@ class MisError(Exception):
         self.retry_after = retry_after
 
 
+class BudgetExhausted(MisError):
+    """Локальный бюджет отказал до отправки HTTP; внешняя операция не начиналась."""
+
+
 class MisUnavailable(MisError):
     pass
 

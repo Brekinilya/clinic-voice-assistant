@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = SecretStr("clinic_dev")
     database_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
-    # Командный HTTP-стенд включается явно и работает только с автономной МИС.
+    # Текстовый HTTP-стенд включается явно и работает только с автономной МИС.
     backend_demo_enabled: bool = False
+    dialogue_mode: Literal["commands", "natural"] = "commands"
     dialogue_storage: Literal["memory", "postgres"] = "memory"
     dialogue_hash_key: SecretStr = SecretStr("")
     schedule_path: Path | None = None

@@ -1,4 +1,4 @@
-"""Командный HTTP-вход нашей части; выводит состояние, но не создаёт записи МИС."""
+"""Текстовый вход автономного стенда: команды или обычные фразы по настройке."""
 
 from typing import Annotated
 
@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.dialogue.models import CallId, DialogueError, DialogueState, Reply, Turn
 from app.dialogue.service import DialogueService
 
-router = APIRouter(prefix="/api/dialog", tags=["Автономный командный стенд"])
+router = APIRouter(prefix="/api/dialog", tags=["Автономный текстовый стенд"])
 
 
 def get_service(request: Request) -> DialogueService:
@@ -25,7 +25,10 @@ Service = Annotated[DialogueService, Depends(get_service)]
 @router.post(
     "/{call_id}/turn",
     response_model=Reply,
-    description="Явные команды с вымышленной МИС. Создание/изменение записей отключено.",
+    description=(
+        "Вымышленная МИС: команды без записи либо обычные фразы с записью С-01. "
+        "Режим задаётся на сервере; создание требует итогового подтверждения и проверки safety."
+    ),
 )
 async def turn(call_id: CallId, body: Turn, service: Service) -> Reply:
     try:
