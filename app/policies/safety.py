@@ -1,7 +1,9 @@
 """Проверка каждой реплики пациента: красные флаги (раздел 7.4) и сигналы для маршрутизации (раздел 7.3)."""
 
 from dataclasses import dataclass
+from datetime import datetime, time
 
+from app.contracts import SafetyDecision
 from app.nlu.dictionaries import load_flags, load_red_flags
 from app.nlu.lexicon import Hit
 
@@ -75,3 +77,34 @@ def _rule(flags: frozenset[str], hits: tuple[Hit, ...], operators_on_duty: bool)
         # вне часов работы регистратуры категория Б обрабатывается как А (раздел 7.4)
         return "R-01"
     return next((rule for flag, rule in RULES if flag in active), None)
+
+
+def decide(
+    call_id: str,
+    turn_id: int,
+    text: str,
+    *,
+    final: bool,
+    operators_on_duty: bool,
+    extra: frozenset[str] = frozenset(),
+) -> SafetyDecision:
+    """Решение по реплике в формате контракта; extra — флаги общего разбора фразы."""
+    verdict = check(text, final=final, operators_on_duty=operators_on_duty)
+    if extra:
+        verdict = with_flags(verdict, extra, final=final, operators_on_duty=operators_on_duty)
+    return SafetyDecision(
+        call_id=call_id, turn_id=turn_id, flags=verdict.flags, rule=verdict.rule, final=final
+    )
+
+
+def operators_on_duty(moment: datetime) -> bool:
+    """Операторы регистратуры на линии (раздел 2.2): будни 7:00–20:00, суббота 8:30–15:00.
+
+    Праздничный режим задаётся приказом и сюда не входит.
+    """
+    t, weekday = moment.time(), moment.isoweekday()
+    if weekday <= 5:
+        return time(7) <= t < time(20)
+    if weekday == 6:
+        return time(8, 30) <= t < time(15)
+    return False

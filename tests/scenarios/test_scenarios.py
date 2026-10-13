@@ -16,8 +16,10 @@ from scenario_plan import (
     to_option,
 )
 
+from app.contracts import NluRequest
 from app.nlu.catalog import load_catalog
 from app.nlu.parsers import parse_expected
+from app.nlu.service import RulesNlu
 from app.policies.safety import check
 from app.voice.phrases import load_phrasebook
 
@@ -106,6 +108,26 @@ def test_patient_phrase_parse(dialog, step):
         assert parsed.slots.get(name) == value, name
     if "choice_index" in expected:
         assert parsed.slots.get("choice_index") == expected["choice_index"]
+
+
+INTENT_STEPS = [(d, step) for d, step in PATIENT_STEPS if "intent" in step]
+RULES_NLU = RulesNlu([doctor["full_name"] for doctor in FIXTURES["doctors"].values()])
+
+
+@pytest.mark.parametrize("dialog, step", INTENT_STEPS, ids=step_ids(INTENT_STEPS))
+def test_patient_phrase_intent(dialog, step):
+    """Правила либо понимают интент верно, либо молчат там, где это помечено в сценарии."""
+    expect = step.get("parse", {}).get("expect", "free")
+    request = NluRequest(
+        call_id="scenario", turn_id=1, text=step["patient"], expect=expect, today=dialog.now.date()
+    )
+    intents = RULES_NLU.parse(request).intents
+    if step["intent"] == "unknown":
+        assert intents == ()
+    elif step.get("needs_general_parse"):
+        assert not [i for i in intents if i.startswith("I-")]
+    else:
+        assert step["intent"] in intents
 
 
 @pytest.mark.parametrize("dialog", DIALOGS, ids=lambda d: d.label)

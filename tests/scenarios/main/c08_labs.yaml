@@ -25,6 +25,7 @@ steps:
   # словарь эту фразу не ловит: медицинский вопрос здесь распознаёт общий разбор
   - patient: А там всё нормально?
     intent: I-13
+    needs_general_parse: true
     say: labs.no_values
     forbid: [в норме, хорош, плох, повышен]
   - patient: Нет, спасибо.

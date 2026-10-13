@@ -7,13 +7,14 @@ python -m tests.scenarios.scenario_plan --write  — обновить её в te
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 
 from app.nlu.catalog import load_catalog
 from app.nlu.parsers import Option
+from app.policies.safety import operators_on_duty
 from app.voice.phrases import load_phrasebook
 
 HERE = Path(__file__).resolve().parent
@@ -75,7 +76,7 @@ class Dialog:
 
     @property
     def operators_on_duty(self) -> bool:
-        return self.setup.get("operators_on_duty", on_duty(self.now))
+        return self.setup.get("operators_on_duty", operators_on_duty(self.now))
 
     @property
     def label(self) -> str:
@@ -92,16 +93,6 @@ class Scenario:
     covers: list[str]
     path: Path
     dialogs: list[Dialog]
-
-
-def on_duty(moment: datetime) -> bool:
-    """Часы операторов регистратуры (раздел 2.2): будни 7:00–20:00, суббота 8:30–15:00."""
-    t, weekday = moment.time(), moment.isoweekday()
-    if weekday <= 5:
-        return time(7) <= t < time(20)
-    if weekday == 6:
-        return time(8, 30) <= t < time(15)
-    return False
 
 
 def load_fixtures() -> dict:

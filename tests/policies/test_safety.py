@@ -1,9 +1,18 @@
 import time
+from datetime import datetime
 
 import pytest
 
 from app.nlu.dictionaries import FLAGS_PATH, read_yaml
-from app.policies.safety import FLAGS, RULES, SafetyVerdict, check, with_flags
+from app.policies.safety import (
+    FLAGS,
+    RULES,
+    SafetyVerdict,
+    check,
+    decide,
+    operators_on_duty,
+    with_flags,
+)
 from app.voice.phrases import load_phrasebook
 
 
@@ -91,3 +100,34 @@ def test_fast_enough():
             "здравствуйте, мне бы записаться к терапевту на завтра с утра, если можно, пожалуйста"
         )
     assert (time.perf_counter() - started) / 20 < 0.05
+
+
+def test_decision_in_contract_format():
+    decision = decide("call-1", 4, "температура сорок", final=True, operators_on_duty=True)
+    assert (decision.flags, decision.rule, decision.final) == ({"red_b"}, "R-11", True)
+    partial = decide("call-1", 4, "температура", final=False, operators_on_duty=True)
+    assert partial.final is False
+
+
+def test_decision_with_general_parse_flags():
+    decision = decide(
+        "call-1", 5, "мне как-то нехорошо", final=True, operators_on_duty=False, extra={"red_b"}
+    )
+    assert decision.rule == "R-01"
+
+
+@pytest.mark.parametrize(
+    "moment, on_duty",
+    [
+        ("2026-09-30 06:59", False),
+        ("2026-09-30 07:00", True),
+        ("2026-09-30 19:59", True),
+        ("2026-09-30 20:00", False),
+        ("2026-10-03 08:29", False),
+        ("2026-10-03 08:30", True),
+        ("2026-10-03 15:00", False),
+        ("2026-10-04 12:00", False),
+    ],
+)
+def test_operator_hours(moment, on_duty):
+    assert operators_on_duty(datetime.fromisoformat(moment)) is on_duty
