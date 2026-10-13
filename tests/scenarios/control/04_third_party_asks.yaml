@@ -1,0 +1,32 @@
+id: D-04
+title: Посторонний спрашивает о чужой записи
+source: приложение Д, № 4
+blocking: true
+expected: Отказ сообщить сведения; предложение SMS на номер пациента
+covers: [С-05, "3.5"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  visits:
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+
+steps:
+  - say: greeting.inbound
+  - patient: На когда записана Смирнова Ольга, двенадцатое марта семьдесят восьмого?
+    intent: I-04
+    general: {on_behalf: other}
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Ольга, birth_date: "1978-03-12"}
+    say: my_visits.third_party
+    forbid: [Кузнецов, терапевт, четверг, первое октября, восемь сорок пять, двести четырнадцать]
+  - patient: Да, отправьте
+    parse: {expect: yes_no, intent: "yes"}
+    say: my_visits.sms_sent
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged
+  # На стенде нет телефона пациента: SMS уходит в журнал заглушки
+  sms: [{client: smirnova_ov}]

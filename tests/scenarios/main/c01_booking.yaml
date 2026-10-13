@@ -1,0 +1,42 @@
+id: M-01
+title: Запись на приём — эталонный диалог
+source: раздел 5, С-01
+blocking: false
+expected: Пациент записан к терапевту на пятницу после обеда, параметры проговорены и подтверждены
+covers: [С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне бы записаться к терапевту.
+    intent: I-01
+    parse: {expect: free, slots: {specialty: терапевт}}
+    say: ident.ask
+  - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого.
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Ольга, middle_name: Викторовна, birth_date: "1978-03-12"}
+    say: booking.offer_first
+    options: ["01.10.2026 08:45", "02.10.2026 10:30"]
+  - patient: А после обеда есть что-нибудь?
+    parse: {expect: free, slots: {time_from: "12:00", time_to: "16:00"}}
+    say: booking.offer_period
+    # слот, который начинается ровно в 16:00, в «после обеда» входит — как в регламенте
+    options: ["02.10.2026 15:15", "05.10.2026 16:00"]
+  - patient: Давайте пятницу.
+    parse: {expect: choice, options: ["02.10.2026 15:15", "05.10.2026 16:00"], choice_index: 1}
+    say: booking.confirm
+  - patient: Да.
+    parse: {expect: yes_no, intent: "yes"}
+    say: booking.done
+  - patient: Нет, спасибо.
+    say: closing.goodbye
+    end: true
+
+result:
+  code: BOOKED
+  stand:
+    created: [{client: smirnova_ov, doctor: kuznetsova, at: "02.10.2026 15:15"}]

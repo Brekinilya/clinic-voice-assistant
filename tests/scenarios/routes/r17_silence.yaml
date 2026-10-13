@@ -1,0 +1,24 @@
+id: R-17
+title: Тишина на линии
+source: раздел 3.2, правило R-17
+blocking: false
+expected: Через 5 секунд «Вы меня слышите?», ещё через 5 — «Вас не слышно» и завершение
+covers: ["3.2"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - event: silence
+    after_s: 5
+    say: silence.first
+  - event: silence
+    after_s: 5
+    say: silence.final
+    end: true
+
+result:
+  code: DROPPED
+  stand: unchanged

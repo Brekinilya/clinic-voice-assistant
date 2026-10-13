@@ -1,0 +1,34 @@
+id: D-08
+title: Запись к неврологу без направления
+source: приложение Д, № 8
+blocking: false
+expected: Объяснение и предложение записи к участковому терапевту
+covers: [С-02, С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  referrals: []
+
+steps:
+  - say: greeting.inbound
+  - patient: Запишите к неврологу
+    intent: I-01
+    parse: {expect: free, slots: {specialty: невролог}}
+    say: ident.ask
+  - patient: Петров Игорь Николаевич, пятое мая шестьдесят второго
+    say: referral.missing
+  - patient: Да, давайте
+    parse: {expect: yes_no, intent: "yes"}
+    say: booking.offer_first
+    options: ["01.10.2026 08:45", "02.10.2026 10:30"]
+  - patient: Давайте первый
+    parse: {expect: choice, options: ["01.10.2026 08:45", "02.10.2026 10:30"], choice_index: 1}
+    say: booking.confirm
+  - patient: Да
+    say: booking.done
+
+result:
+  code: BOOKED_GP
+  stand:
+    created: [{client: petrov_in, doctor: kuznetsova, at: "01.10.2026 08:45"}]

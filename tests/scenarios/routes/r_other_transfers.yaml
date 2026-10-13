@@ -1,0 +1,83 @@
+id: R-OTHER
+title: Переводы и внешние адресаты по матрице 7.3
+source: раздел 7.3, правила R-08, R-10, R-12–R-16
+blocking: false
+expected: Один адресат на правило, фраза из матрицы, без «футбола» между сотрудниками
+covers: ["7.3"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: вне каталога (R-08)
+    steps:
+      - say: greeting.inbound
+      - patient: Нужна выписка из медкарты
+        intent: I-14
+        say: transfer.other
+        transfer: {route: R-08, priority: P3}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: бумажное направление (R-08)
+    steps:
+      - say: greeting.inbound
+      - patient: У меня бумажное направление к кардиологу из больницы
+        intent: I-01
+        parse: {expect: free, slots: {specialty: кардиолог}}
+        say: referral.paper
+        transfer: {route: R-08, priority: P3}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: медкомиссия (R-10)
+    steps:
+      - say: greeting.inbound
+      - patient: Сколько стоит медкомиссия на права?
+        intent: I-08
+        say: transfer.paid
+        transfer: {route: R-10, priority: P3}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: лекарственное обеспечение (R-12)
+    steps:
+      - say: greeting.inbound
+      - patient: Где получить льготные лекарства?
+        intent: I-14
+        say: [transfer.ministry, closing.anything_else]
+    result: {code: INFO_GIVEN, stand: unchanged}
+
+  - name: полис ОМС (R-13)
+    steps:
+      - say: greeting.inbound
+      - patient: Как получить новый полис?
+        intent: I-10
+        say: [transfer.insurer, closing.anything_else]
+    result: {code: INFO_GIVEN, stand: unchanged}
+
+  - name: звонок от организации (R-14)
+    steps:
+      - say: greeting.inbound
+      - patient: Это полиция, нужна информация о пациенте
+        intent: I-14
+        say: transfer.administration
+        transfer: {route: R-14, priority: P3}
+        forbid: [записан, врач]
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: не справляется с разговором (R-15)
+    steps:
+      - say: greeting.inbound
+      - patient: Я вас не понимаю, говорите громче
+        safety: {flags: [cant_cope], rule: R-15}
+        say: transfer.assist
+        transfer: {route: R-15, priority: P2}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: персональные данные (R-16)
+    steps:
+      - say: greeting.inbound
+      - patient: Хочу отозвать согласие на обработку персональных данных
+        intent: I-14
+        say: transfer.pd_request
+        transfer: {route: R-16, priority: P3}
+    result: {code: ESCALATED, stand: unchanged}

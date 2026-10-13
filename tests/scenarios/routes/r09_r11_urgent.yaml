@@ -1,0 +1,38 @@
+id: R-09-11
+title: Острая зубная боль и красный флаг категории Б
+source: раздел 7.4, правила R-09 и R-11
+blocking: false
+expected: Зубная боль — в стоматологию; острое состояние — регистратор с приоритетом P1, вне часов — 103
+covers: ["7.4"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: зубная боль
+    steps:
+      - say: greeting.inbound
+      - patient: У меня сильно болит зуб, всю ночь не спал
+        safety: {flags: [dental_acute, red_b], rule: R-09}
+        say: transfer.dental
+        transfer: {route: R-09, priority: P2}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: температура не сбивается
+    steps:
+      - say: greeting.inbound
+      - patient: У ребёнка температура тридцать девять и не сбивается
+        safety: {flags: [red_b], rule: R-11}
+        say: transfer.urgent
+        transfer: {route: R-11, priority: P1}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: то же вне часов работы регистратуры
+    setup: {now: "04.10.2026 23:40"}
+    steps:
+      - say: greeting.inbound
+      - patient: У ребёнка температура тридцать девять и не сбивается
+        safety: {flags: [red_b], rule: R-01}
+        say: emergency.call_103
+    result: {code: EMERGENCY, stand: unchanged}

@@ -1,0 +1,38 @@
+id: M-08
+title: Готовность анализов — эталонный диалог
+source: раздел 5, С-08
+blocking: false
+expected: Статусы готовности без значений, способы получения; на вопрос «всё нормально?» — отказ оценивать
+covers: [С-08]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  labs:
+    - {client: orlova_mi, test: Общий анализ крови, ordered: "28.09.2026", status: ready}
+    - {client: orlova_mi, test: Гормоны щитовидной железы, ordered: "28.09.2026", status: pending, ready_on: "02.10.2026"}
+
+steps:
+  - say: greeting.inbound
+  - patient: Хотела узнать, готовы ли анализы крови.
+    intent: I-07
+    say: ident.ask
+  - patient: Орлова Мария Ивановна, четырнадцатое ноября восемьдесят восьмого.
+    parse:
+      expect: full_name
+      slots: {last_name: Орлова, first_name: Мария, middle_name: Ивановна, birth_date: "1988-11-14"}
+    say: [labs.ready, labs.pending, labs.how_to_get]
+  # словарь эту фразу не ловит: медицинский вопрос здесь распознаёт общий разбор
+  - patient: А там всё нормально?
+    intent: I-13
+    needs_general_parse: true
+    say: labs.no_values
+    forbid: [в норме, хорош, плох, повышен]
+  - patient: Нет, спасибо.
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye
+    end: true
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged

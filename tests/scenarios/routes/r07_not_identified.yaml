@@ -1,0 +1,32 @@
+id: R-07
+title: Пациента не удалось найти
+source: раздел 3.5, правило R-07
+blocking: false
+expected: Переспрос фамилии и даты рождения, затем полис, затем перевод к регистратору
+covers: ["3.5"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Запишите к хирургу
+    parse: {expect: free, slots: {specialty: хирург}}
+    say: ident.ask
+  - patient: Сидоров Пётр Алексеевич, первое июня семьдесят первого
+    parse:
+      expect: full_name
+      slots: {last_name: Сидоров, first_name: Пётр, middle_name: Алексеевич, birth_date: "1971-06-01"}
+    say: ident.not_found
+  - patient: Сидоров Пётр Алексеевич, первое июня тысяча девятьсот семьдесят первого
+    say: ident.ask_policy
+  - patient: один два три четыре пять шесть семь восемь девять ноль один два три четыре пять шесть
+    say: transfer.not_identified
+    transfer: {route: R-07, priority: P3}
+
+result:
+  code: ESCALATED
+  stand: unchanged
+  # полиса на стенде нет — он только передаётся регистратору в карточке
+  card: {rule: R-07, params: {policy_number: "1234567890123456", specialty: хирург}}

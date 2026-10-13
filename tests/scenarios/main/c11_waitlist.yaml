@@ -1,0 +1,52 @@
+id: M-11
+title: Лист ожидания — эталонный диалог
+source: раздел 5, С-11
+blocking: false
+expected: Свободного времени нет — пациент не уходит ни с чем, а встаёт в лист ожидания с пожеланиями
+covers: [С-11]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  referrals:
+    - {client: kuzmina_na, specialty: невролог, issued: "29.09.2026", valid_days: 30}
+  slots:
+    zakharov: []
+
+dialogs:
+  - name: времени нет при записи
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к неврологу, у меня направление
+        intent: I-01
+        parse: {expect: free, slots: {specialty: невролог}}
+        say: ident.ask
+      - patient: Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого
+        say: waitlist.offer
+      - patient: Да, давайте
+        parse: {expect: yes_no, intent: "yes"}
+        say: waitlist.ask_when
+      - patient: Лучше утром, в любой день
+        parse: {expect: date_time, slots: {time_from: "07:30", time_to: "12:00"}}
+        say: waitlist.done
+    result:
+      code: WAITLISTED
+      stand: unchanged
+      # срок ПГГ под угрозой — уведомление старшему администратору
+      waitlist: {client: kuzmina_na, specialty: невролог, time_from: "07:30", time_to: "12:00"}
+
+  - name: пациент сам просит лист ожидания
+    steps:
+      - say: greeting.inbound
+      - patient: Талонов к неврологу нет, поставьте меня в лист ожидания
+        intent: I-09
+        parse: {expect: free, slots: {specialty: невролог}}
+        say: ident.ask
+      - patient: Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого
+        say: waitlist.ask_when
+      - patient: После обеда, только не в понедельник
+        parse: {expect: date_time, slots: {time_from: "12:00", time_to: "16:00", exclude_weekdays: [1]}}
+        say: waitlist.done
+    result:
+      code: WAITLISTED
+      stand: unchanged

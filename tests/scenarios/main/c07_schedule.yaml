@@ -1,0 +1,25 @@
+id: M-07
+title: Справка о графике работы — эталонный диалог
+source: раздел 5, С-07
+blocking: false
+expected: График хирургов без идентификации, предложение записи
+covers: [С-07]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Когда принимает хирург?
+    intent: I-06
+    parse: {expect: free, slots: {specialty: хирург}}
+    say: schedule.specialty
+  - patient: Нет, спасибо, я сам на Госуслугах.
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye_short
+    end: true
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged
