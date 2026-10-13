@@ -19,9 +19,19 @@ from app.voice.phrases import load_phrasebook
 
 # специальности из истории записей поликлиники (data/appointments.csv)
 HISTORY_SPECIALTIES = {
-    "акушер-гинеколог", "гастроэнтеролог", "дерматовенеролог", "кардиолог", "невролог",
-    "оториноларинголог", "офтальмолог", "педиатр", "терапевт", "травматолог-ортопед",
-    "уролог", "хирург", "эндокринолог",
+    "акушер-гинеколог",
+    "гастроэнтеролог",
+    "дерматовенеролог",
+    "кардиолог",
+    "невролог",
+    "оториноларинголог",
+    "офтальмолог",
+    "педиатр",
+    "терапевт",
+    "травматолог-ортопед",
+    "уролог",
+    "хирург",
+    "эндокринолог",
 }
 
 
@@ -70,7 +80,10 @@ def test_ordinary_requests_raise_no_red_flags(catalog, red_flags):
     phrases = [e for code, i in catalog.intents.items() if code != "I-11" for e in i.examples]
     phrases += [e for i in catalog.service_intents.values() for e in i.examples]
     phrases += [
-        e for entry in load_flags().entries if entry.key != "dental_acute" for e in entry.examples + entry.negatives
+        e
+        for entry in load_flags().entries
+        if entry.key != "dental_acute"
+        for e in entry.examples + entry.negatives
     ]
     for phrase in phrases:
         assert keys(red_flags, phrase) == set(), phrase
@@ -139,7 +152,13 @@ def test_flag_examples(flags):
 
 def test_flags_match_contract(flags):
     assert [e.key for e in flags.entries] == [
-        "operator", "complaint", "medical", "robot", "no_recording", "dental_acute", "cant_cope",
+        "operator",
+        "complaint",
+        "medical",
+        "robot",
+        "no_recording",
+        "dental_acute",
+        "cant_cope",
     ]
 
 
@@ -191,7 +210,15 @@ def test_history_specialties_present():
 def test_direct_booking_as_in_regulation():
     # С-01 и раздел 6.2: без направления — терапевт, педиатр, хирург, офтальмолог, лор, гинеколог, стоматолог
     direct = {name for name, spec in load_specialties().items() if not spec.referral}
-    assert direct == {"терапевт", "педиатр", "хирург", "офтальмолог", "оториноларинголог", "акушер-гинеколог", "стоматолог"}
+    assert direct == {
+        "терапевт",
+        "педиатр",
+        "хирург",
+        "офтальмолог",
+        "оториноларинголог",
+        "акушер-гинеколог",
+        "стоматолог",
+    }
 
 
 def test_slot_examples_resolve_specialty(catalog, specialties):

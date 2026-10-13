@@ -10,9 +10,43 @@ from app.nlu.parsers.numbers import numeral
 
 WORD = re.compile(r"[а-яё]+(?:-[а-яё]+)*")
 STOP = {
-    "меня", "зовут", "это", "я", "мой", "моя", "мое", "фамилия", "имя", "отчество", "пациент", "пациентка",
-    "его", "ее", "её", "дата", "рождения", "родился", "родилась", "год", "года", "году", "г", "так", "вот", "ну",
-    "да", "нет", "а", "и", "пожалуйста", "значит", "записан", "записана", "по", "буквам", "числа",
+    "меня",
+    "зовут",
+    "это",
+    "я",
+    "мой",
+    "моя",
+    "мое",
+    "фамилия",
+    "имя",
+    "отчество",
+    "пациент",
+    "пациентка",
+    "его",
+    "ее",
+    "её",
+    "дата",
+    "рождения",
+    "родился",
+    "родилась",
+    "год",
+    "года",
+    "году",
+    "г",
+    "так",
+    "вот",
+    "ну",
+    "да",
+    "нет",
+    "а",
+    "и",
+    "пожалуйста",
+    "значит",
+    "записан",
+    "записана",
+    "по",
+    "буквам",
+    "числа",
 }
 
 _morph: pymorphy3.MorphAnalyzer | None = None
@@ -53,7 +87,9 @@ def parse_full_name(text: str) -> dict[str, tuple[str, str]]:
     taken = {first, patr}
     last = _surname_index(words, first, patr, taken)
 
-    gender = _gender(words[first], "Name") or (_gender(words[patr], "Patr") if patr is not None else None)
+    gender = _gender(words[first], "Name") or (
+        _gender(words[patr], "Patr") if patr is not None else None
+    )
     found = {"first_name": (_nominative(words[first], "Name", gender), words[first])}
     if patr is not None:
         found["middle_name"] = (_nominative(words[patr], "Patr", gender), words[patr])
@@ -63,7 +99,9 @@ def parse_full_name(text: str) -> dict[str, tuple[str, str]]:
 
 
 def _best(words: list[str], tag: str, exclude: set) -> int | None:
-    scored = [(sum(p.score for p in _tagged(w, tag)), i) for i, w in enumerate(words) if i not in exclude]
+    scored = [
+        (sum(p.score for p in _tagged(w, tag)), i) for i, w in enumerate(words) if i not in exclude
+    ]
     score, index = max(scored, default=(0, None))
     return index if score > 0 else None
 
@@ -75,7 +113,12 @@ def _surname_index(words: list[str], first: int, patr: int | None, taken: set) -
         if 0 <= i < len(words) and i not in taken and _tagged(words[i], "Surn"):
             return i
     for i in candidates:
-        if 0 <= i < len(words) and i not in taken and not _tagged(words[i], "Name") and not _tagged(words[i], "Patr"):
+        if (
+            0 <= i < len(words)
+            and i not in taken
+            and not _tagged(words[i], "Name")
+            and not _tagged(words[i], "Patr")
+        ):
             return i
     return None
 

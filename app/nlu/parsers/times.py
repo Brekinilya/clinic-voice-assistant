@@ -44,14 +44,26 @@ def parse_times(text: str, bare: bool = False) -> dict[str, tuple[object, str]]:
         if token in {"с", "от"} and (start := read_clock(tokens, numbers, i + 1)):
             found["time_from"] = (start.text(), _span(tokens, i, start.end))
             j = start.end
-            if j < len(tokens) and tokens[j] in {"до", "по"} and (end := read_clock(tokens, numbers, j + 1)):
+            if (
+                j < len(tokens)
+                and tokens[j] in {"до", "по"}
+                and (end := read_clock(tokens, numbers, j + 1))
+            ):
                 found["time_to"] = (end.text(), _span(tokens, i, end.end))
-        elif token in FROM_WORDS and "time_from" not in found and (clock := read_clock(tokens, numbers, i + 1)):
+        elif (
+            token in FROM_WORDS
+            and "time_from" not in found
+            and (clock := read_clock(tokens, numbers, i + 1))
+        ):
             if not _negated(tokens, i):
                 found["time_from"] = (clock.text(), _span(tokens, i, clock.end))
             else:
                 found["time_to"] = (clock.text(), _span(tokens, i - 1, clock.end))
-        elif token in TO_WORDS and "time_to" not in found and (clock := read_clock(tokens, numbers, i + 1)):
+        elif (
+            token in TO_WORDS
+            and "time_to" not in found
+            and (clock := read_clock(tokens, numbers, i + 1))
+        ):
             if not _negated(tokens, i):
                 found["time_to"] = (clock.text(), _span(tokens, i, clock.end))
             else:
@@ -107,7 +119,12 @@ def read_clock(tokens: list[str], numbers: list[Number], i: int) -> Clock | None
         return None
     minute, end = 0, number.end
     nxt = next((n for n in numbers if n.start == number.end), None)
-    if nxt and not nxt.ordinal and 0 <= nxt.value <= 59 and not _followed_by_date_word(tokens, nxt.end):
+    if (
+        nxt
+        and not nxt.ordinal
+        and 0 <= nxt.value <= 59
+        and not _followed_by_date_word(tokens, nxt.end)
+    ):
         minute, end = nxt.value, nxt.end
     while end < len(tokens) and tokens[end] in SKIP:
         end += 1
@@ -118,7 +135,12 @@ def _half_past(tokens: list[str], i: int) -> tuple[int, int] | None:
     token = tokens[i]
     if token.startswith("пол") and len(token) > 3 and (word := numeral(token[3:])) and word[2]:
         return word[0] - 1, i + 1
-    if "половина" in lemmas(token) and i + 1 < len(tokens) and (word := numeral(tokens[i + 1])) and word[2]:
+    if (
+        "половина" in lemmas(token)
+        and i + 1 < len(tokens)
+        and (word := numeral(tokens[i + 1]))
+        and word[2]
+    ):
         return word[0] - 1, i + 2
     return None
 
@@ -138,7 +160,13 @@ def _with_modifier(tokens: list[str], hour: int, minute: int, start: int, end: i
 
 def _bare_clock(tokens: list[str], numbers: list[Number]) -> Clock | None:
     for a, b in zip(numbers, numbers[1:]):
-        if a.end == b.start and not a.ordinal and not b.ordinal and 0 <= a.value <= 23 and 0 <= b.value <= 59:
+        if (
+            a.end == b.start
+            and not a.ordinal
+            and not b.ordinal
+            and 0 <= a.value <= 23
+            and 0 <= b.value <= 59
+        ):
             if not _followed_by_date_word(tokens, b.end):
                 return _with_modifier(tokens, a.value, b.value, a.start, b.end)
     return None
@@ -153,5 +181,4 @@ def _negated(tokens: list[str], i: int) -> bool:
 
 
 def _span(tokens: list[str], start: int, end: int) -> str:
-    return " ".join(tokens[max(0, start):end])
-
+    return " ".join(tokens[max(0, start) : end])

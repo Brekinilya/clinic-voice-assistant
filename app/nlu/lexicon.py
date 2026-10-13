@@ -111,7 +111,10 @@ class Pattern:
             if len(combo) > 1 and end - start > window:
                 continue
             match = Match(start, end, sum(e - s for s, e in combo))
-            if best is None or (match.weight, best.end - best.start) > (best.weight, match.end - match.start):
+            if best is None or (match.weight, best.end - best.start) > (
+                best.weight,
+                match.end - match.start,
+            ):
                 best = match
         return best
 
@@ -189,6 +192,6 @@ class Lexicon:
         for pattern in patterns:
             match = pattern.find(tokens, self.window)
             if match and (best is None or match.weight > best.weight):
-                phrase = " ".join(tokens[match.start:match.end])
+                phrase = " ".join(tokens[match.start : match.end])
                 best = Hit(key, pattern.source, phrase, match.weight)
         return best

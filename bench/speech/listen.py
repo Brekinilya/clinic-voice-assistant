@@ -2,8 +2,9 @@
 
 from html import escape
 
-from bench import OUT, PHRASES
 from engines import TTS
+
+from bench import OUT, PHRASES
 
 PICK = ["a03", "a04", "a07", "a09", "a10", "a15", "a16"]
 
@@ -13,7 +14,8 @@ def main() -> None:
     rows = []
     for phrase_id in PICK:
         cells = "".join(
-            f'<td><audio controls preload="none" src="tts/{name}/{phrase_id}.wav"></audio></td>' for name in TTS
+            f'<td><audio controls preload="none" src="tts/{name}/{phrase_id}.wav"></audio></td>'
+            for name in TTS
         )
         rows.append(f"<tr><td>{escape(texts[phrase_id])}</td>{cells}</tr>")
     head = "".join(f"<th>{escape(name)}</th>" for name in TTS)

@@ -10,7 +10,17 @@ CATALOG_PATH = Path(__file__).resolve().parents[2] / "config" / "intents.yaml"
 
 MODES = {"auto", "semi", "operator", "emergency"}
 SERVICE_INTENTS = ("yes", "no", "choice", "repeat", "maybe", "opt_out", "unknown")
-SLOT_TYPES = {"specialty", "text", "date", "time", "enum", "weekday_list", "int", "visit_ref", "digits"}
+SLOT_TYPES = {
+    "specialty",
+    "text",
+    "date",
+    "time",
+    "enum",
+    "weekday_list",
+    "int",
+    "visit_ref",
+    "digits",
+}
 
 INTENT_CODE = re.compile(r"^I-\d{2}$")
 SCENARIO_CODE = re.compile(r"^С-\d{2}$")  # кириллическая «С», как в регламенте
@@ -81,7 +91,9 @@ def parse_catalog(raw: dict) -> Catalog:
     missing = set(SERVICE_INTENTS) - set(service)
     extra = set(service) - set(SERVICE_INTENTS)
     if missing or extra:
-        raise CatalogError(f"служебные интенты не совпадают: нет {sorted(missing)}, лишние {sorted(extra)}")
+        raise CatalogError(
+            f"служебные интенты не совпадают: нет {sorted(missing)}, лишние {sorted(extra)}"
+        )
 
     examples = raw.get("slot_examples", {})
     cases = tuple(examples.get("cases", ()))
@@ -114,7 +126,9 @@ def _intent(code: str, data: dict, slots: dict[str, Slot]) -> Intent:
 
     for scenario in data["scenarios"]:
         if not SCENARIO_CODE.match(scenario):
-            raise CatalogError(f"{code}: сценарий {scenario!r} должен быть вида С-01 с кириллической С")
+            raise CatalogError(
+                f"{code}: сценарий {scenario!r} должен быть вида С-01 с кириллической С"
+            )
 
     intent_slots = tuple(data["slots"])
     unknown = set(intent_slots) - set(slots)
@@ -147,7 +161,9 @@ def _service(code: str, data: dict) -> ServiceIntent:
     examples = tuple(str(e) for e in data["examples"])
     if not examples:
         raise CatalogError(f"{code}: нет примеров фраз")
-    return ServiceIntent(code=code, title=data["title"], examples=examples, description=data.get("description", ""))
+    return ServiceIntent(
+        code=code, title=data["title"], examples=examples, description=data.get("description", "")
+    )
 
 
 def _slot(name: str, data: dict) -> Slot:

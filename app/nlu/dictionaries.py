@@ -61,7 +61,9 @@ def load_specialties(path: Path = SYNONYMS_PATH) -> dict[str, Specialty]:
             raise LexiconError(f"{name}: нужно {len(FORM_KEYS)} форм ({', '.join(FORM_KEYS)})")
         if data["age"] not in AGES:
             raise LexiconError(f"{name}: возраст {data['age']!r} не из {sorted(AGES)}")
-        specialties[name] = Specialty(name, bool(data["referral"]), data["age"], dict(zip(FORM_KEYS, forms)))
+        specialties[name] = Specialty(
+            name, bool(data["referral"]), data["age"], dict(zip(FORM_KEYS, forms))
+        )
     return specialties
 
 

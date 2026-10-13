@@ -3,6 +3,7 @@ from datetime import date, datetime
 import pytest
 
 from app.nlu.catalog import load_catalog
+from app.nlu.lexicon import tokenize
 from app.nlu.parsers import (
     Option,
     parse_answer,
@@ -16,14 +17,29 @@ from app.nlu.parsers import (
     parse_times,
     spoken_numbers,
 )
-from app.nlu.lexicon import tokenize
 
 TODAY = date(2026, 9, 30)  # среда, как в примерах регламента
 NAME_SLOTS = {"last_name", "first_name", "middle_name", "birth_date"}
 GENERAL_ONLY = {"visit_ref", "on_behalf", "service"}  # такие параметры извлекает общий разбор
 DOCTORS = [
-    "Кузнецова", "Кузнецов", "Смирнова", "Орлова", "Васильева", "Белова", "Громов", "Попова", "Морозова",
-    "Егоров", "Медведева", "Волков", "Никитина", "Фёдорова", "Захаров", "Лебедев", "Киселёв", "Соколова",
+    "Кузнецова",
+    "Кузнецов",
+    "Смирнова",
+    "Орлова",
+    "Васильева",
+    "Белова",
+    "Громов",
+    "Попова",
+    "Морозова",
+    "Егоров",
+    "Медведева",
+    "Волков",
+    "Никитина",
+    "Фёдорова",
+    "Захаров",
+    "Лебедев",
+    "Киселёв",
+    "Соколова",
 ]
 
 CATALOG = load_catalog()
@@ -35,6 +51,7 @@ def values(found):
 
 # Примеры параметров из config/intents.yaml
 
+
 @pytest.mark.parametrize("case", CATALOG.slot_examples, ids=lambda c: c["say"])
 def test_catalog_slot_examples(case):
     expected = case["slots"]
@@ -44,7 +61,9 @@ def test_catalog_slot_examples(case):
         assert parse_digits(case["say"]) == expected["policy_number"]
         return
     expect = "full_name" if set(expected) & NAME_SLOTS else "free"
-    parsed = parse_expected(case["say"], expect, date.fromisoformat(CATALOG.reference_date), doctors=DOCTORS)
+    parsed = parse_expected(
+        case["say"], expect, date.fromisoformat(CATALOG.reference_date), doctors=DOCTORS
+    )
     assert parsed.slots == expected
     assert set(parsed.evidence) == set(parsed.slots)
 
@@ -55,7 +74,9 @@ def test_catalog_slot_examples(case):
     ids=lambda x: x["say"] if "say" in x else "",
 )
 def test_catalog_choice_examples(group, case):
-    options = [Option(day=dt.date(), at=dt.time()) for dt in map(datetime.fromisoformat, group["options"])]
+    options = [
+        Option(day=dt.date(), at=dt.time()) for dt in map(datetime.fromisoformat, group["options"])
+    ]
     chosen = parse_choice(case["say"], options, TODAY)
     assert chosen is not None and chosen[0] == case["choice_index"]
 
@@ -73,10 +94,13 @@ def test_unknown_stays_unknown():
 
 # Числа
 
+
 def test_spoken_numbers():
     found = spoken_numbers(tokenize("двенадцать ноль три семьдесят восемь"))
     assert [n.digits for n in found] == ["12", "03", "78"]
-    assert [n.value for n in spoken_numbers(tokenize("тысяча девятьсот семьдесят восьмого"))] == [1978]
+    assert [n.value for n in spoken_numbers(tokenize("тысяча девятьсот семьдесят восьмого"))] == [
+        1978
+    ]
     assert [n.value for n in spoken_numbers(tokenize("две тысячи девятнадцатого"))] == [2019]
     assert [n.value for n in spoken_numbers(tokenize("десять тридцать"))] == [10, 30]
     assert [n.value for n in spoken_numbers(tokenize("в двадцать один пятнадцать"))] == [21, 15]
@@ -88,6 +112,7 @@ def test_policy_number():
 
 
 # Дата рождения: двузначный год восстанавливается так, чтобы пациенту было не больше 110 лет
+
 
 @pytest.mark.parametrize(
     "text, value, alternatives",
@@ -107,12 +132,15 @@ def test_birth_date(text, value, alternatives):
     assert [d.isoformat() for d in born.alternatives] == alternatives
 
 
-@pytest.mark.parametrize("text", ["тридцать первое февраля восьмидесятого", "двенадцатое марта", "не помню"])
+@pytest.mark.parametrize(
+    "text", ["тридцать первое февраля восьмидесятого", "двенадцатое марта", "не помню"]
+)
 def test_birth_date_rejected(text):
     assert parse_birth_date(text, TODAY) is None
 
 
 # Желаемые дни
+
 
 @pytest.mark.parametrize(
     "text, expected",
@@ -139,6 +167,7 @@ def test_dates(text, expected):
 
 # Желаемое время
 
+
 @pytest.mark.parametrize(
     "text, expected",
     [
@@ -164,10 +193,14 @@ def test_times(text, expected):
 
 def test_bare_time_only_when_asked():
     assert values(parse_times("двенадцать ноль-ноль")) == {}
-    assert values(parse_times("двенадцать ноль-ноль", bare=True)) == {"time_from": "12:00", "time_to": "12:00"}
+    assert values(parse_times("двенадцать ноль-ноль", bare=True)) == {
+        "time_from": "12:00",
+        "time_to": "12:00",
+    }
 
 
 # Короткие ответы
+
 
 @pytest.mark.parametrize(
     "text, expected",
@@ -196,6 +229,7 @@ def test_answers(text, expected):
 
 # ФИО
 
+
 @pytest.mark.parametrize(
     "text, expected",
     [
@@ -203,7 +237,10 @@ def test_answers(text, expected):
         ("смирнова ольга викторовна", ("Смирнова", "Ольга", "Викторовна")),
         ("Меня зовут Петров Игорь Николаевич", ("Петров", "Игорь", "Николаевич")),
         ("Смирнову Ольгу Викторовну", ("Смирнова", "Ольга", "Викторовна")),
-        ("Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого", ("Кузьмина", "Нина", "Андреевна")),
+        (
+            "Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого",
+            ("Кузьмина", "Нина", "Андреевна"),
+        ),
         ("Белова Ольга Николаевна", ("Белова", "Ольга", "Николаевна")),
         ("Фёдорова Наталья Юрьевна", ("Фёдорова", "Наталья", "Юрьевна")),
         ("Цой Виктор Робертович", ("Цой", "Виктор", "Робертович")),
@@ -234,8 +271,18 @@ def test_doctor(text, expected):
 # Выбор из существующих записей
 
 VISITS = [
-    Option(day=date(2026, 10, 1), at=datetime(2026, 10, 1, 8, 45).time(), doctor="Кузнецова", specialty="терапевт"),
-    Option(day=date(2026, 10, 2), at=datetime(2026, 10, 2, 10, 40).time(), doctor="Белова", specialty="оториноларинголог"),
+    Option(
+        day=date(2026, 10, 1),
+        at=datetime(2026, 10, 1, 8, 45).time(),
+        doctor="Кузнецова",
+        specialty="терапевт",
+    ),
+    Option(
+        day=date(2026, 10, 2),
+        at=datetime(2026, 10, 2, 10, 40).time(),
+        doctor="Белова",
+        specialty="оториноларинголог",
+    ),
 ]
 
 
@@ -261,6 +308,7 @@ def test_choice_between_visits(text, expected):
 
 # Разбор по ожидаемому ответу
 
+
 def test_expected_free_phrase():
     parsed = parse_expected("Мне к лору, но лучше не в пятницу, после обеда", "free", TODAY)
     assert parsed.slots == {
@@ -273,7 +321,9 @@ def test_expected_free_phrase():
 
 
 def test_expected_ident_with_alternative_century():
-    parsed = parse_expected("Смирнова Алиса Дмитриевна, седьмое апреля двадцатого", "full_name", TODAY)
+    parsed = parse_expected(
+        "Смирнова Алиса Дмитриевна, седьмое апреля двадцатого", "full_name", TODAY
+    )
     assert parsed.slots["birth_date"] == "2020-04-07"
     assert parsed.alternatives == {"birth_date": ["1920-04-07"]}
 

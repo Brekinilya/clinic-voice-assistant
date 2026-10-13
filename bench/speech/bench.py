@@ -46,6 +46,7 @@ def normalize(text: str) -> str:
 
 # Синтез
 
+
 def run_tts(name: str) -> dict:
     before = rss_mb()
     started = time.perf_counter()
@@ -71,6 +72,7 @@ def run_tts(name: str) -> dict:
 
 
 # Распознавание
+
 
 def patient_sets() -> dict[str, Path]:
     sets = {voice: OUT / "patient" / voice for voice in PATIENT_VOICES}
@@ -98,12 +100,18 @@ def run_asr(name: str) -> dict:
                 started = time.perf_counter()
                 text = engine.transcribe(audio)
                 spent = time.perf_counter() - started
-                rows.append({
-                    "voice": voice, "condition": condition, "id": item["id"], "text": text,
-                    "seconds": spent, "audio_s": len(audio) / 16000,
-                    # у потоковых движков ждать после конца фразы нужно только финальный шаг
-                    "final_s": getattr(engine, "last_final_s", spent),
-                })
+                rows.append(
+                    {
+                        "voice": voice,
+                        "condition": condition,
+                        "id": item["id"],
+                        "text": text,
+                        "seconds": spent,
+                        "audio_s": len(audio) / 16000,
+                        # у потоковых движков ждать после конца фразы нужно только финальный шаг
+                        "final_s": getattr(engine, "last_final_s", spent),
+                    }
+                )
 
     # разборчивость синтеза: распознаём реплики ассистента каждым синтезатором
     roundtrip = []
@@ -112,12 +120,22 @@ def run_asr(name: str) -> dict:
             for item in PHRASES["assistant"]:
                 path = OUT / "tts" / tts_name / f"{item['id']}.wav"
                 if path.exists():
-                    roundtrip.append({"tts": tts_name, "id": item["id"], "text": engine.transcribe(read(path))})
+                    roundtrip.append(
+                        {"tts": tts_name, "id": item["id"], "text": engine.transcribe(read(path))}
+                    )
 
-    return {"kind": "asr", "name": name, "load_s": load_s, "rss_mb": memory, "rows": rows, "roundtrip": roundtrip}
+    return {
+        "kind": "asr",
+        "name": name,
+        "load_s": load_s,
+        "rss_mb": memory,
+        "rows": rows,
+        "roundtrip": roundtrip,
+    }
 
 
 # Оценка
+
 
 def check_item(item: dict, text: str) -> dict:
     """Что из ожидаемого получилось извлечь из распознанного текста."""
@@ -135,7 +153,9 @@ def check_item(item: dict, text: str) -> dict:
             result["intent_ok"] = parsed.intent == item["intent"]
     flags = check(text).flags
     result["flags_ok"] = set(item.get("flags", [])) <= flags
-    result["false_alarm"] = bool({"red_a", "red_b"} & flags) and not ({"red_a", "red_b"} & set(item.get("flags", [])))
+    result["false_alarm"] = bool({"red_a", "red_b"} & flags) and not (
+        {"red_a", "red_b"} & set(item.get("flags", []))
+    )
     if "digits" in item:
         result["digits_ok"] = parse_digits(text) == item["digits"]
     return result
@@ -155,16 +175,24 @@ def summarize_asr(data: dict) -> list[dict]:
             sum(c[key] for c in checks if key in c) / max(1, sum(key in c for c in checks))
         )
         latency = [r.get("final_s", r["seconds"]) for r in rows]
-        summary.append({
-            "engine": data["name"], "audio": "свои записи" if real else "синтез", "condition": condition,
-            "n": len(rows),
-            "wer": jiwer.wer(refs, hyps), "cer": jiwer.cer(refs, hyps),
-            "slots": share("slots_ok"), "intent": share("intent_ok"), "flags": share("flags_ok"),
-            "false_alarm": share("false_alarm"), "digits": share("digits_ok"),
-            "latency_p50": statistics.median(latency),
-            "latency_p95": sorted(latency)[int(len(latency) * 0.95) - 1],
-            "rtf": sum(r["seconds"] for r in rows) / sum(r["audio_s"] for r in rows),
-        })
+        summary.append(
+            {
+                "engine": data["name"],
+                "audio": "свои записи" if real else "синтез",
+                "condition": condition,
+                "n": len(rows),
+                "wer": jiwer.wer(refs, hyps),
+                "cer": jiwer.cer(refs, hyps),
+                "slots": share("slots_ok"),
+                "intent": share("intent_ok"),
+                "flags": share("flags_ok"),
+                "false_alarm": share("false_alarm"),
+                "digits": share("digits_ok"),
+                "latency_p50": statistics.median(latency),
+                "latency_p95": sorted(latency)[int(len(latency) * 0.95) - 1],
+                "rtf": sum(r["seconds"] for r in rows) / sum(r["audio_s"] for r in rows),
+            }
+        )
     return summary
 
 
@@ -172,11 +200,19 @@ def report() -> str:
     asr = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(RESULTS.glob("asr_*.json"))]
     tts = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(RESULTS.glob("tts_*.json"))]
     texts = {i["id"]: i["text"] for i in PHRASES["assistant"]}
-    lines = ["# Замер распознавания и синтеза речи", "", "Собрано `python bench/speech/bench.py run`. Все движки работают в 2 потока на процессоре, как на машине организаторов (2 ядра, 4 ГБ).", ""]
+    lines = [
+        "# Замер распознавания и синтеза речи",
+        "",
+        "Собрано `python bench/speech/bench.py run`. Все движки работают в 2 потока на процессоре, как на машине организаторов (2 ядра, 4 ГБ).",
+        "",
+    ]
 
-    lines += ["## Распознавание", "",
-              "| Движок | Звук | Условие | Фраз | WER | CER | Параметры | Ответ да/нет | Флаги | Ложная тревога | Полис | Ждать после конца фразы p50 / p95, с | RTF |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines += [
+        "## Распознавание",
+        "",
+        "| Движок | Звук | Условие | Фраз | WER | CER | Параметры | Ответ да/нет | Флаги | Ложная тревога | Полис | Ждать после конца фразы p50 / p95, с | RTF |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
     for data in asr:
         for s in summarize_asr(data):
             lines.append(
@@ -187,15 +223,25 @@ def report() -> str:
     lines += ["", "| Движок | Загрузка, с | Память, МБ |", "|---|---|---|"]
     lines += [f"| {d['name']} | {d['load_s']:.1f} | {d['rss_mb']:.0f} |" for d in asr]
 
-    lines += ["", "## Синтез", "",
-              "| Голос | Загрузка, с | Память, МБ | Реплика p50 / max, с | RTF | Разборчивость (CER распознавания) |",
-              "|---|---|---|---|---|---|"]
+    lines += [
+        "",
+        "## Синтез",
+        "",
+        "| Голос | Загрузка, с | Память, МБ | Реплика p50 / max, с | RTF | Разборчивость (CER распознавания) |",
+        "|---|---|---|---|---|---|",
+    ]
     roundtrip = next((d["roundtrip"] for d in asr if d["roundtrip"]), [])
     for data in tts:
         spent = [p["seconds"] for p in data["phrases"]]
         rtf = sum(spent) / sum(p["audio_s"] for p in data["phrases"])
         mine = [r for r in roundtrip if r["tts"] == data["name"]]
-        cer = jiwer.cer([normalize(texts[r["id"]]) for r in mine], [normalize(r["text"]) for r in mine]) if mine else float("nan")
+        cer = (
+            jiwer.cer(
+                [normalize(texts[r["id"]]) for r in mine], [normalize(r["text"]) for r in mine]
+            )
+            if mine
+            else float("nan")
+        )
         lines.append(
             f"| {data['name']} | {data['load_s']:.1f} | {data['rss_mb']:.0f} | "
             f"{statistics.median(spent):.2f} / {max(spent):.2f} | {rtf:.2f} | {cer:.1%} |"
@@ -203,8 +249,12 @@ def report() -> str:
 
     from errors import markdown
 
-    lines += ["", "## Где ошибается распознавание", "",
-              "Фразы, по которым разбор дал не тот результат, что по эталонному тексту (телефонный канал)."]
+    lines += [
+        "",
+        "## Где ошибается распознавание",
+        "",
+        "Фразы, по которым разбор дал не тот результат, что по эталонному тексту (телефонный канал).",
+    ]
     for engine in ("gigaam_v3_ctc_onnx_int8", "vosk_small_ru"):
         if (RESULTS / f"asr_{engine}.json").exists():
             lines += ["", markdown(engine, "phone")]
@@ -233,4 +283,6 @@ if __name__ == "__main__":
         name = sys.argv[2]
         data = run_tts(name) if command == "tts" else run_asr(name)
         RESULTS.mkdir(parents=True, exist_ok=True)
-        (RESULTS / f"{command}_{name}.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        (RESULTS / f"{command}_{name}.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+        )

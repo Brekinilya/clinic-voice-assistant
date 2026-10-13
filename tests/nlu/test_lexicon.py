@@ -47,7 +47,12 @@ def test_empty_parts_rejected(bad):
 
 def test_exceptions_and_short_patterns():
     lexicon = Lexicon(
-        [Entry.from_dict("operator", {"patterns": ["оператор"], "short": ["человек"], "except": ["оператор + связь"]})],
+        [
+            Entry.from_dict(
+                "operator",
+                {"patterns": ["оператор"], "short": ["человек"], "except": ["оператор + связь"]},
+            )
+        ],
         window=5,
     )
     assert lexicon.find("человека, пожалуйста")

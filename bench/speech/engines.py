@@ -12,7 +12,6 @@ import wave
 from pathlib import Path
 
 import numpy as np
-
 from audio import RATE, resample
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,8 +38,12 @@ def _load_gigaam(name: str):
 
     torch.set_num_threads(THREADS)
     # GigaAM читает файлы через ffmpeg; мы отдаём ему уже готовый массив 16 кГц
-    gigaam.model.load_audio = lambda wav, sample_rate=RATE: torch.from_numpy(np.asarray(wav, dtype=np.float32))
-    return gigaam.load_model(name, device="cpu", fp16_encoder=False, download_root=str(MODELS / "gigaam"))
+    gigaam.model.load_audio = lambda wav, sample_rate=RATE: torch.from_numpy(
+        np.asarray(wav, dtype=np.float32)
+    )
+    return gigaam.load_model(
+        name, device="cpu", fp16_encoder=False, download_root=str(MODELS / "gigaam")
+    )
 
 
 class GigaAM:
@@ -71,9 +74,16 @@ class GigaAMOnnx:
             if not quantized.exists():
                 from onnxruntime.quantization import QuantType, quantize_dynamic
 
-                quantize_dynamic(str(model_path), str(quantized), weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul", "Gemm"])
+                quantize_dynamic(
+                    str(model_path),
+                    str(quantized),
+                    weight_type=QuantType.QInt8,
+                    op_types_to_quantize=["MatMul", "Gemm"],
+                )
             model_path = quantized
-        session = rt.InferenceSession(str(model_path), sess_options=_onnx_options(), providers=["CPUExecutionProvider"])
+        session = rt.InferenceSession(
+            str(model_path), sess_options=_onnx_options(), providers=["CPUExecutionProvider"]
+        )
         self.sessions = [session]
         self.cfg = omegaconf.OmegaConf.load(onnx_dir / f"{name}.yaml")
         self.preprocessor = hydra.utils.instantiate(self.cfg.preprocessor)
@@ -83,8 +93,13 @@ class GigaAMOnnx:
         from gigaam.onnx_utils import infer_onnx
 
         result = infer_onnx(
-            [audio], self.cfg, self.sessions,
-            preprocessor=self.preprocessor, tokenizer=self.tokenizer, batch_size=1, progress=False,
+            [audio],
+            self.cfg,
+            self.sessions,
+            preprocessor=self.preprocessor,
+            tokenizer=self.tokenizer,
+            batch_size=1,
+            progress=False,
         )
         return result[0]
 
@@ -104,7 +119,7 @@ class Vosk:
         pcm = (np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes()
         chunk = int(RATE * 0.2) * 2
         for start in range(0, len(pcm), chunk):
-            recognizer.AcceptWaveform(pcm[start:start + chunk])
+            recognizer.AcceptWaveform(pcm[start : start + chunk])
         started = time.perf_counter()
         text = json.loads(recognizer.FinalResult()).get("text", "")
         self.last_final_s = time.perf_counter() - started
@@ -135,19 +150,22 @@ class Silero:
 
     def synthesize(self, text: str) -> tuple[np.ndarray, int]:
         kwargs = {"put_accent": True, "put_yo": True} if self.auto_stress else {}
-        audio = self.model.apply_tts(text=self.prepare(text), speaker=self.speaker, sample_rate=self.rate, **kwargs)
+        audio = self.model.apply_tts(
+            text=self.prepare(text), speaker=self.speaker, sample_rate=self.rate, **kwargs
+        )
         return audio.numpy().astype(np.float32), self.rate
 
 
 class Piper:
     def __init__(self, voice: str):
-        from piper import PiperVoice
-
         import onnxruntime as rt
+        from piper import PiperVoice
 
         path = str(MODELS / "piper" / f"{voice}.onnx")
         self.voice = PiperVoice.load(path)
-        self.voice.session = rt.InferenceSession(path, sess_options=_onnx_options(), providers=["CPUExecutionProvider"])
+        self.voice.session = rt.InferenceSession(
+            path, sess_options=_onnx_options(), providers=["CPUExecutionProvider"]
+        )
 
     def synthesize(self, text: str) -> tuple[np.ndarray, int]:
         buffer = io.BytesIO()

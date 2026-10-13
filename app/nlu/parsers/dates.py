@@ -10,11 +10,27 @@ from app.nlu.parsers.numbers import Number, spoken_numbers
 MAX_AGE = 110
 
 MONTHS = {
-    "январь": 1, "февраль": 2, "март": 3, "апрель": 4, "май": 5, "июнь": 6,
-    "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
+    "январь": 1,
+    "февраль": 2,
+    "март": 3,
+    "апрель": 4,
+    "май": 5,
+    "июнь": 6,
+    "июль": 7,
+    "август": 8,
+    "сентябрь": 9,
+    "октябрь": 10,
+    "ноябрь": 11,
+    "декабрь": 12,
 }
 WEEKDAYS = {
-    "понедельник": 1, "вторник": 2, "среда": 3, "четверг": 4, "пятница": 5, "суббота": 6, "воскресенье": 7,
+    "понедельник": 1,
+    "вторник": 2,
+    "среда": 3,
+    "четверг": 4,
+    "пятница": 5,
+    "суббота": 6,
+    "воскресенье": 7,
 }
 RELATIVE_DAYS = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
 NEGATIONS = {"не", "кроме", "без"}
@@ -109,7 +125,7 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
 
         weekday = lookup(token, WEEKDAYS)
         if weekday:
-            before = tokens[max(0, i - 2):i]
+            before = tokens[max(0, i - 2) : i]
             if NEGATIONS & set(before):
                 excluded.append((weekday, " ".join(before + [token])))
             else:
@@ -128,7 +144,7 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
             n = next((n for n in numbers if n.end == i), None)
             if n:
                 d = today + timedelta(days=n.value)
-                days.append((d, d, " ".join(tokens[i - 2:i + 1])))
+                days.append((d, d, " ".join(tokens[i - 2 : i + 1])))
 
     if weekdays and weeks:
         # «на следующей неделе в среду» — день недели внутри названной недели
@@ -163,7 +179,10 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
     if date_to:
         found["date_to"] = (date_to.isoformat(), evidence)
     if excluded:
-        found["exclude_weekdays"] = (sorted({w for w, _ in excluded}), ", ".join(e for _, e in excluded))
+        found["exclude_weekdays"] = (
+            sorted({w for w, _ in excluded}),
+            ", ".join(e for _, e in excluded),
+        )
     return found
 
 
@@ -181,8 +200,10 @@ def _weekday_date(today: date, weekday: int, before: list[str]) -> date:
     return d
 
 
-def _week(today: date, tokens: list[str], i: int, numbers: list[Number]) -> tuple[date, date, str] | None:
-    before = tokens[max(0, i - 2):i]
+def _week(
+    today: date, tokens: list[str], i: int, numbers: list[Number]
+) -> tuple[date, date, str] | None:
+    before = tokens[max(0, i - 2) : i]
     modifiers = {f for t in before for f in lemmas(t)}
     monday = today - timedelta(days=today.weekday())
     if "через" in before:
@@ -197,7 +218,9 @@ def _week(today: date, tokens: list[str], i: int, numbers: list[Number]) -> tupl
     return None
 
 
-def _calendar_dates(tokens: list[str], numbers: list[Number], today: date) -> list[tuple[str, date, str]]:
+def _calendar_dates(
+    tokens: list[str], numbers: list[Number], today: date
+) -> list[tuple[str, date, str]]:
     """Числа месяца: («day» | «from» | «to», дата, фраза). «после двадцатого» — с 21-го."""
     found = []
     for n in numbers:

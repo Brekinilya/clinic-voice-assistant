@@ -2,11 +2,6 @@ import re
 from datetime import datetime
 
 import pytest
-
-from app.nlu.catalog import load_catalog
-from app.nlu.parsers import parse_expected
-from app.policies.safety import check
-from app.voice.phrases import load_phrasebook
 from scenario_plan import (
     BLOCKING,
     CONTROL_IDS,
@@ -20,6 +15,11 @@ from scenario_plan import (
     load_scenarios,
     to_option,
 )
+
+from app.nlu.catalog import load_catalog
+from app.nlu.parsers import parse_expected
+from app.policies.safety import check
+from app.voice.phrases import load_phrasebook
 
 SCENARIOS = load_scenarios()
 DIALOGS = [d for s in SCENARIOS for d in s.dialogs]
@@ -94,7 +94,11 @@ def test_patient_phrase_parse(dialog, step):
     expected = step["parse"]
     options = [to_option(o, FIXTURES) for o in expected.get("options", [])]
     parsed = parse_expected(
-        step["patient"], expected["expect"], dialog.now.date(), options=options, doctors=doctor_surnames(FIXTURES)
+        step["patient"],
+        expected["expect"],
+        dialog.now.date(),
+        options=options,
+        doctors=doctor_surnames(FIXTURES),
     )
     if "intent" in expected:
         assert parsed.intent == expected["intent"]
@@ -112,4 +116,6 @@ def test_dialog_end_to_end(dialog):
 def test_readme_coverage_is_fresh():
     text = README.read_text(encoding="utf-8")
     section = text.split(START, 1)[1].split(END, 1)[0]
-    assert section.strip() == coverage_markdown().strip(), "обновите: python -m tests.scenarios.scenario_plan --write"
+    assert section.strip() == coverage_markdown().strip(), (
+        "обновите: python -m tests.scenarios.scenario_plan --write"
+    )

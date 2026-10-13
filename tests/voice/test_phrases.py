@@ -55,7 +55,15 @@ def test_intent_routes_have_phrases(book):
 
 def test_no_forbidden_wording(book):
     # раздел 3.7 и запрет голосового меню из раздела 3.2
-    forbidden = ["я не знаю", "не к нам", "звоните позже", "талонов нет", "успокойтесь", "скорее всего", "нажмите"]
+    forbidden = [
+        "я не знаю",
+        "не к нам",
+        "звоните позже",
+        "талонов нет",
+        "успокойтесь",
+        "скорее всего",
+        "нажмите",
+    ]
     for tid, text in texts(book):
         lowered = text.lower()
         for phrase in forbidden:

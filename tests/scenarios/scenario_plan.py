@@ -7,7 +7,7 @@ python -m tests.scenarios.scenario_plan --write  — обновить её в te
 import re
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime, time
 from pathlib import Path
 
 import yaml
@@ -24,19 +24,40 @@ CONTROL_IDS = [f"D-{n:02d}" for n in range(1, 17)]
 BLOCKING = {"D-01", "D-02", "D-03", "D-04", "D-05"}  # помечены «!» в приложении Д
 
 SCENARIO_TITLES = {
-    "С-01": "Запись на приём", "С-02": "Запись по направлению", "С-03": "Перенос записи",
-    "С-04": "Отмена записи", "С-05": "Проверка своей записи", "С-06": "Вызов врача на дом",
-    "С-07": "Справка о графике", "С-08": "Готовность анализов", "С-09": "Платные услуги",
-    "С-10": "Исходящее напоминание", "С-11": "Лист ожидания", "С-12": "Звонок за ребёнка или другого",
-    "С-13": "Прикрепление", "С-14": "Экстренная ситуация", "С-15": "Жалоба",
+    "С-01": "Запись на приём",
+    "С-02": "Запись по направлению",
+    "С-03": "Перенос записи",
+    "С-04": "Отмена записи",
+    "С-05": "Проверка своей записи",
+    "С-06": "Вызов врача на дом",
+    "С-07": "Справка о графике",
+    "С-08": "Готовность анализов",
+    "С-09": "Платные услуги",
+    "С-10": "Исходящее напоминание",
+    "С-11": "Лист ожидания",
+    "С-12": "Звонок за ребёнка или другого",
+    "С-13": "Прикрепление",
+    "С-14": "Экстренная ситуация",
+    "С-15": "Жалоба",
 }
 ROUTE_TITLES = {
-    "R-01": "Красный флаг А", "R-02": "Просит сотрудника", "R-03": "Жалоба, конфликт",
-    "R-04": "Настаивает на медицинском вопросе", "R-05": "Не понят дважды", "R-06": "Сбой стенда",
-    "R-07": "Не идентифицирован", "R-08": "Вне каталога", "R-09": "Острая зубная боль",
-    "R-10": "Платное вне справочника", "R-11": "Красный флаг Б", "R-12": "Колл-центр Минздрава",
-    "R-13": "Полис ОМС", "R-14": "Звонок от организации", "R-15": "Не справляется с диалогом",
-    "R-16": "Запрос по персональным данным", "R-17": "Тишина, помехи",
+    "R-01": "Красный флаг А",
+    "R-02": "Просит сотрудника",
+    "R-03": "Жалоба, конфликт",
+    "R-04": "Настаивает на медицинском вопросе",
+    "R-05": "Не понят дважды",
+    "R-06": "Сбой стенда",
+    "R-07": "Не идентифицирован",
+    "R-08": "Вне каталога",
+    "R-09": "Острая зубная боль",
+    "R-10": "Платное вне справочника",
+    "R-11": "Красный флаг Б",
+    "R-12": "Колл-центр Минздрава",
+    "R-13": "Полис ОМС",
+    "R-14": "Звонок от организации",
+    "R-15": "Не справляется с диалогом",
+    "R-16": "Запрос по персональным данным",
+    "R-17": "Тишина, помехи",
 }
 
 
@@ -95,21 +116,31 @@ def load_scenarios() -> list[Scenario]:
             with open(path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             base = raw.get("setup", {})
-            parts = raw.get("dialogs") or [{"name": "", "steps": raw["steps"], "result": raw.get("result", {})}]
+            parts = raw.get("dialogs") or [
+                {"name": "", "steps": raw["steps"], "result": raw.get("result", {})}
+            ]
             dialogs = [
-                Dialog(raw["id"], d.get("name", ""), {**base, **d.get("setup", {})}, d["steps"], d.get("result", {}))
+                Dialog(
+                    raw["id"],
+                    d.get("name", ""),
+                    {**base, **d.get("setup", {})},
+                    d["steps"],
+                    d.get("result", {}),
+                )
                 for d in parts
             ]
-            scenarios.append(Scenario(
-                id=raw["id"],
-                title=raw["title"],
-                source=raw["source"],
-                blocking=bool(raw.get("blocking")),
-                expected=raw["expected"],
-                covers=[str(c) for c in raw.get("covers", [])],
-                path=path,
-                dialogs=dialogs,
-            ))
+            scenarios.append(
+                Scenario(
+                    id=raw["id"],
+                    title=raw["title"],
+                    source=raw["source"],
+                    blocking=bool(raw.get("blocking")),
+                    expected=raw["expected"],
+                    covers=[str(c) for c in raw.get("covers", [])],
+                    path=path,
+                    dialogs=dialogs,
+                )
+            )
     return scenarios
 
 
@@ -120,7 +151,12 @@ def to_option(raw: str | dict, fixtures: dict) -> Option:
         return Option(day=moment.date(), at=moment.time())
     moment = datetime.strptime(raw["at"], STAND_TIME)
     doctor = fixtures["doctors"][raw["doctor"]]
-    return Option(day=moment.date(), at=moment.time(), doctor=doctor["full_name"].split()[0], specialty=doctor["specialty"])
+    return Option(
+        day=moment.date(),
+        at=moment.time(),
+        doctor=doctor["full_name"].split()[0],
+        specialty=doctor["specialty"],
+    )
 
 
 def doctor_surnames(fixtures: dict) -> list[str]:
@@ -159,11 +195,15 @@ def coverage_markdown() -> str:
         "| № | Что проверяем | Блок. | Сценарии и правила | Диалогов | Шагов уже проверяется |",
         "|---|---|---|---|---|---|",
     ]
-    for sid in CONTROL_IDS + [s.id for s in scenarios if s.id.startswith("D-") and s.id not in CONTROL_IDS]:
+    for sid in CONTROL_IDS + [
+        s.id for s in scenarios if s.id.startswith("D-") and s.id not in CONTROL_IDS
+    ]:
         s = by_id[sid]
         refs = ", ".join(sorted(c for c in covered[sid] if not c.startswith("I-")))
         checked = sum(1 for d in s.dialogs for step in d.steps if "patient" in step)
-        lines.append(f"| {sid} | {s.title} | {'!' if s.blocking else ''} | {refs} | {len(s.dialogs)} | {checked} |")
+        lines.append(
+            f"| {sid} | {s.title} | {'!' if s.blocking else ''} | {refs} | {len(s.dialogs)} | {checked} |"
+        )
 
     def table(title: str, items: dict[str, str]) -> list[str]:
         rows = ["", f"### {title}", "", "| Код | Что | Где проверяется |", "|---|---|---|"]

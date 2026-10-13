@@ -5,7 +5,17 @@ from dataclasses import dataclass
 from app.nlu.dictionaries import load_flags, load_red_flags
 from app.nlu.lexicon import Hit
 
-FLAGS = ("red_a", "red_b", "operator", "complaint", "medical", "robot", "no_recording", "dental_acute", "cant_cope")
+FLAGS = (
+    "red_a",
+    "red_b",
+    "operator",
+    "complaint",
+    "medical",
+    "robot",
+    "no_recording",
+    "dental_acute",
+    "cant_cope",
+)
 
 # Матрица 7.3 проверяется сверху вниз, но красный флаг Б здесь стоит выше просьбы оператора и жалобы:
 # по разделу 7.1 красный флаг прерывает любой сценарий, а R-11 уходит к тому же регистратору с приоритетом P1.

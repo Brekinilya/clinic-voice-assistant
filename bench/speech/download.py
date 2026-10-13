@@ -22,7 +22,10 @@ FILES = {
         (f"{GIGAAM}/v3_e2e_ctc_tokenizer.model", "gigaam/v3_e2e_ctc_tokenizer.model"),
     ],
     "vosk": [
-        ("https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip", "vosk/vosk-model-small-ru-0.22.zip"),
+        (
+            "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
+            "vosk/vosk-model-small-ru-0.22.zip",
+        ),
     ],
     "silero": [
         ("https://models.silero.ai/models/tts/ru/v5_5_ru.pt", "silero/v5_5_ru.pt"),
@@ -30,9 +33,15 @@ FILES = {
     ],
     "piper": [
         (f"{PIPER}/irina/medium/ru_RU-irina-medium.onnx", "piper/ru_RU-irina-medium.onnx"),
-        (f"{PIPER}/irina/medium/ru_RU-irina-medium.onnx.json", "piper/ru_RU-irina-medium.onnx.json"),
+        (
+            f"{PIPER}/irina/medium/ru_RU-irina-medium.onnx.json",
+            "piper/ru_RU-irina-medium.onnx.json",
+        ),
         (f"{PIPER}/dmitri/medium/ru_RU-dmitri-medium.onnx", "piper/ru_RU-dmitri-medium.onnx"),
-        (f"{PIPER}/dmitri/medium/ru_RU-dmitri-medium.onnx.json", "piper/ru_RU-dmitri-medium.onnx.json"),
+        (
+            f"{PIPER}/dmitri/medium/ru_RU-dmitri-medium.onnx.json",
+            "piper/ru_RU-dmitri-medium.onnx.json",
+        ),
     ],
 }
 

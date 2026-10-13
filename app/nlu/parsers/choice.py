@@ -15,7 +15,9 @@ LAST = {"последний", "крайний"}
 ANY = {"любой", "разница"}
 POINTERS = {"номер", "вариант"}
 # «первый не подходит» — это отказ, а не выбор
-REJECTION = re.compile(r"\bне (подходит|подходят|устраивает|устраивают|получится|смогу|могу|надо|нужно|хочу)\b")
+REJECTION = re.compile(
+    r"\bне (подходит|подходят|устраивает|устраивают|получится|смогу|могу|надо|нужно|хочу)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -49,14 +51,16 @@ def parse_choice(text: str, options: list[Option], today: date) -> tuple[int, st
     for i, token in enumerate(tokens):
         weekday = lookup(token, WEEKDAYS)
         if weekday and not (i > 0 and tokens[i - 1] in {"не", "кроме"}):
-            narrow({k for k, o in enumerate(options) if o.day and o.day.isoweekday() == weekday}, token)
+            narrow(
+                {k for k, o in enumerate(options) if o.day and o.day.isoweekday() == weekday}, token
+            )
         if token in RELATIVE_DAYS:
             d = today + timedelta(days=RELATIVE_DAYS[token])
             narrow({k for k, o in enumerate(options) if o.day == d}, token)
 
     for n in numbers:
         if _is_day_of_month(tokens, n, len(options)):
-            phrase = " ".join(tokens[n.start:n.end])
+            phrase = " ".join(tokens[n.start : n.end])
             narrow({k for k, o in enumerate(options) if o.day and o.day.day == n.value}, phrase)
 
     times = parse_times(text, bare=True)
@@ -72,7 +76,9 @@ def parse_choice(text: str, options: list[Option], today: date) -> tuple[int, st
         if low == high:
             matching = {k for k, o in enumerate(options) if o.at and _same_clock(o.at, low)}
         else:
-            matching = {k for k, o in enumerate(options) if o.at and low <= o.at.strftime("%H:%M") <= high}
+            matching = {
+                k for k, o in enumerate(options) if o.at and low <= o.at.strftime("%H:%M") <= high
+            }
         narrow(matching, next(phrase for _, phrase in times.values()))
 
     if any(o.specialty for o in options) and (hit := specialty_lexicon().best(text)):

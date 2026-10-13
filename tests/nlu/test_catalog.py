@@ -43,7 +43,13 @@ def test_identification_as_in_regulation(catalog):
 
 def test_operator_intents_have_routes(catalog):
     routes = {code: intent.route for code, intent in catalog.intents.items() if intent.route}
-    assert routes == {"I-08": "R-10", "I-11": "R-01", "I-12": "R-03", "I-13": "R-04", "I-14": "R-08"}
+    assert routes == {
+        "I-08": "R-10",
+        "I-11": "R-01",
+        "I-12": "R-03",
+        "I-13": "R-04",
+        "I-14": "R-08",
+    }
 
 
 def test_example_belongs_to_one_intent(catalog):
