@@ -1,0 +1,31 @@
+id: M-05
+title: Проверка своей записи — эталонный диалог
+source: раздел 5, С-05
+blocking: false
+expected: Пациент узнал врача, дату, время и кабинет
+covers: [С-05]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  visits:
+    - {client: kuzmina_na, doctor: lebedev, at: "05.10.2026 13:20"}
+
+steps:
+  - say: greeting.inbound
+  - patient: Подскажите, на какое время я записана к окулисту?
+    intent: I-04
+    parse: {expect: free, slots: {specialty: офтальмолог}}
+    say: ident.ask
+  - patient: Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого.
+    parse:
+      expect: full_name
+      slots: {last_name: Кузьмина, first_name: Нина, middle_name: Андреевна, birth_date: "1955-07-20"}
+    say: my_visits.one
+  - patient: Нет, спасибо.
+    say: closing.goodbye
+    end: true
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged

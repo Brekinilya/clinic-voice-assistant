@@ -1,0 +1,40 @@
+id: D-09
+title: Вызов врача на дом после 14:00
+source: приложение Д, № 9
+blocking: false
+expected: Предложение вызова на завтра, информация о неотложной помощи
+covers: [С-06]
+
+setup:
+  now: "29.09.2026 15:10"  # вторник
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне нужно вызвать врача на дом
+    intent: I-05
+    say: home_visit.late
+  - patient: Да, давайте
+    parse: {expect: yes_no, intent: "yes"}
+    say: [home_visit.safety, ident.ask_patient]
+  - patient: Соколов Андрей Викторович, девятое февраля восемьдесят пятого
+    parse:
+      expect: full_name
+      slots: {last_name: Соколов, first_name: Андрей, middle_name: Викторович, birth_date: "1985-02-09"}
+    say: home_visit.ask_address
+  - patient: Улица Лесная, дом двенадцать, квартира сорок
+    say: home_visit.ask_reason
+  - patient: Температура со вчерашнего дня, слабость, кашель
+    say: home_visit.ask_can_come
+  - patient: Нет, тяжело
+    parse: {expect: yes_no, intent: "no"}
+    say: home_visit.accepted
+  - patient: Да
+    say: home_visit.done
+    end: true
+
+result:
+  code: HOME_VISIT_REQUESTED
+  stand: unchanged
+  # Заявки на дом в стенде нет — хранится у нас со статусом «Требует подтверждения»
+  home_visit: {client: sokolov_av, date: "30.09.2026", reason: "Температура со вчерашнего дня, слабость, кашель"}

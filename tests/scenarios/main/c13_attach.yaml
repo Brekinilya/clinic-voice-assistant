@@ -1,0 +1,26 @@
+id: M-13
+title: Прикрепление к поликлинике — эталонный диалог
+source: раздел 5, С-13
+blocking: false
+expected: Как прикрепиться и что доступно до прикрепления; без идентификации
+covers: [С-13]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Я недавно переехал, как к вам прикрепиться?
+    intent: I-10
+    say: [attach.how, closing.anything_else]
+  - patient: А пока не прикрепился — можно к врачу?
+    say: attach.before
+  - patient: Нет, спасибо
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye
+    end: true
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged

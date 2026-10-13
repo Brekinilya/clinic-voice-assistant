@@ -17,7 +17,7 @@ FORMS = {
     "date": {"", "nomn", "accs", "gent", "short", "short_accs"},
     "time": {"", "nomn", "gent"},
     "doctor": CASES | {"", "full"},
-    "text": CASES | {""},
+    "text": CASES | {"", "plur"},
     "number": CASES | {""},
     "options": {""},
 }

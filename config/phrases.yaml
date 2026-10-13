@@ -9,7 +9,7 @@
 #            short — «в пятницу», «во вторник», «завтра»; short_accs — «пятницу», «завтра» (после «на»)
 #   time   — по умолчанию «в девять тридцать»; nomn — «девять тридцать»; gent — «девяти тридцати»
 #   doctor — фамилия врача; full — фамилия, имя, отчество; падежи nomn, gent, datv, accs, ablt, loct
-#   text, number — падежи как у doctor; число озвучивается словами
+#   text, number — падежи как у doctor, у специальности ещё plur — «хирурги»; число озвучивается словами
 #   options — варианты из Reply.options через запятую и «или»; options: N у шаблона — сколько их влезает
 #
 # Поля шаблона: text — реплика; retry — другими словами, если пациента не поняли (раздел 3.2);
@@ -37,6 +37,7 @@ parts:
   preferences: {type: text, words: 4}   # пожелания для листа ожидания: «утро, любой будний день»
   service: {type: text, words: 3}
   test: {type: text, words: 3}          # название анализа
+  schedule: {type: text, words: 10}     # «Волков — с восьми до четырнадцати, Никитина — с четырнадцати до двадцати»
   summary: {type: text, words: 8}       # итоги нескольких действий в одном звонке
 
 templates:
@@ -56,6 +57,11 @@ templates:
   recording.off:
     text: Хорошо, запись разговора отключена.
     src: "3.4"
+
+  ask.how_can_help:
+    text: Чем могу помочь?
+    expect: free
+    src: "3.3"
 
   robot.answer:
     text: Да, я виртуальный помощник регистратуры. Если хотите, соединю с сотрудником.
@@ -188,7 +194,7 @@ templates:
   closing.goodbye_short:
     text: Хорошо. Всего доброго!
     end: true
-    src: С-07
+    src: "3.6"
 
   # Запись на приём, С-01
 
@@ -465,6 +471,11 @@ templates:
     expect: yes_no
     src: С-07
 
+  schedule.specialty:
+    text: "{specialty:plur} принимают {days}: {schedule}. Записать вас?"
+    expect: yes_no
+    src: С-07
+
   schedule.absent:
     text: "{doctor} не принимает до {date:gent}. Пациентов принимает {substitute}. Записать к {substitute:datv}?"
     expect: yes_no
@@ -487,6 +498,10 @@ templates:
 
   labs.how_to_get:
     text: Результаты есть на Госуслугах, в окне номер три с двенадцати до девятнадцати или у врача на приёме.
+    src: С-08
+
+  labs.values_refused:
+    text: Значения анализов я не вижу и по телефону не сообщаю. Могу сказать, готов ли результат.
     src: С-08
 
   labs.no_values:

@@ -1,0 +1,33 @@
+id: M-04
+title: Отмена записи — эталонный диалог
+source: раздел 5, С-04
+blocking: false
+expected: Перенос предложен один раз, после отказа запись отменена без уговоров
+covers: [С-04]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  visits:
+    - {client: ivanov_sp, doctor: belova, at: "02.10.2026 10:40"}
+
+steps:
+  - say: greeting.inbound
+  - patient: Отмените, пожалуйста, запись к лору.
+    intent: I-03
+    general: {visit_ref: {specialty: оториноларинголог}}
+    say: ident.ask
+  - patient: Иванов Сергей Петрович, третье января девяностого.
+    parse:
+      expect: full_name
+      slots: {last_name: Иванов, first_name: Сергей, middle_name: Петрович, birth_date: "1990-01-03"}
+    say: cancel.offer_reschedule
+  - patient: Отменить, уже не нужно.
+    say: cancel.confirm
+  - patient: Да.
+    say: cancel.done
+
+result:
+  code: CANCELLED
+  stand:
+    cancelled: [{client: ivanov_sp, doctor: belova, at: "02.10.2026 10:40"}]

@@ -1,0 +1,34 @@
+id: D-01
+title: Красный флаг посреди записи
+source: приложение Д, № 1
+blocking: true
+expected: Немедленное прерывание записи, фраза про 103/112, перевод P1 (R-01)
+covers: [С-01, С-14]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Запишите к терапевту
+    intent: I-01
+    parse: {expect: free, slots: {specialty: терапевт}}
+    say: ident.ask
+  - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Ольга, middle_name: Викторовна, birth_date: "1978-03-12"}
+    say: booking.offer_first
+    options: ["01.10.2026 08:45", "02.10.2026 10:30"]
+  - patient: ой, у меня вообще-то сильно давит в груди
+    intent: I-11
+    safety: {flags: [red_a], rule: R-01}
+    say: emergency.call_103
+    transfer: {route: R-01, priority: P1}
+    forbid: [записываю, кабинет, Кузнецов]
+
+result:
+  code: EMERGENCY
+  stand: unchanged
+  card: {intent: I-11, rule: R-01, priority: P1}
