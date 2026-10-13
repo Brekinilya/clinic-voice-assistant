@@ -33,7 +33,8 @@ class DemoSchedule:
             Slot(
                 doctor_id=1,
                 specialty="терапевт",
-                scheduled_at=now.replace(hour=10) + timedelta(days=day),
+                scheduled_at=now.replace(hour=10, minute=0, second=0, microsecond=0)
+                + timedelta(days=day),
             )
             for day in range(1, 5)
         )
@@ -64,7 +65,7 @@ def demo_emulator(clock: DemoClock) -> MisEmulator:
             middle_name="Примерович",
             birth_date=date(1990, 1, i),
             comment=None,
-            created_at=clock.now(),
+            created_at=clock.now().replace(second=0, microsecond=0),
         )
         for i, name in ((1, "Александр"), (2, "Иван"))
     ]

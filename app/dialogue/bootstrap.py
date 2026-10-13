@@ -1,0 +1,62 @@
+"""Автономная сборка командного API; реальный HTTP-клиент МИС здесь не создаётся."""
+
+from contextlib import asynccontextmanager
+from secrets import token_bytes
+
+import httpx
+from sqlalchemy import select
+
+from app.backend import backend_engine
+from app.booking.memory import MemoryBookingStore
+from app.booking.schedule import JsonSchedule
+from app.booking.service import BookingService
+from app.demo import DemoSchedule, EmulatorBudget, demo_emulator
+from app.dialogue.memory import MemoryDialogueStore
+from app.dialogue.service import DialogueService
+from app.mis.http import HttpMedicalSystem
+from app.ports import Clock
+from app.settings import AppMode, Settings
+from app.storage.booking import PostgresBookingStore
+from app.storage.dialogue import PostgresDialogueStore
+from app.storage.schema import SCHEMA_VERSION, schema_versions
+
+
+@asynccontextmanager
+async def open_command_backend(settings: Settings, clock: Clock):
+    if not settings.backend_demo_enabled or settings.app_mode != AppMode.OFFLINE_TEST:
+        raise ValueError("автономный HTTP-стенд не включён")
+    schedule = (
+        JsonSchedule.load(settings.schedule_path, clock)
+        if settings.schedule_path is not None
+        else DemoSchedule(clock.now())
+    )
+    engine = None
+    try:
+        if settings.dialogue_storage == "postgres":
+            engine = backend_engine(settings)
+            async with engine.connect() as connection:
+                versions = list(
+                    (await connection.execute(select(schema_versions.c.version))).scalars()
+                )
+                if versions != [SCHEMA_VERSION]:
+                    raise RuntimeError("сначала примените миграцию backend")
+            booking_store = PostgresBookingStore(engine)
+            dialogue_store = PostgresDialogueStore(engine)
+            key = settings.dialogue_hash_key.get_secret_value().encode()
+        else:
+            booking_store = MemoryBookingStore()
+            dialogue_store = MemoryDialogueStore()
+            key = token_bytes(32)
+        emulator = demo_emulator(clock)
+        async with httpx.AsyncClient(
+            base_url="https://offline.invalid/api/v1/",
+            headers={"Authorization": "Bearer demo"},
+            transport=emulator.transport(),
+        ) as client:
+            booking = BookingService(
+                HttpMedicalSystem(client, EmulatorBudget()), booking_store, schedule, clock
+            )
+            yield DialogueService(booking, dialogue_store, key)
+    finally:
+        if engine is not None:
+            await engine.dispose()

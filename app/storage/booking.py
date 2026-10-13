@@ -7,14 +7,6 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import (
-    CheckConstraint,
-    Column,
-    DateTime,
-    Index,
-    Integer,
-    MetaData,
-    String,
-    Table,
     delete,
     func,
     insert,
@@ -26,7 +18,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.booking.models import (
-    ACTIVE_STATES,
     ActionState,
     Approval,
     BookingAction,
@@ -35,71 +26,29 @@ from app.booking.models import (
     check_approval,
 )
 from app.mis.ports import MisError
-
-metadata = MetaData()
-schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
-actions = Table(
-    "backend_booking_actions",
+from app.storage.schema import (
+    SCHEMA_VERSION,
+    actions,
+    active,
+    budget_blocks,
+    budget_requests,
     metadata,
-    Column("action_id", String(32), primary_key=True),
-    Column("call_id", String(128), nullable=False),
-    Column("revision", Integer, nullable=False),
-    Column("client_id", Integer, nullable=False),
-    Column("doctor_id", Integer, nullable=False),
-    Column("scheduled_at", DateTime(timezone=True), nullable=False),
-    Column("specialty", String(100), nullable=False),
-    Column("expires_at", DateTime(timezone=True), nullable=False),
-    Column("state", String(20), nullable=False),
-    Column("confirmed_turn", Integer),
-    Column("visit_id", Integer),
-    CheckConstraint("revision > 0 AND client_id > 0 AND doctor_id > 0"),
-    CheckConstraint(
-        "state IN ('held','committing','reconciling','booked','archived','rejected','expired','cancelled')"
-    ),
-    CheckConstraint("(state IN ('booked','archived')) = (visit_id IS NOT NULL)"),
+    schema_versions,
 )
-active = actions.c.state.in_([s.value for s in ACTIVE_STATES])
-Index(
-    "backend_active_slot",
-    actions.c.doctor_id,
-    actions.c.scheduled_at,
-    unique=True,
-    postgresql_where=active,
-)
-Index(
-    "backend_active_specialty",
-    actions.c.client_id,
-    actions.c.specialty,
-    unique=True,
-    postgresql_where=active,
-)
-Index("backend_call_revision", actions.c.call_id, actions.c.revision, unique=True)
-budget_blocks = Table(
-    "mis_budget_blocks",
-    metadata,
-    Column("scope", String(64), primary_key=True),
-    Column("blocked_until", DateTime(timezone=True), nullable=False),
-)
-budget_requests = Table(
-    "mis_budget_requests",
-    metadata,
-    Column("id", Integer, primary_key=True),
-    Column("scope", String(64), nullable=False),
-    Column("requested_at", DateTime(timezone=True), nullable=False),
-)
-Index("mis_budget_window", budget_requests.c.scope, budget_requests.c.requested_at)
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Первую схему создаём явной командой; изменений существующей схемы здесь нет."""
+    """Миграция 1 → 2 добавляет таблицы диалога, сохраняя прежние брони и журнал."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if not versions:
-            await connection.execute(insert(schema_versions).values(version=1))
-        elif versions != [1]:
+        if versions not in ([], [1], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
+        if not versions:
+            await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
+        elif versions == [1]:
+            await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
 def _decode(row) -> BookingAction:
@@ -276,6 +225,14 @@ class PostgresBookingStore:
             if row is None:
                 raise BookingError("HOLD_NOT_ACTIVE")
             return _decode(row)
+
+    async def release_call_holds(self, call_id: str) -> None:
+        async with self._transaction() as connection:
+            await connection.execute(
+                update(actions)
+                .where(actions.c.call_id == call_id, actions.c.state == "held")
+                .values(state="cancelled")
+            )
 
 
 class PostgresBudget:

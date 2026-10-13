@@ -1,0 +1,56 @@
+"""Командный HTTP-вход нашей части; выводит состояние, но не создаёт записи МИС."""
+
+from typing import Annotated
+
+from asyncpg import PostgresError
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.dialogue.models import CallId, DialogueError, DialogueState, Reply, Turn
+from app.dialogue.service import DialogueService
+
+router = APIRouter(prefix="/api/dialog", tags=["Автономный командный стенд"])
+
+
+def get_service(request: Request) -> DialogueService:
+    service = getattr(request.app.state, "dialogue", None)
+    if service is None:
+        raise HTTPException(404, detail="COMMAND_BACKEND_DISABLED")
+    return service
+
+
+Service = Annotated[DialogueService, Depends(get_service)]
+
+
+@router.post(
+    "/{call_id}/turn",
+    response_model=Reply,
+    description="Явные команды с вымышленной МИС. Создание/изменение записей отключено.",
+)
+async def turn(call_id: CallId, body: Turn, service: Service) -> Reply:
+    try:
+        return await service.handle(call_id, body)
+    except DialogueError as error:
+        raise HTTPException(409, detail=str(error)) from None
+    except (SQLAlchemyError, PostgresError, OSError):
+        raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None
+
+
+@router.get("/{call_id}", response_model=DialogueState)
+async def inspect(call_id: CallId, service: Service) -> DialogueState:
+    try:
+        return await service.store.inspect(call_id)
+    except (SQLAlchemyError, PostgresError, OSError):
+        raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None
+
+
+@router.post(
+    "/{call_id}/end",
+    response_model=Reply,
+    description="Идемпотентное завершение разговора со снятием только местных броней.",
+)
+async def end(call_id: CallId, service: Service) -> Reply:
+    try:
+        return await service.end(call_id)
+    except (SQLAlchemyError, PostgresError, OSError):
+        raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None

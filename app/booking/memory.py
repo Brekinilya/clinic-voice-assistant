@@ -133,3 +133,9 @@ class MemoryBookingStore:
             action = action.model_copy(update={"state": ActionState.CANCELLED})
             self.actions[action_id] = action
             return action
+
+    async def release_call_holds(self, call_id: str) -> None:
+        async with self._lock:
+            for key, action in self.actions.items():
+                if action.call_id == call_id and action.state == ActionState.HELD:
+                    self.actions[key] = action.model_copy(update={"state": ActionState.CANCELLED})
