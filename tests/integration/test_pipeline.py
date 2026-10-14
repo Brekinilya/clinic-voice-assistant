@@ -106,6 +106,45 @@ async def test_success_announces_confirmed_doctor_and_time():
         assert format_datetime(action.slot.scheduled_at) in spoken
 
 
+async def test_natural_booking_uses_eight_requests_with_fresh_narrow_confirmation():
+    async with pipeline() as (client, service, emulator, clock, doctor_ids, client_ids):
+        requests = []
+
+        async def capture(request):
+            requests.append(request)
+
+        service.booking.mis._client.event_hooks["request"].append(capture)
+        service.booking.mis._budget = MemoryBudget(clock)
+        reserved = await reserve(client)
+        assert reserved["phase"] == "held" and len(requests) == 4
+        clock.value += timedelta(seconds=20)
+        assert (await turn(client, 4, "Да"))["code"] == "BOOKED"
+        assert len(requests) == 8 and emulator.write_count == 1
+        assert [r.method for r in requests] == ["GET"] * 7 + ["POST"]
+        doctor_check, patient_check = requests[-3:-1]
+        assert dict(doctor_check.url.params) == {
+            "doctor_id": str(doctor_ids["kuznetsova"]),
+            "status": "Запланирована",
+            "date_from": "02.10.2026",
+            "date_to": "02.10.2026",
+            "limit": "50",
+            "offset": "0",
+        }
+        assert dict(patient_check.url.params) == {
+            "client_id": str(client_ids["smirnova_ov"]),
+            "status": "Запланирована",
+            "date_from": "30.09.2026",
+            "limit": "50",
+            "offset": "0",
+        }
+        # Сведения о других пациентах и врачах целиком не выгружаются.
+        assert all(
+            "client_id" in r.url.params or "doctor_id" in r.url.params
+            for r in requests
+            if r.method == "GET" and r.url.path.endswith("/visits")
+        )
+
+
 async def test_local_budget_before_post_preserves_hold_for_later_confirmation():
     async with pipeline() as (client, service, emulator, clock, *_):
         service.booking.mis._budget = MemoryBudget(clock, limit=7)
@@ -127,6 +166,8 @@ async def test_budget_during_refinement_preserves_preferences_and_releases_old_h
     async with pipeline() as (client, service, emulator, clock, *_):
         service.booking.mis._budget = MemoryBudget(clock, limit=5)
         reserved = await reserve(client)
+        # Заполняем остаток квоты другим обращением: подбор теперь обходится дешевле.
+        await service.booking.mis._budget.reserve()
         result = await turn(client, 4, "Да, но лучше в понедельник")
         assert result["code"] == "WAIT_MIS" and result["phase"] == "identified"
         assert result["proposal"] is None

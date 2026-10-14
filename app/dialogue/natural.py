@@ -81,7 +81,7 @@ class BookingConversation:
         )
         try:
             options = await self.booking.options(
-                state.client_id, state.specialty, state.preferences, limit=2
+                state.client_id, state.specialty, state.preferences, limit=2, call_id=state.call_id
             )
             doctors = {d.id: d for d in await self.booking.mis.doctors()}
         except MisError as error:

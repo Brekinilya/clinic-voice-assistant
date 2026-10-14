@@ -33,6 +33,7 @@ class RequestBudget(Protocol):
 
 
 class MedicalSystem(Protocol):
+    def clear_call_cache(self, call_id: str) -> None: ...
     async def doctors(
         self, specialty: str | None = None, *, fresh: bool = False
     ) -> list[Doctor]: ...
@@ -46,6 +47,8 @@ class MedicalSystem(Protocol):
         status: VisitStatus | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        call_id: str | None = None,
+        fresh: bool = False,
     ) -> list[Visit]: ...
     async def create_visit(self, request: VisitCreate) -> Visit: ...
     async def change_visit(self, visit_id: int, request: VisitChange) -> Visit: ...

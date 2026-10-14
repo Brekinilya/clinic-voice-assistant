@@ -102,7 +102,9 @@ class DemoSession:
                 self.client_id, self.options = client.id, ()
                 return ["Пациент найден. Укажите специальность командой «варианты терапевт»."]
             if command == "варианты" and self.client_id is not None:
-                self.options = await self.service.options(self.client_id, argument)
+                self.options = await self.service.options(
+                    self.client_id, argument, call_id=self.call_id
+                )
                 return [
                     f"{i}. {format_datetime(s.scheduled_at)}, врач Образцова Анна Тестовна."
                     for i, s in enumerate(self.options, 1)

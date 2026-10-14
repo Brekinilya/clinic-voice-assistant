@@ -67,6 +67,7 @@ class DialogueService:
                         call_id, turn.turn_id, TransferRequest(route="R-08", priority="P3")
                     )
                     await self.booking.store.release_call_holds(call_id)
+                    self.booking.clear_call_cache(call_id)
                     return reply(
                         current,
                         turn.turn_id,
@@ -77,6 +78,7 @@ class DialogueService:
                 if transfer is not None:
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
                     await self.booking.store.release_call_holds(call_id)
+                    self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
         if not turn.is_final:
             state = await self.store.inspect(call_id)
@@ -100,6 +102,7 @@ class DialogueService:
         except Exception:
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
             await self.booking.store.release_call_holds(call_id)
+            self.booking.clear_call_cache(call_id)
             state = state.model_copy(
                 update={
                     "phase": Phase.INTERRUPTED,
@@ -122,6 +125,7 @@ class DialogueService:
             await self.booking.store.release_call_holds(call_id)
             current = await self.store.inspect(call_id)
             if current.phase == Phase.HANDOFF:
+                self.booking.clear_call_cache(call_id)
                 return handoff_reply(current, turn.turn_id)
             if current.phase != Phase.ENDED:
                 return reply(
@@ -130,13 +134,17 @@ class DialogueService:
                     "Поступила новая реплика. Уточните выбор или подтвердите заново.",
                     code="TURN_INTERRUPTED",
                 )
+            self.booking.clear_call_cache(call_id)
             return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
+        if state.phase in {Phase.ENDED, Phase.HANDOFF}:
+            self.booking.clear_call_cache(call_id)
         return result
 
     async def end(self, call_id: str) -> Reply:
         state = await self.store.end(call_id)
         # Повтор end снова пытается снять оставшиеся брони, если прежняя попытка прервалась.
         await self.booking.store.release_call_holds(call_id)
+        self.booking.clear_call_cache(call_id)
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
 
     async def _process(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
@@ -224,7 +232,9 @@ class DialogueService:
                 state = state.model_copy(
                     update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
                 )
-                options = await self.booking.options(state.client_id, command.specialty)
+                options = await self.booking.options(
+                    state.client_id, command.specialty, call_id=state.call_id
+                )
                 state = state.model_copy(
                     update={
                         "phase": Phase.OFFERED if options else Phase.IDENTIFIED,

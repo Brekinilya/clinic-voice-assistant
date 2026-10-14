@@ -63,6 +63,11 @@ def normalize_name(value: str) -> str:
     return result
 
 
+def name_key(value: str) -> str:
+    # Только регистр и е/ё; опечатки и похожие фамилии не объединяем.
+    return normalize_name(value).casefold().replace("ё", "е")
+
+
 MisId = Annotated[int, Field(strict=True, ge=1, le=2147483647)]
 MisDate = Annotated[
     date, BeforeValidator(parse_date), PlainSerializer(format_date, when_used="json")

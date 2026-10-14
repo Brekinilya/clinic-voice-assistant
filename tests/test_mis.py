@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app.demo import DemoClock, demo_emulator
 from app.mis.budget import MemoryBudget
 from app.mis.http import HttpMedicalSystem
-from app.mis.models import VisitChange, VisitCreate, VisitStatus, parse_date, parse_datetime
+from app.mis.models import Visit, VisitChange, VisitCreate, VisitStatus, parse_date, parse_datetime
 from app.mis.ports import MisError, MisOutcomeUnknown, MisUnavailable
 from app.settings import Settings
 
@@ -234,6 +234,83 @@ async def test_cache_is_bounded_by_time_and_token_and_fresh_bypasses_it():
         client.headers["Authorization"] = "Bearer unknown"
         with pytest.raises(MisError, match="UNAUTHORIZED"):
             await mis.client(patient.id)
+
+
+@pytest.mark.parametrize("refresh", ["fresh", "other_call", "end", "expiry", "unscoped", "range"])
+async def test_visit_snapshot_is_scoped_and_only_covers_requested_dates(refresh):
+    clock = DemoClock()
+    elapsed = [0.0]
+    emulator = demo_emulator(clock)
+    async with httpx.AsyncClient(
+        base_url="https://offline.invalid/api/v1/",
+        headers={"Authorization": "Bearer demo"},
+        transport=emulator.transport(),
+    ) as client:
+        mis = HttpMedicalSystem(client, BudgetSpy(), elapsed=lambda: elapsed[0])
+        params = {
+            "doctor_id": 1,
+            "status": VisitStatus.PLANNED,
+            "date_from": parse_date("15.10.2026"),
+            "date_to": parse_date("18.10.2026"),
+            "call_id": "a",
+        }
+        assert await mis.visits(**params) == []
+        visit = Visit.model_validate({**VISIT, "doctor": emulator.doctors[1], "client_id": 1})
+        emulator.records["demo"][visit.id] = visit
+        # Выбор внутри покрытого периода использует снимок этого звонка.
+        assert await mis.visits(**{**params, "date_to": params["date_from"]}) == []
+        if refresh == "fresh":
+            params["fresh"] = True
+        elif refresh == "other_call":
+            params["call_id"] = "b"
+        elif refresh == "end":
+            mis.clear_call_cache("a")
+        elif refresh == "expiry":
+            elapsed[0] = 90
+        elif refresh == "unscoped":
+            del params["call_id"]
+        else:
+            params["date_from"] = parse_date("14.10.2026")
+        assert await mis.visits(**params) == [visit]
+
+
+async def test_visit_snapshot_does_not_cross_token_or_patient_query():
+    clock = DemoClock()
+    emulator = demo_emulator(clock)
+    visit = Visit.model_validate({**VISIT, "doctor": emulator.doctors[1], "client_id": 1})
+    emulator.records["demo"][visit.id] = visit
+    async with httpx.AsyncClient(
+        base_url="https://offline.invalid/api/v1/",
+        headers={"Authorization": "Bearer demo"},
+        transport=emulator.transport(),
+    ) as client:
+        mis = HttpMedicalSystem(client, BudgetSpy())
+        assert await mis.visits(client_id=1, call_id="a") == [visit]
+        assert await mis.visits(client_id=2, call_id="a") == []
+        client.headers["Authorization"] = "Bearer unknown"
+        with pytest.raises(MisError, match="UNAUTHORIZED"):
+            await mis.visits(client_id=1, call_id="a")
+
+
+@pytest.mark.parametrize("failure", [None, "lost_response"])
+async def test_visit_write_invalidates_other_calls_even_after_lost_response(failure):
+    emulator = demo_emulator(DemoClock())
+    async with httpx.AsyncClient(
+        base_url="https://offline.invalid/api/v1/",
+        headers={"Authorization": "Bearer demo"},
+        transport=emulator.transport(),
+    ) as client:
+        mis = HttpMedicalSystem(client, BudgetSpy())
+        assert await mis.visits(doctor_id=1, call_id="other") == []
+        emulator.next_failure = failure
+        request = VisitCreate(client_id=1, doctor_id=1, scheduled_at="15.10.2026 10:00")
+        if failure:
+            with pytest.raises(MisOutcomeUnknown):
+                await mis.create_visit(request)
+        else:
+            await mis.create_visit(request)
+        assert len(await mis.visits(doctor_id=1, call_id="other")) == 1
+        assert emulator.write_count == 1
 
 
 async def test_emulator_keeps_duplicates_and_supports_cancel_semantics():
