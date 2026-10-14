@@ -40,16 +40,16 @@ from app.storage.schema import (
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграции 1/2 → 3 добавляют диалог и журнал отмены без удаления прежних данных."""
+    """Миграции 1/2/3 → 4 добавляют диалог, отмены и очередь без удаления данных."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [2], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [3], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
-        elif versions in ([1], [2]):
+        elif versions in ([1], [2], [3]):
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 

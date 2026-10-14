@@ -1,4 +1,4 @@
-"""Единая схема backend; версия 3 добавляет журнал отмены к разговорам и броням."""
+"""Единая схема backend; версия 4 добавляет очередь и демонстрационный журнал."""
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 actions = Table(
     "backend_booking_actions",
@@ -113,3 +113,39 @@ Index(
     postgresql_where=cancellations.c.state.in_(["prepared", "committing", "reconciling"]),
 )
 Index("backend_cancel_revision", cancellations.c.call_id, cancellations.c.revision, unique=True)
+
+outbox_jobs = Table(
+    "backend_outbox_jobs",
+    metadata,
+    Column("event_id", String(32), primary_key=True),
+    Column("source_id", String(32), ForeignKey(cancellations.c.action_id), nullable=False),
+    Column("kind", String(30), nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("available_at", DateTime(timezone=True), nullable=False),
+    Column("state", String(20), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("lease_token", String(32)),
+    Column("lease_until", DateTime(timezone=True)),
+    Column("last_error", String(40)),
+    # SQL NULL означает отсутствие квитанции; JSON null нарушил бы проверку состояния.
+    Column("receipt", JSONB(none_as_null=True)),
+    CheckConstraint("kind IN ('cancellation_sms','slot_released')"),
+    CheckConstraint(
+        "state IN ('pending','processing','retry','unknown','blocked','acknowledged','failed')"
+    ),
+    CheckConstraint("attempts >= 0 AND attempts <= 5"),
+    CheckConstraint(
+        "(state = 'processing') = (lease_token IS NOT NULL AND lease_until IS NOT NULL)"
+    ),
+    CheckConstraint("(lease_token IS NULL) = (lease_until IS NULL)"),
+    CheckConstraint("(state = 'acknowledged') = (receipt IS NOT NULL)"),
+)
+Index("backend_outbox_source_kind", outbox_jobs.c.source_id, outbox_jobs.c.kind, unique=True)
+Index("backend_outbox_ready", outbox_jobs.c.state, outbox_jobs.c.available_at)
+delivery_journal = Table(
+    "backend_demo_delivery_journal",
+    metadata,
+    Column("event_id", String(32), ForeignKey(outbox_jobs.c.event_id), primary_key=True),
+    Column("entry", JSONB, nullable=False),
+)

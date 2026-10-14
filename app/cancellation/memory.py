@@ -6,6 +6,7 @@ from uuid import uuid4
 from app.booking.models import ActionState, Approval, BookingError
 from app.cancellation.models import CancelAction, CancelState, Reason, check_approval
 from app.mis.models import Visit
+from app.outbox.models import cancellation_events
 from app.storage.memory_ledger import MemoryLedger
 
 ACTIVE = {CancelState.PREPARED, CancelState.COMMITTING, CancelState.RECONCILING}
@@ -102,6 +103,8 @@ class MemoryCancellationStore:
             if state not in {CancelState.CANCELLED, CancelState.RECONCILING, CancelState.REJECTED}:
                 raise BookingError("INVALID_TRANSITION")
             if state == CancelState.CANCELLED:
+                # Готовим оба события до изменения журнала: ошибка не даёт половинчатого результата.
+                events = cancellation_events(action, now)
                 for key, booking in self.ledger.bookings.items():
                     if (
                         booking.state == ActionState.BOOKED
@@ -114,6 +117,8 @@ class MemoryCancellationStore:
                         self.ledger.bookings[key] = booking.model_copy(
                             update={"state": ActionState.ARCHIVED}
                         )
+                for event in events:
+                    self.ledger.outbox.setdefault(event.event_id, event)
             action = action.model_copy(
                 update={
                     "state": state,

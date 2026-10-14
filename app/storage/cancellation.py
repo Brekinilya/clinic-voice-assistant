@@ -11,6 +11,7 @@ from app.cancellation.guard import check_cancel_guard
 from app.cancellation.models import CancelAction, CancelState, Reason, check_approval
 from app.mis.models import Visit
 from app.storage.journal import journal_transaction
+from app.storage.outbox import enqueue_cancellation
 from app.storage.schema import actions, cancellations, dialogue_sessions
 
 
@@ -175,6 +176,8 @@ class PostgresCancellationStore:
             if state not in {CancelState.CANCELLED, CancelState.RECONCILING, CancelState.REJECTED}:
                 raise BookingError("INVALID_TRANSITION")
             if state == CancelState.CANCELLED:
+                # Те же commit/rollback, что у отмены и освобождения местной записи.
+                await enqueue_cancellation(connection, action, now)
                 await connection.execute(
                     update(actions)
                     .where(

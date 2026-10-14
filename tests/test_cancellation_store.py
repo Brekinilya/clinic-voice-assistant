@@ -17,7 +17,14 @@ from app.mis.models import Visit, VisitStatus
 from app.storage.booking import migrate
 from app.storage.cancellation import PostgresCancellationStore
 from app.storage.dialogue import PostgresDialogueStore
-from app.storage.schema import SCHEMA_VERSION, cancellations, metadata, schema_versions
+from app.storage.schema import (
+    SCHEMA_VERSION,
+    cancellations,
+    delivery_journal,
+    metadata,
+    outbox_jobs,
+    schema_versions,
+)
 
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.postgres)])
@@ -146,7 +153,9 @@ async def test_restore_unsent_preserves_original_deadline(cancellation_stores):
 
 @pytest.mark.postgres
 async def test_migration_two_to_three_preserves_dialogue(pg_blank_engine):
-    legacy = [t for t in metadata.sorted_tables if t is not cancellations]
+    legacy = [
+        t for t in metadata.sorted_tables if t not in (cancellations, outbox_jobs, delivery_journal)
+    ]
     async with pg_blank_engine.begin() as connection:
         await connection.run_sync(lambda sync: metadata.create_all(sync, tables=legacy))
         await connection.execute(insert(schema_versions).values(version=2))
