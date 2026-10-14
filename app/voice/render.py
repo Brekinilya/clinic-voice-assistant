@@ -37,6 +37,15 @@ MONTHS = (
     "ноября",
     "декабря",
 )
+# Написания одного профиля, как их сводит backend при сопоставлении врачей
+SPECIALTY_ALIASES = {
+    "лор (отоларинголог)": "лор",
+    "отоларинголог": "лор",
+    "оториноларинголог": "лор",
+    "детский отоларинголог": "детский лор",
+    "детский оториноларинголог": "детский лор",
+    "травматолог-ортопед": "травматолог",
+}
 # «Послезавтра» на слух путают с «завтра»: дальше завтрашнего дня — день недели, как в разделе 5
 RELATIVE = {0: "сегодня", 1: "завтра"}
 # Если реплика не помещается в 20 слов: «в среду, двадцать восьмого октября» → «двадцать восьмого октября»
@@ -188,14 +197,19 @@ def say_person(name: str, case: str = "nomn", *, surname_only: bool = False) -> 
 
 
 def say_specialty(name: str, form: str = "") -> str:
-    """Специальность по формам из config/synonyms.yaml; незнакомую склоняем по словам."""
+    """Специальность по формам из config/synonyms.yaml; незнакомую склоняем по словам.
+
+    Название может прийти со стенда («Лор (отоларинголог)») или из истории («оториноларинголог»).
+    """
     form = form or "nomn"
     specialties = load_specialties()
-    known = specialties.get(name.lower())
-    if known is None:
-        known = next((s for s in specialties.values() if name.lower() in s.forms.values()), None)
-    if known is not None:
-        return known.forms[form]
+    known = None
+    for candidate in (name.lower(), SPECIALTY_ALIASES.get(name.lower().replace("ё", "е"))):
+        known = specialties.get(candidate) or next(
+            (s for s in specialties.values() if candidate in s.forms.values()), None
+        )
+        if known is not None:
+            return known.forms[form]
     return _inflect_phrase(name, form)
 
 
