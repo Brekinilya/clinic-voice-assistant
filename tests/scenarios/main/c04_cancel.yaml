@@ -15,7 +15,7 @@ steps:
   - say: greeting.inbound
   - patient: Отмените, пожалуйста, запись к лору.
     intent: I-03
-    general: {visit_ref: {specialty: оториноларинголог}}
+    general: {visit_ref: {specialty: лор}}
     say: ident.ask
   - patient: Иванов Сергей Петрович, третье января девяностого.
     parse:

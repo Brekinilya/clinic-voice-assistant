@@ -8,7 +8,7 @@ doctors:
   sergeev: {full_name: Сергеев Павел Ильич, specialty: терапевт, is_active: true, room: 216}
   orlova: {full_name: Орлова Елена Павловна, specialty: кардиолог, is_active: true, room: 305}
   zakharov: {full_name: Захаров Дмитрий Олегович, specialty: невролог, is_active: true, room: 310}
-  belova: {full_name: Белова Ирина Олеговна, specialty: оториноларинголог, is_active: true, room: 221}
+  belova: {full_name: Белова Ирина Олеговна, specialty: лор, is_active: true, room: 221}
   lebedev: {full_name: Лебедев Сергей Игоревич, specialty: офтальмолог, is_active: true, room: 118}
   volkov: {full_name: Волков Артём Сергеевич, specialty: хирург, is_active: true, room: 112}
   nikitina: {full_name: Никитина Ирина Владимировна, specialty: хирург, is_active: true, room: 112}

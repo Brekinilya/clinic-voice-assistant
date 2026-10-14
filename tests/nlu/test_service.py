@@ -29,7 +29,7 @@ def test_identification_is_typed_and_hidden_from_repr():
 def test_booking_request_with_constraints():
     result = ask("Мне к лору, но лучше не в пятницу, после обеда")
     assert result.intents == ("I-01",)
-    assert result.slots.specialty == "оториноларинголог"
+    assert result.slots.specialty == "лор"
     assert result.slots.exclude_weekdays == (5,)
     assert (result.slots.time_from, result.slots.time_to) == (time(12), time(16))
 
