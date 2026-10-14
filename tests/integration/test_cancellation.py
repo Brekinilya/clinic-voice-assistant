@@ -199,7 +199,9 @@ async def test_quota_before_patch_requires_new_yes_without_extending_deadline(ca
         assert waiting["code"] == "WAIT_MIS" and emulator.patch_count == 0
         action = await cancellation.store.get(prepared["cancel_proposal"]["action_id"])
         assert action.state == CancelState.PREPARED and action.confirmed_turn is None
-        assert action.expires_at == datetime.fromisoformat(prepared["cancel_proposal"]["expires_at"])
+        assert action.expires_at == datetime.fromisoformat(
+            prepared["cancel_proposal"]["expires_at"]
+        )
         assert (await turn(client, 5, "Да"))["code"] == "WAIT_MIS"
         clock.value += timedelta(seconds=60)
         assert emulator.patch_count == 0
