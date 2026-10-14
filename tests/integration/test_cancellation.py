@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 import yaml
@@ -199,7 +199,7 @@ async def test_quota_before_patch_requires_new_yes_without_extending_deadline(ca
         assert waiting["code"] == "WAIT_MIS" and emulator.patch_count == 0
         action = await cancellation.store.get(prepared["cancel_proposal"]["action_id"])
         assert action.state == CancelState.PREPARED and action.confirmed_turn is None
-        assert action.expires_at.isoformat() == prepared["cancel_proposal"]["expires_at"]
+        assert action.expires_at == datetime.fromisoformat(prepared["cancel_proposal"]["expires_at"])
         assert (await turn(client, 5, "Да"))["code"] == "WAIT_MIS"
         clock.value += timedelta(seconds=60)
         assert emulator.patch_count == 0
@@ -269,7 +269,7 @@ async def test_past_visit_is_not_offered_and_no_disclosure_before_identity(cance
         assert emulator.patch_count == 0
 
 
-async def test_final_refusal_and_concurrent_yes_cannot_cancel_twice(cancel_engine):
+async def test_final_refusal_aborts_prepared_cancellation(cancel_engine):
     async with pipeline(SETUP, pg_engine=cancel_engine) as (client, service, emulator, *_):
         prepared = await prepare(client)
         assert (await turn(client, 4, "Нет"))["code"] == "CALL_ENDED"
@@ -277,6 +277,9 @@ async def test_final_refusal_and_concurrent_yes_cannot_cancel_twice(cancel_engin
             prepared["cancel_proposal"]["action_id"]
         )
         assert action.state == CancelState.ABORTED and emulator.patch_count == 0
+
+
+async def test_concurrent_yes_cannot_cancel_twice(cancel_engine):
     async with pipeline(SETUP, pg_engine=cancel_engine) as (client, _, emulator, *_):
         await prepare(client)
         results = await asyncio.gather(*(turn(client, 4, "Да") for _ in range(5)))
