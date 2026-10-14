@@ -176,9 +176,11 @@ class CallSession:
             audio = self._carry_audio + GLUE + audio
             self._carry_audio = b""
         self._responder_audio = audio
-        self._responder = asyncio.create_task(self._respond(self.turn_id, audio, self.now()))
+        self._responder = asyncio.create_task(
+            self._respond(self.turn_id, audio, self.now(), self.endpointer.end_silence_ms)
+        )
 
-    async def _respond(self, turn: int, audio: bytes, detected: float) -> None:
+    async def _respond(self, turn: int, audio: bytes, detected: float, silence: int) -> None:
         text = await self._transcribe(audio)
         recognized = self.now()
         await self.channel.send_json(
@@ -199,6 +201,8 @@ class CallSession:
         answered = self.now()
         timing = {
             "turn_id": turn,
+            # Шлюз ждал столько тишины, чтобы понять, что фраза кончилась
+            "silence_ms": silence,
             "asr_ms": round((recognized - detected) * 1000),
             "dialog_ms": round((answered - recognized) * 1000),
         }
@@ -292,8 +296,7 @@ class CallSession:
             if timing is not None:
                 timing["tts_ms"] = round((self.now() - started) * 1000)
                 timing["total_ms"] = round((self.now() - detected) * 1000)
-                # От настоящего конца речи: шлюз ещё ждал тишину, чтобы понять, что фраза кончилась
-                timing["since_speech_ms"] = timing["total_ms"] + self.endpointer.end_silence_ms
+                timing["since_speech_ms"] = timing["total_ms"] + timing["silence_ms"]
                 self.timings.append(timing)
                 await self.channel.send_json({"type": "timing", **timing})
                 timing = None
