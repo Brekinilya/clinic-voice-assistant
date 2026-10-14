@@ -3,8 +3,7 @@
 import re
 from functools import lru_cache
 
-import pymorphy3
-
+from app.nlu.lexicon import morph
 from app.nlu.parsers.dates import MONTHS, lookup
 from app.nlu.parsers.numbers import numeral
 
@@ -49,19 +48,10 @@ STOP = {
     "числа",
 }
 
-_morph: pymorphy3.MorphAnalyzer | None = None
-
-
-def _analyzer() -> pymorphy3.MorphAnalyzer:
-    global _morph
-    if _morph is None:
-        _morph = pymorphy3.MorphAnalyzer()
-    return _morph
-
 
 @lru_cache(maxsize=4096)
 def _parses(word: str):
-    return tuple(_analyzer().parse(word))
+    return tuple(morph().parse(word))
 
 
 def _tagged(word: str, tag: str):
