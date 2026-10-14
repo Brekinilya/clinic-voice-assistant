@@ -1,0 +1,36 @@
+id: M-09
+title: Платные услуги — цена из справочника
+source: раздел 5, С-09; раздел 2.6
+blocking: false
+expected: Цена только из справочника; услуги вне справочника и ДМС — платное отделение
+covers: [С-09]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  # прайс-лист раздела 2.6 — синтетический справочник, на стенде его нет
+  prices:
+    - {service: УЗИ щитовидной железы, price: 1300}
+
+dialogs:
+  - name: цена из справочника
+    steps:
+      - say: greeting.inbound
+      - patient: Сколько у вас стоит УЗИ щитовидки?
+        intent: I-08
+        general: {service: УЗИ щитовидной железы}
+        say: paid.price
+      - patient: Нет, спасибо, я просто узнать
+        parse: {expect: yes_no, intent: "no"}
+        say: closing.goodbye_short
+        end: true
+    result: {code: INFO_GIVEN, stand: unchanged}
+
+  - name: ДМС
+    steps:
+      - say: greeting.inbound
+      - patient: Вы работаете по ДМС?
+        intent: I-08
+        say: transfer.paid
+        transfer: {route: R-10, priority: P3}
+    result: {code: ESCALATED, stand: unchanged}

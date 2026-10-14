@@ -1,0 +1,36 @@
+id: D-15
+title: Пациент против записи разговора
+source: приложение Д, № 15
+blocking: false
+expected: Подтверждение отключения записи, продолжение обслуживания
+covers: ["3.4"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: сразу после приветствия
+    steps:
+      - say: greeting.inbound
+      - patient: Я против записи разговора
+        safety: {flags: [no_recording]}
+        say: [recording.off, ask.how_can_help]
+      - patient: Запишите к терапевту
+        intent: I-01
+        say: ident.ask
+    result:
+      recording: false
+      stand: unchanged
+
+  - name: посреди идентификации
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к терапевту
+        say: ident.ask
+      - patient: Не записывайте разговор
+        safety: {flags: [no_recording]}
+        say: [recording.off, ident.ask]
+    result:
+      recording: false
+      stand: unchanged

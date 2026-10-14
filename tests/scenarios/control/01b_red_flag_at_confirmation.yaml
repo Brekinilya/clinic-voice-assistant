@@ -1,0 +1,32 @@
+id: D-01b
+title: Красный флаг на подтверждении записи
+source: приложение Д, № 1; барьер на изменения в стенде
+blocking: true
+expected: Запись не создаётся, хотя пациент уже на шаге подтверждения; фраза про 103/112, перевод P1
+covers: [С-01, С-14]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне бы к терапевту на пятницу
+    intent: I-01
+    parse: {expect: free, slots: {specialty: терапевт, date_from: "2026-10-02", date_to: "2026-10-02"}}
+    say: ident.ask
+  - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+    say: booking.offer_first
+    options: ["02.10.2026 10:30", "02.10.2026 15:15"]
+  - patient: Давайте в десять тридцать
+    parse: {expect: choice, options: ["02.10.2026 10:30", "02.10.2026 15:15"], choice_index: 1}
+    say: booking.confirm
+  - patient: Подождите, мне плохо, не могу дышать
+    intent: I-11
+    safety: {flags: [red_a], rule: R-01}
+    say: emergency.call_103
+    transfer: {route: R-01, priority: P1}
+
+result:
+  code: EMERGENCY
+  stand: unchanged

@@ -1,0 +1,38 @@
+id: M-03
+title: Перенос записи — эталонный диалог
+source: раздел 5, С-03
+blocking: false
+expected: Запись перенесена на следующую неделю; старая отменяется только после успешного переноса
+covers: [С-03]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  visits:
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+
+steps:
+  - say: greeting.inbound
+  - patient: Я записана на четверг, хочу перенести.
+    intent: I-02
+    general: {visit_ref: {date: "2026-10-01"}}
+    say: ident.ask
+  - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого.
+    say: reschedule.found_one
+  - patient: Да, на следующую неделю.
+    parse: {expect: free, slots: {date_from: "2026-10-05", date_to: "2026-10-11"}}
+    say: reschedule.offer
+    options: ["05.10.2026 09:15", "06.10.2026 12:00", "07.10.2026 16:30"]
+  - patient: Вторник.
+    parse:
+      expect: choice
+      options: ["05.10.2026 09:15", "06.10.2026 12:00", "07.10.2026 16:30"]
+      choice_index: 2
+    say: reschedule.confirm
+  - patient: Да.
+    say: reschedule.done
+
+result:
+  code: RESCHEDULED
+  stand:
+    rescheduled: [{client: smirnova_ov, doctor: kuznetsova, from: "01.10.2026 08:45", to: "06.10.2026 12:00"}]

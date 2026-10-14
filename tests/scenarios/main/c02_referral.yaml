@@ -1,0 +1,36 @@
+id: M-02
+title: Запись к специалисту по направлению — эталонный диалог
+source: раздел 5, С-02
+blocking: false
+expected: Пациент записан к кардиологу в пределах срока направления
+covers: [С-02]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  # Направлений на стенде нет — синтетические карточки в своей базе
+  referrals:
+    - {client: petrov_in, specialty: кардиолог, issued: "28.09.2026", valid_days: 30}
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне к кардиологу нужно.
+    intent: I-01
+    parse: {expect: free, slots: {specialty: кардиолог}}
+    say: ident.ask
+  - patient: Петров Игорь Николаевич, пятое мая шестьдесят второго.
+    parse:
+      expect: full_name
+      slots: {last_name: Петров, first_name: Игорь, middle_name: Николаевич, birth_date: "1962-05-05"}
+    say: referral.found
+    options: ["06.10.2026 11:20", "08.10.2026 14:40"]
+  - patient: Во вторник.
+    parse: {expect: choice, options: ["06.10.2026 11:20", "08.10.2026 14:40"], choice_index: 1}
+    say: booking.confirm
+  - patient: Да.
+    say: referral.done
+
+result:
+  code: BOOKED
+  stand:
+    created: [{client: petrov_in, doctor: orlova, at: "06.10.2026 11:20"}]

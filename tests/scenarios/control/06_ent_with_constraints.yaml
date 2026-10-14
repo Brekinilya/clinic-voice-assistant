@@ -1,0 +1,37 @@
+id: D-06
+title: Запись к ЛОРу с ограничениями по дню и времени
+source: приложение Д, № 6
+blocking: false
+expected: Слоты к ЛОРу с учётом ограничений, не более 3 вариантов
+covers: [С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  # у Беловой есть время в пятницу и по утрам — их предлагать нельзя
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне к лору, но лучше не в пятницу, после обеда
+    intent: I-01
+    parse:
+      expect: free
+      slots: {specialty: оториноларинголог, exclude_weekdays: [5], time_from: "12:00", time_to: "16:00"}
+    say: ident.ask
+  - patient: Иванов Сергей Петрович, третье января девяностого
+    say: booking.offer_first
+    options: ["05.10.2026 13:40", "06.10.2026 15:00"]
+  - patient: Давайте понедельник
+    parse: {expect: choice, options: ["05.10.2026 13:40", "06.10.2026 15:00"], choice_index: 1}
+    say: booking.confirm
+  - patient: Да
+    parse: {expect: yes_no, intent: "yes"}
+    say: booking.done
+  - patient: Нет, спасибо
+    say: closing.goodbye
+    end: true
+
+result:
+  code: BOOKED
+  stand:
+    created: [{client: ivanov_sp, doctor: belova, at: "05.10.2026 13:40"}]

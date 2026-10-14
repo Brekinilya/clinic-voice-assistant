@@ -1,0 +1,45 @@
+id: D-07
+title: Отмена при двух активных записях
+source: приложение Д, № 7
+blocking: false
+expected: Перечисление записей, уточнение, предложение переноса один раз
+covers: [С-04]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+  visits:
+    - {client: ivanov_sp, doctor: kuznetsova, at: "01.10.2026 08:45"}
+    - {client: ivanov_sp, doctor: belova, at: "02.10.2026 10:40"}
+
+steps:
+  - say: greeting.inbound
+  - patient: Отмените мою запись
+    intent: I-03
+    say: ident.ask
+  - patient: Иванов Сергей Петрович, третье января девяностого
+    say: cancel.which
+    options:
+      - {doctor: kuznetsova, at: "01.10.2026 08:45"}
+      - {doctor: belova, at: "02.10.2026 10:40"}
+  - patient: Которая к лору
+    parse:
+      expect: choice
+      options:
+        - {doctor: kuznetsova, at: "01.10.2026 08:45"}
+        - {doctor: belova, at: "02.10.2026 10:40"}
+      choice_index: 2
+    say: cancel.offer_reschedule
+  - patient: Отменить, уже не нужно
+    intent: I-03
+    say: cancel.confirm
+  - patient: Да
+    parse: {expect: yes_no, intent: "yes"}
+    say: cancel.done
+    forbid: [перенести]
+
+result:
+  code: CANCELLED
+  stand:
+    cancelled: [{client: ivanov_sp, doctor: belova, at: "02.10.2026 10:40"}]
+    unchanged: [{client: ivanov_sp, doctor: kuznetsova, at: "01.10.2026 08:45"}]

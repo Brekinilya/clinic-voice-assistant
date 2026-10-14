@@ -1,0 +1,23 @@
+id: D-14
+title: «Вы робот?»
+source: приложение Д, № 14
+blocking: false
+expected: Честный ответ и предложение соединить с сотрудником
+covers: ["3.2"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Вы робот?
+    safety: {flags: [robot]}
+    say: robot.answer
+  - patient: Нет, не надо, запишите меня к окулисту
+    parse: {expect: yes_no, intent: "no"}
+    intent: I-01
+    say: ident.ask
+
+result:
+  stand: unchanged

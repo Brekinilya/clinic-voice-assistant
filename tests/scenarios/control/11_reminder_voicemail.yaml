@@ -1,0 +1,25 @@
+id: D-11
+title: Напоминание — автоответчик
+source: приложение Д, № 11
+blocking: false
+expected: Нейтральное сообщение без персональных данных
+covers: [С-10]
+
+setup:
+  now: "30.09.2026 11:00"
+  channel: outbound
+  call: {purpose: reminder, client: smirnova_ov}
+  visits:
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+
+steps:
+  # автоответчик распознаёт телефония; в текстовом канале — событие
+  - event: voicemail
+    patient: Абонент не может ответить. Оставьте сообщение после сигнала.
+    say: remind.voicemail
+    end: true
+    forbid: [Ольг, Викторовн, Смирнов, Кузнецов, терапевт, завтра, четверг, кабинет]
+
+result:
+  code: VOICEMAIL
+  stand: unchanged

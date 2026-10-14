@@ -1,0 +1,36 @@
+id: D-16
+title: Жалоба на регистратуру
+source: приложение Д, № 16
+blocking: false
+expected: Сочувствие, перевод на старшего администратора (R-03)
+covers: [С-15]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: в часы работы
+    steps:
+      - say: greeting.inbound
+      - patient: Хочу пожаловаться на регистратуру
+        intent: I-12
+        safety: {flags: [complaint], rule: R-03}
+        say: complaint.ack
+        transfer: {route: R-03, priority: P2}
+    result:
+      code: COMPLAINT
+      stand: unchanged
+      card: {intent: I-12, rule: R-03, priority: P2}
+
+  - name: вне часов — обратный звонок до 10:00 следующего рабочего дня
+    setup: {now: "03.10.2026 18:30"}
+    steps:
+      - say: greeting.inbound
+      - patient: Я уже третий день не могу к вам дозвониться, это безобразие!
+        intent: I-12
+        safety: {flags: [complaint], rule: R-03}
+        say: complaint.callback
+    result:
+      code: COMPLAINT
+      callback: {before: "05.10.2026 10:00"}
