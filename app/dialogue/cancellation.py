@@ -193,7 +193,7 @@ class CancellationConversation:
             return state, reply(
                 state,
                 turn.turn_id,
-                "Результат отмены уточняется. Для проверки скажите: проверьте отмену.",
+                "Результат отмены уточняется. Проверю его на вашей следующей реплике.",
                 code="CANCEL_RECONCILING",
             )
         state = state.model_copy(
@@ -223,12 +223,13 @@ class CancellationConversation:
                 )
                 return await self.identify_or_list(state, turn)
         if state.phase == Phase.CANCEL_RECONCILING:
-            if "I-04" in intents or "проверь" in turn.text.casefold() or "repeat" in intents:
-                action = await self.cancellation.reconcile(
-                    state.cancel_proposal.action_id, state.call_id
-                )
+            # Только чтение уже отправленной отмены: содержание реплики не разрешает PATCH.
+            action = await self.cancellation.reconcile(
+                state.cancel_proposal.action_id, state.call_id
+            )
+            if action.state == CancelState.CANCELLED:
                 return self.outcome(state, turn, action)
-            return await self.transfer(state, turn, "R-08")
+            return await self.transfer(state, turn, "R-06")
         if result.alternatives:
             state = state.model_copy(
                 update={"client_id": None, "phase": Phase.IDENTIFYING, "authorization": None}
@@ -264,7 +265,7 @@ class CancellationConversation:
             if state.visit_has_more and "дальше" in turn.text.casefold():
                 return await self.identify_or_list(state, turn, next_page=True)
         if state.phase == Phase.CANCEL_OFFER:
-            if "I-02" in intents or "перенес" in turn.text.casefold():
+            if "I-02" in intents:
                 return await self.transfer(state, turn, "R-08")
             if "I-03" in intents or "no" in intents:
                 return await self.prepare(state, turn)
