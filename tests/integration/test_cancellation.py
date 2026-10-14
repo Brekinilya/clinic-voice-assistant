@@ -32,6 +32,42 @@ async def prepare(client):
     return result
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Не переносите, просто отмените",
+        "Нет, не надо переносить, отменяйте",
+        "Не надо переносить",
+        "Не перенести, а отменить",
+    ],
+)
+async def test_negated_reschedule_selects_cancel_but_requires_final_yes(cancel_engine, answer):
+    async with pipeline(SETUP, pg_engine=cancel_engine) as (client, _, emulator, *_):
+        await turn(client, 1, "Отмените мою запись")
+        assert (await turn(client, 2, IDENTITY))["code"] == "RESCHEDULE_OFFERED"
+        prepared = await turn(client, 3, answer)
+        assert prepared["code"] == "CANCEL_CONFIRMATION_REQUIRED"
+        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        assert emulator.patch_count == emulator.write_count == 0
+        assert (await turn(client, 4, "Да"))["code"] == "CANCELLED"
+        assert emulator.patch_count == 1 and emulator.write_count == 0
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["Не отменяйте, лучше перенесите на пятницу", "Не могу прийти, давайте перенесём"],
+)
+async def test_positive_reschedule_never_prepares_cancellation(cancel_engine, answer):
+    async with pipeline(SETUP, pg_engine=cancel_engine) as (client, _, emulator, *_):
+        await turn(client, 1, "Отмените мою запись")
+        await turn(client, 2, IDENTITY)
+        offered = await turn(client, 3, answer)
+        assert offered["code"] != "CANCEL_CONFIRMATION_REQUIRED"
+        assert offered["cancel_proposal"] is None
+        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        assert emulator.patch_count == emulator.write_count == 0
+
+
 @pytest.mark.parametrize("path", ["main/c04_cancel.yaml", "control/07_cancel_one_of_two.yaml"])
 async def test_cancellation_yaml_dialogues(cancel_engine, path):
     case = yaml.safe_load((SCENARIOS / path).read_text(encoding="utf-8"))
@@ -109,7 +145,7 @@ async def test_unknown_patch_is_reconciled_without_repeating(cancel_engine, fail
             and pending["cancel_proposal"] == prepared["cancel_proposal"]
         )
         assert await turn(client, 4, "Да") == pending and emulator.patch_count == 1
-        result = await turn(client, 5, "Проверьте отмену")
+        result = await turn(client, 5, "Получилось?")
         assert result["code"] == "CANCELLED" and emulator.patch_count == 1
 
 
@@ -216,7 +252,7 @@ async def test_readback_quota_keeps_pending_and_does_not_repeat_patch(cancel_eng
         assert (await turn(client, 4, "Да"))["code"] == "CANCEL_RECONCILING"
         assert emulator.patch_count == 1
         clock.value += timedelta(seconds=60)
-        assert (await turn(client, 5, "Проверьте отмену"))["code"] == "CANCELLED"
+        assert (await turn(client, 5, "Хорошо"))["code"] == "CANCELLED"
         assert emulator.patch_count == 1
 
 
@@ -231,9 +267,8 @@ async def test_unknown_write_with_still_planned_visit_never_retries(cancel_engin
 
         service.booking.mis.change_visit = unknown
         assert (await turn(client, 4, "Да"))["code"] == "CANCEL_RECONCILING"
-        assert (await turn(client, 5, "Проверьте отмену"))["code"] == "CANCEL_RECONCILING"
-        handed = await turn(client, 6, "Да")
-        assert handed["transfer"]["route"] == "R-08"
+        handed = await turn(client, 5, "Получилось?")
+        assert handed["transfer"]["route"] == "R-06"
         assert handed["transfer"]["action_id"] is not None
         assert len(attempts) == 1 and emulator.patch_count == 0
         assert emulator.records["demo"][1].status == VisitStatus.PLANNED
