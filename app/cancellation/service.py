@@ -31,6 +31,8 @@ class CancellationService:
     async def prepare(
         self, call_id: str, client_id: int, selected: VisitSummary, reason: Reason | None = None
     ) -> CancelAction:
+        if reason == "reschedule":
+            raise BookingError("RESCHEDULE_REQUIRES_WORKFLOW")
         current = await self.mis.visit(selected.visit_id)
         if current.client_id != client_id:
             raise BookingError("IDENTIFICATION_REQUIRED")

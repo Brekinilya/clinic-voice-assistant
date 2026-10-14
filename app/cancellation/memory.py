@@ -7,6 +7,7 @@ from app.booking.models import ActionState, Approval, BookingError
 from app.cancellation.models import CancelAction, CancelState, Reason, check_approval
 from app.mis.models import Visit
 from app.outbox.models import cancellation_events
+from app.rescheduling.models import active as move_active
 from app.storage.memory_ledger import MemoryLedger
 
 ACTIVE = {CancelState.PREPARED, CancelState.COMMITTING, CancelState.RECONCILING}
@@ -20,6 +21,16 @@ class MemoryCancellationStore:
         self, call_id: str, before: Visit, now: datetime, reason: Reason | None = None
     ) -> CancelAction:
         async with self.ledger.lock:
+            if any(
+                move_active(m, now)
+                and (
+                    m.before.id == before.id
+                    or m.new_visit is not None
+                    and m.new_visit.id == before.id
+                )
+                for m in self.ledger.moves.values()
+            ):
+                raise BookingError("ACTION_PENDING")
             for key, action in self.ledger.cancellations.items():
                 if action.state == CancelState.PREPARED and action.expires_at <= now:
                     self.ledger.cancellations[key] = action.model_copy(

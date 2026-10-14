@@ -12,12 +12,15 @@ from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
 from app.dialogue.nlu_adapter import RulesInput
 from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
+from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
+from app.rescheduling.models import MoveState
+from app.rescheduling.service import RescheduleService
 from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
 
@@ -32,6 +35,7 @@ class BookingConversation:
         nlu: NluInterpreter | None = None,
         rooms: DoctorRooms | None = None,
         cancellation: CancellationService | None = None,
+        rescheduling: RescheduleService | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
@@ -45,19 +49,50 @@ class BookingConversation:
             if cancellation is not None
             else None
         )
+        self.rescheduling = (
+            RescheduleConversation(rescheduling, store, self.transfer, rooms)
+            if rescheduling
+            else None
+        )
         self.medical = MedicalConversation(
-            booking, store, self.transfer, cancellation=cancellation, release=self.release_call
+            booking,
+            store,
+            self.transfer,
+            cancellation=cancellation,
+            rescheduling=rescheduling,
+            release=self.release_call,
         )
 
     async def release_call(self, call_id: str) -> None:
         await self.booking.store.release_call_holds(call_id)
         if self.cancellation is not None:
             await self.cancellation.cancellation.store.release_call(call_id)
+        if self.rescheduling is not None:
+            await self.rescheduling.service.store.release_call(call_id)
 
     async def short_reply(
         self, state: DialogueState, turn: Turn
     ) -> tuple[DialogueState, Reply] | None:
         decision = self.safety.evaluate(state.call_id, turn)
+        if (
+            self.rescheduling
+            and state.move_proposal
+            and set(decision.flags) & {"robot", "no_recording"}
+        ):
+            action = await self.rescheduling.service.store.get(state.move_proposal.action_id)
+            if action.state == MoveState.HELD:
+                await self.rescheduling.service.store.release_call(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.MOVE_OFFERED,
+                        "move_proposal": None,
+                        "authorization": None,
+                    }
+                )
+            else:
+                state = state.model_copy(
+                    update={"phase": Phase.MOVE_PENDING, "authorization": None}
+                )
         if "medical" in decision.flags:
             return await self.medical.question(state, turn)
         if "robot" in decision.flags:
@@ -83,9 +118,13 @@ class BookingConversation:
         turn: Turn,
         route: str,
         priority: Literal["P1", "P2", "P3"] = "P3",
+        *,
+        reason: Literal["move_create_rejected", "move_manual"] | None = None,
     ) -> tuple[DialogueState, Reply]:
         state = await self.store.preempt(
-            state.call_id, turn.turn_id, TransferRequest(route=route, priority=priority)
+            state.call_id,
+            turn.turn_id,
+            TransferRequest(route=route, priority=priority, reason=reason),
         )
         await self.release_call(state.call_id)
         return state, handoff_reply(state, turn.turn_id)
@@ -172,26 +211,107 @@ class BookingConversation:
                 return await self.medical.decline(state, turn)
             # Уточнение дня начинает подбор, но не служит подтверждением записи.
             if "yes" in intents or (refinements and not intents & {"no", "maybe", "opt_out"}):
-                if state.phase in {Phase.RECONCILING, Phase.CANCEL_RECONCILING}:
+                if state.phase in {
+                    Phase.RECONCILING,
+                    Phase.CANCEL_RECONCILING,
+                    Phase.MOVE_PENDING,
+                    Phase.MOVE_FINISH_CONFIRM,
+                }:
                     return await self.transfer(state, turn, "R-08")
                 state = self.visits.booking_state(state).model_copy(
                     update={"medical_boundary_pending": False, "specialty": None}
                 )
                 slots = slots.model_copy(update={"specialty": slots.specialty or "терапевт"})
                 intents.add("I-01")
-            elif intents & {"I-01", "I-04"} or slots.specialty or slots.doctor:
+            elif intents & {"I-01", "I-02", "I-04"} or slots.specialty or slots.doctor:
                 state = state.model_copy(update={"medical_boundary_pending": False})
             elif refinements:
                 return self.medical.prompt(state, turn)
         if slots.on_behalf in {"other", "child"} or (
             requested_owner(turn.text) == "other"
             and (
-                state.purpose in {"visits", "cancel"}
-                or intents & {"I-03", "I-04"}
+                state.purpose in {"visits", "cancel", "reschedule"}
+                or intents & {"I-02", "I-03", "I-04"}
                 or mentions_existing_visits(turn.text)
             )
         ):
             return await self.visits.privacy_transfer(state, turn)
+        if self.rescheduling and (state.purpose == "reschedule" or "I-02" in intents):
+            sent = False
+            if state.move_proposal:
+                known = await self.rescheduling.service.store.get(state.move_proposal.action_id)
+                sent = known.state not in {MoveState.HELD, MoveState.ABORTED, MoveState.EXPIRED}
+            if state.phase == Phase.MOVE_EMPTY and (
+                "yes" in intents or "I-01" in intents or slots.specialty
+            ):
+                state = self.visits.booking_state(state)
+                if slots.specialty is None:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "К какому врачу хотите записаться?",
+                        code="SPECIALTY_REQUIRED",
+                    )
+                intents.add("I-01")
+            elif state.purpose == "reschedule" and (
+                "I-03" in intents or "I-01" in intents and wants_new_booking(turn.text)
+            ):
+                if sent:
+                    return await self.transfer(state, turn, "R-08")
+                await self.rescheduling.service.store.release_call(state.call_id)
+                state = self.visits.booking_state(state).model_copy(
+                    update={"move_proposal": None, "move_target": None}
+                )
+            elif (
+                state.purpose == "reschedule"
+                and "I-04" in intents
+                and state.phase == Phase.RESCHEDULED
+            ):
+                return await self.visits.start(state, turn, result)
+            else:
+                try:
+                    if (
+                        state.purpose != "reschedule"
+                        or state.move_target is None
+                        and state.move_proposal is None
+                        and state.phase
+                        not in {Phase.IDENTIFYING, Phase.MOVE_CHOOSING, Phase.MOVE_EMPTY}
+                    ):
+                        await self.release_call(state.call_id)
+                        return await self.rescheduling.start(state, turn, result)
+                    return await self.rescheduling.step(state, turn, result)
+                except BookingError as error:
+                    if str(error) in {"ACTION_PENDING", "CANCELLATION_BUSY"}:
+                        return await self.transfer(state, turn, "R-08")
+                    if state.move_proposal:
+                        action = await self.rescheduling.service.store.get(
+                            state.move_proposal.action_id
+                        )
+                        if action.state not in {
+                            MoveState.HELD,
+                            MoveState.ABORTED,
+                            MoveState.EXPIRED,
+                        }:
+                            if str(error) == "CONFIRMATION_INTERRUPTED":
+                                raise
+                            return await self.transfer(state, turn, "R-06")
+                    if str(error) in {"VISIT_CHANGED", "VISIT_PAST", "HOLD_NOT_ACTIVE"}:
+                        await self.rescheduling.service.store.release_call(state.call_id)
+                        state = state.model_copy(
+                            update={
+                                "move_proposal": None,
+                                "move_target": None,
+                                "options": (),
+                                "phase": Phase.MOVE_CHOOSING,
+                            }
+                        )
+                        return state, reply(
+                            state,
+                            turn.turn_id,
+                            "Прежняя запись изменилась. Уточните запись для переноса.",
+                            code="VISIT_CHANGED",
+                        )
+                    raise
         if self.cancellation is not None and (state.purpose == "cancel" or "I-03" in intents):
             if (
                 state.purpose == "cancel"

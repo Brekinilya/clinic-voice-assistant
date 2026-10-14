@@ -1,7 +1,14 @@
 """Недоступная доставка и идемпотентный демонстрационный приём без настоящих SMS."""
 
 from app.clock import CLINIC_TIMEZONE
-from app.outbox.models import CancellationSms, DeliveryReceipt, JournalEntry, OutboxError, OutboxJob
+from app.outbox.models import (
+    CancellationSms,
+    DeliveryReceipt,
+    JournalEntry,
+    OutboxError,
+    OutboxJob,
+    RescheduleSms,
+)
 from app.outbox.ports import DeliveryBlocked
 from app.ports import Clock
 from app.storage.memory_ledger import MemoryLedger
@@ -17,6 +24,13 @@ class DisabledDelivery:
 
 def journal_entry(job: OutboxJob, clock: Clock) -> JournalEntry:
     text = None
+    if isinstance(job.payload, RescheduleSms):
+        at = job.payload.scheduled_at.astimezone(CLINIC_TIMEZONE)
+        room = f", каб. {job.payload.room}" if job.payload.room else ""
+        text = (
+            f"Поликлиника № 7: ваша запись перенесена на {at:%d.%m} в {at:%H:%M}{room}, "
+            f"врач {job.payload.doctor_name}. Прежняя запись отменена."
+        )
     if isinstance(job.payload, CancellationSms):
         at = job.payload.scheduled_at.astimezone(CLINIC_TIMEZONE)
         # Шаблон отмены из приложения Б: без специальности и сведений о пациенте.

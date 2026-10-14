@@ -23,8 +23,11 @@ def authorize_write(
     state: DialogueState, version: int, epoch: int, turn_id: int
 ) -> DialogueState | None:
     proposal = state.cancel_proposal if state.phase == Phase.CANCEL_CONFIRM else state.proposal
+    if state.phase in {Phase.MOVE_CONFIRM, Phase.MOVE_FINISH_CONFIRM}:
+        proposal = state.move_proposal
     if (
-        state.phase not in {Phase.HELD, Phase.CANCEL_CONFIRM}
+        state.phase
+        not in {Phase.HELD, Phase.CANCEL_CONFIRM, Phase.MOVE_CONFIRM, Phase.MOVE_FINISH_CONFIRM}
         or state.version != version
         or state.input_epoch != epoch
         or state.observed_turn_id != turn_id
@@ -47,7 +50,14 @@ def authorize_write(
 
 def handoff_reply(state: DialogueState, turn_id: int):
     route = state.transfer.route if state.transfer else "R-08"
-    if route == "R-01":
+    if route == "R-06" and state.transfer and state.transfer.reason:
+        phrases = (
+            "Не удалось создать новую запись. Прежнюю запись не отменял."
+            if state.transfer.reason == "move_create_rejected"
+            else "Перенос требует проверки сотрудником. Изменения сохранены в журнале.",
+            "Запрос регистратору подготовлен.",
+        )
+    elif route == "R-01":
         phrases = (
             "Немедленно позвоните в скорую помощь: сто три или сто двенадцать.",
             "Не ждите приёма в поликлинике. Запрос регистратору подготовлен.",
@@ -57,11 +67,20 @@ def handoff_reply(state: DialogueState, turn_id: int):
     else:
         phrases = ("Подготовлен запрос регистратору. Автоматическая запись остановлена.",)
     return reply(
-        state, turn_id, *phrases, code="EMERGENCY" if route == "R-01" else "TRANSFER_REQUESTED"
+        state,
+        turn_id,
+        *phrases,
+        code="EMERGENCY"
+        if route == "R-01"
+        else "MOVE_NEEDS_OPERATOR"
+        if route == "R-06" and state.transfer and state.transfer.reason
+        else "TRANSFER_REQUESTED",
     )
 
 
 def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueState:
+    if state.move_proposal is not None:
+        transfer = transfer.model_copy(update={"action_id": state.move_proposal.action_id})
     if state.cancel_proposal is not None:
         transfer = transfer.model_copy(update={"action_id": state.cancel_proposal.action_id})
     if state.proposal is not None:
@@ -76,6 +95,8 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
             "proposal": None,
             "cancel_proposal": None,
             "cancel_target": None,
+            "move_proposal": None,
+            "move_target": None,
             "options": (),
             "retry_at": None,
             "transfer": transfer,

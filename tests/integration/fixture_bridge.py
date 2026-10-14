@@ -20,6 +20,7 @@ from app.main import create_app
 from app.mis.emulator import MisEmulator
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Client, Doctor, Visit, VisitStatus, parse_datetime
+from app.rescheduling.service import RescheduleService
 from app.settings import Settings
 
 SCENARIOS = Path(__file__).resolve().parents[1] / "scenarios"
@@ -97,6 +98,9 @@ async def pipeline(setup=None, *, pg_engine=None):
         dialogue_store = MemoryDialogueStore()
         booking_store = MemoryBookingStore(guard_reader=dialogue_store)
         cancellation_store = MemoryCancellationStore(booking_store.ledger, dialogue_store)
+        from app.rescheduling.memory import MemoryMoveStore
+
+        move_store = MemoryMoveStore(booking_store.ledger, dialogue_store)
     else:
         from app.storage.booking import PostgresBookingStore
         from app.storage.cancellation import PostgresCancellationStore
@@ -105,6 +109,9 @@ async def pipeline(setup=None, *, pg_engine=None):
         dialogue_store = PostgresDialogueStore(pg_engine)
         booking_store = PostgresBookingStore(pg_engine)
         cancellation_store = PostgresCancellationStore(pg_engine)
+        from app.storage.rescheduling import PostgresMoveStore
+
+        move_store = PostgresMoveStore(pg_engine)
     async with httpx.AsyncClient(
         base_url="https://offline.invalid/api/v1/",
         headers={"Authorization": "Bearer demo"},
@@ -124,6 +131,7 @@ async def pipeline(setup=None, *, pg_engine=None):
             safety,
             rooms=FixtureRooms(),
             cancellation=CancellationService(booking.mis, cancellation_store, clock),
+            rescheduling=RescheduleService(booking, move_store),
         )
         service = DialogueService(
             booking, dialogue_store, KEY, safety=safety, conversation=conversation

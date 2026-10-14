@@ -95,7 +95,10 @@ async def test_only_confirmed_cancel_enqueues_two_events_once(outbox_context):
     assert await ctx.store.claim(ctx.clock.now()) is None
     await asyncio.gather(*(enqueue(ctx) for _ in range(5)))
     jobs = await ctx.store.list()
-    assert len(jobs) == 2 and {j.payload.kind for j in jobs} == set(EventKind)
+    assert len(jobs) == 2 and {j.payload.kind for j in jobs} == {
+        EventKind.CANCELLATION_SMS,
+        EventKind.SLOT_RELEASED,
+    }
     assert all(j.source_id == ctx.action.action_id and j.state == JobState.PENDING for j in jobs)
     await ctx.cancellation.release_call(ctx.action.call_id)
     reopened = MemoryOutboxStore(ctx.ledger) if ctx.ledger else PostgresOutboxStore(ctx.engine)

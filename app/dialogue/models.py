@@ -9,6 +9,7 @@ from app.booking.models import BookingModel, Slot
 from app.booking.preferences import SlotPreferences
 from app.cancellation.models import CancelProposal
 from app.mis.models import MisId
+from app.rescheduling.models import MoveProposal
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
 
 CallId = Annotated[
@@ -34,6 +35,14 @@ class Phase(StrEnum):
     CANCEL_CONFIRM = "cancel_confirm"
     CANCEL_RECONCILING = "cancel_reconciling"
     CANCELLED = "cancelled"
+    MOVE_CHOOSING = "move_choosing"
+    MOVE_EMPTY = "move_empty"
+    MOVE_SOURCE = "move_source"
+    MOVE_OFFERED = "move_offered"
+    MOVE_CONFIRM = "move_confirm"
+    MOVE_FINISH_CONFIRM = "move_finish_confirm"
+    MOVE_PENDING = "move_pending"
+    RESCHEDULED = "rescheduled"
 
 
 class Turn(BookingModel):
@@ -70,6 +79,7 @@ class TransferRequest(BookingModel):
     priority: Literal["P1", "P2", "P3"]
     status: Literal["requested"] = "requested"
     action_id: str | None = None
+    reason: Literal["move_create_rejected", "move_manual"] | None = None
 
 
 class DialogueState(BookingModel):
@@ -93,7 +103,9 @@ class DialogueState(BookingModel):
     medical_boundary_pending: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
-    purpose: Literal["booking", "visits", "cancel"] = "booking"
+    purpose: Literal["booking", "visits", "cancel", "reschedule"] = "booking"
+    move_proposal: MoveProposal | None = None
+    move_target: VisitSummary | None = None
     cancel_proposal: CancelProposal | None = None
     cancel_target: VisitSummary | None = None
     cancel_reschedule_offered: bool = False
@@ -121,6 +133,7 @@ class Reply(BookingModel):
     visits: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     has_more_visits: bool = False
     cancel_proposal: CancelProposal | None = None
+    move_proposal: MoveProposal | None = None
 
     @field_validator("utterances")
     @classmethod
@@ -153,6 +166,7 @@ def reply(
         visits=state.visit_items,
         has_more_visits=state.visit_has_more,
         cancel_proposal=state.cancel_proposal,
+        move_proposal=state.move_proposal,
     )
 
 

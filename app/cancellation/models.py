@@ -9,7 +9,7 @@ from app.booking.models import Approval, BookingError, BookingModel
 from app.mis.models import Visit
 from app.visits.models import VisitSummary
 
-Reason = Literal["not_needed", "cannot_attend"]
+Reason = Literal["not_needed", "cannot_attend", "reschedule"]
 
 
 class CancelState(StrEnum):

@@ -12,6 +12,8 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
+from app.rescheduling.models import ACTIVE_MOVES, MoveState
+from app.rescheduling.models import active as move_active
 from app.storage.memory_ledger import MemoryLedger
 
 
@@ -23,6 +25,9 @@ class MemoryBookingStore:
         self._guard_reader = guard_reader
 
     def _expire(self, now: datetime) -> None:
+        for key, move in self.ledger.moves.items():
+            if move.state == "held" and move.expires_at <= now:
+                self.ledger.moves[key] = move.model_copy(update={"state": MoveState.EXPIRED})
         for key, action in self.actions.items():
             if action.state == ActionState.HELD and action.expires_at <= now:
                 self.actions[key] = action.model_copy(update={"state": ActionState.EXPIRED})
@@ -31,6 +36,11 @@ class MemoryBookingStore:
 
     def _available(self, slot: Slot) -> bool:
         return not any(
+            m.state in ACTIVE_MOVES
+            and m.slot.doctor_id == slot.doctor_id
+            and m.slot.scheduled_at == slot.scheduled_at
+            for m in self.ledger.moves.values()
+        ) and not any(
             a.slot.doctor_id == slot.doctor_id
             and a.slot.scheduled_at == slot.scheduled_at
             and a.state in ACTIVE_STATES
@@ -46,6 +56,16 @@ class MemoryBookingStore:
         async with self._lock:
             self._expire(now)
             previous = [a for a in self.actions.values() if a.call_id == call_id]
+            if any(
+                move_active(m, now)
+                and (
+                    (m.slot.doctor_id, m.slot.scheduled_at) == (slot.doctor_id, slot.scheduled_at)
+                    or m.before.client_id == client_id
+                    and m.slot.specialty == slot.specialty
+                )
+                for m in self.ledger.moves.values()
+            ):
+                raise BookingError("ACTION_PENDING")
             if any(a.state in {ActionState.COMMITTING, ActionState.RECONCILING} for a in previous):
                 raise BookingError("ACTION_PENDING")
             # Изменение выбора аннулирует предыдущую бронь и её подтверждение.

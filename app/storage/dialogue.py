@@ -134,6 +134,8 @@ class PostgresDialogueStore:
                     "proposal": None,
                     "cancel_proposal": None,
                     "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
                     "options": (),
                     "retry_at": None,
                     "authorization": None,

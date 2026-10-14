@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.cancellation.models import CancelAction
-from app.mis.models import MisId
+from app.mis.models import MisId, Visit
 
 MAX_ATTEMPTS = 5
 
@@ -20,6 +20,7 @@ class OutboxModel(BaseModel):
 class EventKind(StrEnum):
     CANCELLATION_SMS = "cancellation_sms"
     SLOT_RELEASED = "slot_released"
+    RESCHEDULE_SMS = "reschedule_sms"
 
 
 class CancellationSms(OutboxModel):
@@ -37,7 +38,17 @@ class ReleasedSlot(OutboxModel):
     scheduled_at: AwareDatetime
 
 
-Payload = Annotated[CancellationSms | ReleasedSlot, Field(discriminator="kind")]
+class RescheduleSms(OutboxModel):
+    kind: Literal[EventKind.RESCHEDULE_SMS] = EventKind.RESCHEDULE_SMS
+    client_id: MisId = Field(repr=False)
+    visit_id: MisId
+    old_visit_id: MisId
+    scheduled_at: AwareDatetime
+    doctor_name: str
+    room: str | None = None
+
+
+Payload = Annotated[CancellationSms | ReleasedSlot | RescheduleSms, Field(discriminator="kind")]
 
 
 class JobState(StrEnum):
@@ -101,10 +112,21 @@ def event_id(source_id: str, kind: EventKind) -> str:
     return uuid5(NAMESPACE_URL, f"clinic/cancellation/{source_id}/{kind}").hex
 
 
-def cancellation_events(action: CancelAction, now: datetime) -> tuple[OutboxJob, OutboxJob]:
+def cancellation_events(
+    action: CancelAction, now: datetime, *, new_visit: Visit | None = None, room=None
+) -> tuple[OutboxJob, OutboxJob]:
     visit = action.before
     payloads = (
-        CancellationSms(
+        RescheduleSms(
+            client_id=visit.client_id,
+            visit_id=new_visit.id,
+            old_visit_id=visit.id,
+            scheduled_at=new_visit.scheduled_at,
+            doctor_name=new_visit.doctor.full_name,
+            room=room,
+        )
+        if new_visit is not None
+        else CancellationSms(
             client_id=visit.client_id, visit_id=visit.id, scheduled_at=visit.scheduled_at
         ),
         ReleasedSlot(
@@ -114,6 +136,8 @@ def cancellation_events(action: CancelAction, now: datetime) -> tuple[OutboxJob,
             scheduled_at=visit.scheduled_at,
         ),
     )
+    if (action.reason == "reschedule") != (new_visit is not None):
+        raise OutboxError("RESCHEDULE_TARGET_REQUIRED")
     return tuple(
         OutboxJob(
             event_id=event_id(action.action_id, payload.kind),

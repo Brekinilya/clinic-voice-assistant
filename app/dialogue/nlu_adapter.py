@@ -23,10 +23,20 @@ class RulesInput:
             else "full_name"
             if state.phase == Phase.IDENTIFYING
             else "choice"
-            if state.phase in {Phase.OFFERED, Phase.CANCEL_CHOOSING}
+            if state.phase
+            in {Phase.OFFERED, Phase.CANCEL_CHOOSING, Phase.MOVE_CHOOSING, Phase.MOVE_OFFERED}
             else "yes_no"
             if state.phase
-            in {Phase.HELD, Phase.VERIFYING_OWNER, Phase.VISITS_SHOWN, Phase.CANCEL_CONFIRM}
+            in {
+                Phase.HELD,
+                Phase.VERIFYING_OWNER,
+                Phase.VISITS_SHOWN,
+                Phase.CANCEL_CONFIRM,
+                Phase.MOVE_SOURCE,
+                Phase.MOVE_EMPTY,
+                Phase.MOVE_CONFIRM,
+                Phase.MOVE_FINISH_CONFIRM,
+            }
             else "free"
         )
         options = tuple(
@@ -39,7 +49,7 @@ class RulesInput:
             )
             for s in state.options
         )
-        if state.phase == Phase.CANCEL_CHOOSING:
+        if state.phase in {Phase.CANCEL_CHOOSING, Phase.MOVE_CHOOSING}:
             options = tuple(
                 DialogOption(
                     id=f"visit-{v.visit_id}",
@@ -51,7 +61,9 @@ class RulesInput:
                 for v in state.visit_items
             )
         context = NluContext(
-            intent="I-03"
+            intent="I-02"
+            if state.purpose == "reschedule"
+            else "I-03"
             if state.purpose == "cancel"
             else "I-04"
             if state.purpose == "visits"

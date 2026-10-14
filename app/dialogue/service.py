@@ -109,6 +109,8 @@ class DialogueService:
                     "proposal": None,
                     "cancel_proposal": None,
                     "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
                     "options": (),
                     "visit_items": (),
                     "visit_cursor": None,

@@ -23,16 +23,17 @@ from app.storage.schema import (
     cancellations,
     delivery_journal,
     metadata,
+    moves,
     outbox_jobs,
     schema_versions,
 )
 
 
 @pytest.mark.postgres
-async def test_migration_three_to_four_preserves_cancellation_without_retroactive_jobs(
+async def test_migration_three_preserves_cancellation_without_retroactive_jobs(
     pg_blank_engine,
 ):
-    legacy = [t for t in metadata.sorted_tables if t not in (outbox_jobs, delivery_journal)]
+    legacy = [t for t in metadata.sorted_tables if t not in (outbox_jobs, delivery_journal, moves)]
     clock = DemoClock()
     visit = Visit(
         id=1,

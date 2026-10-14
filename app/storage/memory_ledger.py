@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from app.booking.models import BookingAction
     from app.cancellation.models import CancelAction
     from app.outbox.models import JournalEntry, OutboxJob
+    from app.rescheduling.models import MoveAction
 
 
 class MemoryLedger:
@@ -16,3 +17,4 @@ class MemoryLedger:
         self.cancellations: dict[str, CancelAction] = {}
         self.outbox: dict[str, OutboxJob] = {}
         self.deliveries: dict[str, JournalEntry] = {}
+        self.moves: dict[str, MoveAction] = {}

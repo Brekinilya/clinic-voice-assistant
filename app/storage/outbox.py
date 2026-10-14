@@ -37,8 +37,8 @@ def decode(row) -> OutboxJob:
     return job
 
 
-async def enqueue_cancellation(connection, action: CancelAction, now: datetime) -> None:
-    for event in cancellation_events(action, now):
+async def enqueue_cancellation(connection, action: CancelAction, now: datetime, **kwargs) -> None:
+    for event in cancellation_events(action, now, **kwargs):
         await connection.execute(
             insert(outbox_jobs)
             .values(**values(event))

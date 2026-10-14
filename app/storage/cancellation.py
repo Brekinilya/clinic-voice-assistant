@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.booking.models import Approval, BookingError
@@ -12,7 +12,7 @@ from app.cancellation.models import CancelAction, CancelState, Reason, check_app
 from app.mis.models import Visit
 from app.storage.journal import journal_transaction
 from app.storage.outbox import enqueue_cancellation
-from app.storage.schema import actions, cancellations, dialogue_sessions
+from app.storage.schema import actions, active_moves, cancellations, dialogue_sessions, moves
 
 
 def decode(row) -> CancelAction:
@@ -45,6 +45,17 @@ class PostgresCancellationStore:
         self, call_id: str, before: Visit, now: datetime, reason: Reason | None = None
     ) -> CancelAction:
         async with self._transaction() as connection:
+            moving = (
+                await connection.execute(
+                    select(moves.c.action_id).where(
+                        active_moves,
+                        or_(moves.c.old_visit_id == before.id, moves.c.new_visit_id == before.id),
+                        or_(moves.c.state != "held", moves.c.expires_at > now),
+                    )
+                )
+            ).first()
+            if moving:
+                raise BookingError("ACTION_PENDING")
             await connection.execute(
                 update(cancellations)
                 .where(cancellations.c.state == "prepared", cancellations.c.expires_at <= now)

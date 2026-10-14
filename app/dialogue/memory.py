@@ -94,6 +94,8 @@ class MemoryDialogueStore:
                     "proposal": None,
                     "cancel_proposal": None,
                     "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
                     "options": (),
                     "retry_at": None,
                     "authorization": None,
@@ -136,6 +138,15 @@ class MemoryDialogueStore:
         async with self._lock:
             state = self.states.get(approval.call_id)
             check_cancel_guard(
+                None if state is None else state.model_dump(mode="json"), approval, action
+            )
+
+    async def check_move_guard(self, approval, action):
+        from app.rescheduling.guard import check_move_guard
+
+        async with self._lock:
+            state = self.states.get(approval.call_id)
+            check_move_guard(
                 None if state is None else state.model_dump(mode="json"), approval, action
             )
 

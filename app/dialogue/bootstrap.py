@@ -19,10 +19,13 @@ from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
 from app.mis.http import HttpMedicalSystem
 from app.ports import Clock
+from app.rescheduling.memory import MemoryMoveStore
+from app.rescheduling.service import RescheduleService
 from app.settings import AppMode, Settings
 from app.storage.booking import PostgresBookingStore
 from app.storage.cancellation import PostgresCancellationStore
 from app.storage.dialogue import PostgresDialogueStore
+from app.storage.rescheduling import PostgresMoveStore
 from app.storage.schema import SCHEMA_VERSION, schema_versions
 
 
@@ -48,11 +51,13 @@ async def open_command_backend(settings: Settings, clock: Clock):
             booking_store = PostgresBookingStore(engine)
             dialogue_store = PostgresDialogueStore(engine)
             cancellation_store = PostgresCancellationStore(engine)
+            move_store = PostgresMoveStore(engine)
             key = settings.dialogue_hash_key.get_secret_value().encode()
         else:
             dialogue_store = MemoryDialogueStore()
             booking_store = MemoryBookingStore(guard_reader=dialogue_store)
             cancellation_store = MemoryCancellationStore(booking_store.ledger, dialogue_store)
+            move_store = MemoryMoveStore(booking_store.ledger, dialogue_store)
             key = token_bytes(32)
         emulator = demo_emulator(clock)
         async with httpx.AsyncClient(
@@ -74,6 +79,7 @@ async def open_command_backend(settings: Settings, clock: Clock):
                     dialogue_store,
                     safety,
                     cancellation=CancellationService(booking.mis, cancellation_store, clock),
+                    rescheduling=RescheduleService(booking, move_store),
                 )
                 if safety is not None
                 else None

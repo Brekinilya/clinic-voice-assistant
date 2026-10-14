@@ -86,6 +86,10 @@ class BookingService:
         if slot.scheduled_at < now + timedelta(minutes=30):
             raise BookingError("TOO_SOON")
 
+    def validate_slot(self, client_id: int, slot: Slot) -> None:
+        """Общие правила расписания и допуска для создания и переноса."""
+        self._check_slot(client_id, slot)
+
     async def options(
         self,
         client_id: int,

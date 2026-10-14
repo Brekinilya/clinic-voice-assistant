@@ -22,6 +22,7 @@ from app.storage.schema import (
     cancellations,
     delivery_journal,
     metadata,
+    moves,
     outbox_jobs,
     schema_versions,
 )
@@ -152,9 +153,11 @@ async def test_restore_unsent_preserves_original_deadline(cancellation_stores):
 
 
 @pytest.mark.postgres
-async def test_migration_two_to_three_preserves_dialogue(pg_blank_engine):
+async def test_migration_two_preserves_dialogue(pg_blank_engine):
     legacy = [
-        t for t in metadata.sorted_tables if t not in (cancellations, outbox_jobs, delivery_journal)
+        t
+        for t in metadata.sorted_tables
+        if t not in (cancellations, outbox_jobs, delivery_journal, moves)
     ]
     async with pg_blank_engine.begin() as connection:
         await connection.run_sync(lambda sync: metadata.create_all(sync, tables=legacy))

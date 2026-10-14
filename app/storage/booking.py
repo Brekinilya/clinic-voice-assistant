@@ -9,6 +9,8 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
+    or_,
     select,
     text,
     update,
@@ -31,25 +33,47 @@ from app.storage.schema import (
     SCHEMA_VERSION,
     actions,
     active,
+    active_moves,
     budget_blocks,
     budget_requests,
     dialogue_sessions,
     metadata,
+    moves,
     schema_versions,
 )
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграции 1/2/3 → 4 добавляют диалог, отмены и очередь без удаления данных."""
+    """Миграции 1/2/3/4 → 5 сохраняют прежние журналы и добавляют перенос."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [2], [3], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [3], [4], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
-        elif versions in ([1], [2], [3]):
+        elif versions in ([1], [2], [3], [4]):
+            checks = await connection.run_sync(
+                lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
+            )
+            kinds = [
+                c
+                for c in checks
+                if "cancellation_sms" in c["sqltext"] and "slot_released" in c["sqltext"]
+            ]
+            if len(kinds) != 1:
+                raise RuntimeError("неизвестное ограничение видов событий")
+            if "reschedule_sms" not in kinds[0]["sqltext"]:
+                name = connection.dialect.identifier_preparer.quote(kinds[0]["name"])
+                await connection.execute(
+                    text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+                    )
+                )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
@@ -76,6 +100,12 @@ class PostgresBookingStore:
 
     async def _expire(self, connection, now: datetime) -> None:
         await connection.execute(
+            text(
+                "UPDATE backend_reschedule_actions SET state = 'expired', data = jsonb_set(data, '{state}', '\"expired\"'::jsonb) WHERE state = 'held' AND expires_at <= :now"
+            ),
+            {"now": now},
+        )
+        await connection.execute(
             update(actions)
             .where(actions.c.state == "held", actions.c.expires_at <= now)
             .values(state="expired")
@@ -96,7 +126,16 @@ class PostgresBookingStore:
                     actions.c.scheduled_at == slot.scheduled_at,
                 )
             )
-            return result.first() is None
+            other = (
+                await connection.execute(
+                    select(moves.c.action_id).where(
+                        active_moves,
+                        moves.c.doctor_id == slot.doctor_id,
+                        moves.c.scheduled_at == slot.scheduled_at,
+                    )
+                )
+            ).first()
+            return result.first() is None and other is None
 
     async def hold(self, call_id: str, client_id: int, slot: Slot, now: datetime) -> BookingAction:
         async with self._transaction() as connection:
@@ -106,6 +145,21 @@ class PostgresBookingStore:
                     await connection.execute(select(actions).where(actions.c.call_id == call_id))
                 ).all()
             )
+            other = (
+                await connection.execute(
+                    select(moves.c.action_id).where(
+                        active_moves,
+                        or_(
+                            (moves.c.doctor_id == slot.doctor_id)
+                            & (moves.c.scheduled_at == slot.scheduled_at),
+                            (moves.c.client_id == client_id)
+                            & (moves.c.specialty == slot.specialty),
+                        ),
+                    )
+                )
+            ).first()
+            if other:
+                raise BookingError("ACTION_PENDING")
             if any(a.state in {"committing", "reconciling"} for a in previous):
                 raise BookingError("ACTION_PENDING")
             await connection.execute(

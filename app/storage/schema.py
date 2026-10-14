@@ -1,4 +1,4 @@
-"""Единая схема backend; версия 4 добавляет очередь и демонстрационный журнал."""
+"""Единая схема backend; версия 5 добавляет журнал переноса и SMS переноса."""
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 actions = Table(
     "backend_booking_actions",
@@ -130,7 +130,10 @@ outbox_jobs = Table(
     Column("last_error", String(40)),
     # SQL NULL означает отсутствие квитанции; JSON null нарушил бы проверку состояния.
     Column("receipt", JSONB(none_as_null=True)),
-    CheckConstraint("kind IN ('cancellation_sms','slot_released')"),
+    CheckConstraint(
+        "kind IN ('cancellation_sms','slot_released','reschedule_sms')",
+        name="backend_outbox_kind_allowed",
+    ),
     CheckConstraint(
         "state IN ('pending','processing','retry','unknown','blocked','acknowledged','failed')"
     ),
@@ -149,3 +152,48 @@ delivery_journal = Table(
     Column("event_id", String(32), ForeignKey(outbox_jobs.c.event_id), primary_key=True),
     Column("entry", JSONB, nullable=False),
 )
+
+moves = Table(
+    "backend_reschedule_actions",
+    metadata,
+    Column("action_id", String(32), primary_key=True),
+    Column("call_id", String(128), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("old_visit_id", Integer, nullable=False),
+    Column("client_id", Integer, nullable=False),
+    Column("doctor_id", Integer, nullable=False),
+    Column("scheduled_at", DateTime(timezone=True), nullable=False),
+    Column("specialty", String(100), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("state", String(20), nullable=False),
+    Column("new_visit_id", Integer),
+    Column("cancellation_action_id", String(32), ForeignKey(cancellations.c.action_id)),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("revision > 0 AND old_visit_id > 0 AND client_id > 0 AND doctor_id > 0"),
+    CheckConstraint(
+        "state IN ('held','creating','create_unknown','new_created','cancelling','cancel_unknown','rescheduled','manual','rejected','aborted','expired')"
+    ),
+    CheckConstraint(
+        "(state IN ('new_created','cancelling','cancel_unknown','rescheduled','manual')) = (new_visit_id IS NOT NULL)"
+    ),
+    CheckConstraint("(state = 'rescheduled') = (cancellation_action_id IS NOT NULL)"),
+)
+active_moves = moves.c.state.in_(
+    ["held", "creating", "create_unknown", "new_created", "cancelling", "cancel_unknown", "manual"]
+)
+Index("backend_move_old_visit", moves.c.old_visit_id, unique=True, postgresql_where=active_moves)
+Index(
+    "backend_move_new_slot",
+    moves.c.doctor_id,
+    moves.c.scheduled_at,
+    unique=True,
+    postgresql_where=active_moves,
+)
+Index(
+    "backend_move_specialty",
+    moves.c.client_id,
+    moves.c.specialty,
+    unique=True,
+    postgresql_where=active_moves,
+)
+Index("backend_move_revision", moves.c.call_id, moves.c.revision, unique=True)
