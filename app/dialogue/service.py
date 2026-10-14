@@ -7,7 +7,16 @@ from app.booking.models import ActionState, BookingError
 from app.booking.service import BookingService
 from app.dialogue.failures import mis_failure
 from app.dialogue.input import CommandInterpreter, InputInterpreter, Operation
-from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
+from app.dialogue.models import (
+    DialogueState,
+    InputStart,
+    Phase,
+    Proposal,
+    Reply,
+    TransferRequest,
+    Turn,
+    reply,
+)
 from app.dialogue.ports import Conversation, DialogueStore, SafetyChecker
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
@@ -143,6 +152,24 @@ class DialogueService:
         if state.phase in {Phase.ENDED, Phase.HANDOFF}:
             self.booking.clear_call_cache(call_id)
         return result
+
+    async def input_started(self, call_id: str, turn_id: int) -> Reply:
+        event = InputStart(turn_id=turn_id)
+        state = await self.store.start_input(call_id, event.turn_id)
+        if state.phase == Phase.HANDOFF:
+            return handoff_reply(state, event.turn_id)
+        return reply(
+            state,
+            event.turn_id,
+            code="CALL_ENDED" if state.phase == Phase.ENDED else "INPUT_STARTED",
+            kind="partial",
+        )
+
+    async def partial(self, call_id: str, turn: Turn) -> Reply:
+        """Шлюз вызывает вне очереди итоговых реплик; бизнес-действий здесь нет."""
+        if turn.is_final:
+            raise ValueError("для partial нужен is_final=False")
+        return await self.handle(call_id, turn)
 
     async def end(self, call_id: str) -> Reply:
         state = await self.store.end(call_id)

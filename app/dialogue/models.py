@@ -8,6 +8,8 @@ from pydantic import AwareDatetime, Field, StrictBool, field_validator
 from app.booking.models import BookingModel, Slot
 from app.booking.preferences import SlotPreferences
 from app.cancellation.models import CancelProposal
+from app.contracts import ExpectedAnswer
+from app.dialogue.expectation import expected_answer
 from app.mis.models import MisId
 from app.rescheduling.models import MoveProposal
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
@@ -58,6 +60,12 @@ class Turn(BookingModel):
         return text
 
 
+class InputStart(BookingModel):
+    """Начало новой речи: ещё без текста, но старое разрешение уже недействительно."""
+
+    turn_id: int = Field(strict=True, ge=1)
+
+
 class Proposal(BookingModel):
     action_id: str
     revision: int
@@ -94,6 +102,7 @@ class DialogueState(BookingModel):
     retry_at: AwareDatetime | None = None
     input_epoch: int = 0
     observed_turn_id: int = 0
+    started_turn_id: int = 0
     observed_digest: str | None = Field(default=None, repr=False)
     authorization: WriteAuthorization | None = None
     specialty: str | None = None
@@ -124,6 +133,7 @@ class Reply(BookingModel):
     phase: Phase
     kind: Literal["reply", "processing", "partial"] = "reply"
     utterances: tuple[str, ...]
+    expect: ExpectedAnswer = "free"
     options: tuple[Slot, ...] = Field(default=(), max_length=3)
     proposal: Proposal | None = None
     code: str | None = None
@@ -156,6 +166,7 @@ def reply(
         version=state.version,
         phase=state.phase,
         utterances=phrases,
+        expect=expected_answer(state),
         options=state.options,
         proposal=state.proposal,
         retry_at=state.retry_at,

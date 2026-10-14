@@ -9,6 +9,7 @@ from fixture_bridge import pipeline, turn
 from app.mis.budget import MemoryBudget
 from app.mis.models import VisitStatus, parse_date
 from app.mis.ports import BudgetExhausted, MisUnavailable
+from app.visits.models import VisitQuery
 
 IDENTITY = "Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого"
 REQUEST = "Подскажите, на какое время я записана к окулисту?"
@@ -16,6 +17,18 @@ REQUEST = "Подскажите, на какое время я записана 
 
 def records(*times):
     return {"visits": [{"client": "kuzmina_na", "doctor": "lebedev", "at": at} for at in times]}
+
+
+@pytest.mark.parametrize("specialty", ["ОТОРИНОЛАРИНГОЛОГ", "отоларинголог", "лор"])
+async def test_visit_filter_normalizes_ent_alias_but_keeps_child_profile_separate(specialty):
+    setup = {"visits": [{"client": "ivanov_sp", "doctor": "belova", "at": "05.10.2026 13:20"}]}
+    async with pipeline(setup) as (_, _, emulator, *_):
+        visit = emulator.records["demo"][1]
+        visit = visit.model_copy(
+            update={"doctor": visit.doctor.model_copy(update={"specialty": specialty})}
+        )
+        assert VisitQuery(specialty="лор").matches(visit)
+        assert not VisitQuery(specialty="детский лор").matches(visit)
 
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.postgres)])

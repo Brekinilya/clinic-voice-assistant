@@ -12,15 +12,16 @@ from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
 from app.dialogue.nlu_adapter import RulesInput
 from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
+from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
-from app.mis.models import format_datetime
 from app.mis.ports import MisError
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
+from app.scheduling.matching import profile_key
 from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
 
@@ -36,11 +37,13 @@ class BookingConversation:
         rooms: DoctorRooms | None = None,
         cancellation: CancellationService | None = None,
         rescheduling: RescheduleService | None = None,
+        presenter: BookingPresenter | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
         self.safety = safety
         self.rooms = rooms
+        self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
         self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
         self.visits = VisitConversation(
             booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
@@ -165,11 +168,9 @@ class BookingConversation:
                 "Подходящих подтверждённых слотов нет. Уточните предпочтения или попросите регистратора.",
                 code="NO_SLOTS",
             )
-        phrases = tuple(
-            f"{i}. {format_datetime(s.scheduled_at)}, {doctors[s.doctor_id].full_name}, {s.specialty}."
-            for i, s in enumerate(options, 1)
-        )
-        return state, reply(state, turn.turn_id, *phrases, "Какой вариант вам удобен?")
+        offered, phrases = self.presenter.offer(options, doctors)
+        state = state.model_copy(update={"options": offered})
+        return state, reply(state, turn.turn_id, *phrases)
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         result = await self.input.parse(state, turn)
@@ -491,7 +492,9 @@ class BookingConversation:
                 if slots.specialty is None:
                     state = state.model_copy(update={"specialty": next(iter(specialties))})
             if slots.specialty is not None:
-                if state.specialty != slots.specialty:
+                if state.specialty is None or profile_key(state.specialty) != profile_key(
+                    slots.specialty
+                ):
                     state = state.model_copy(update={"preferences": SlotPreferences()})
                 state = state.model_copy(update={"specialty": slots.specialty})
             state = state.model_copy(
@@ -503,7 +506,9 @@ class BookingConversation:
             if state.client_id is None:
                 state = state.model_copy(update={"phase": Phase.IDENTIFYING})
                 return state, reply(
-                    state, turn.turn_id, "Назовите фамилию, имя, отчество и дату рождения."
+                    state,
+                    turn.turn_id,
+                    self.presenter.ask_patient(),
                 )
             if state.specialty:
                 return await self.offer(state, turn)
@@ -617,10 +622,10 @@ class BookingConversation:
         return f", кабинет {room}" if room else ""
 
     def booked_phrase(self, action, doctor_name: str | None) -> str:
-        return (
-            f"Вы записаны: {action.slot.specialty}, {doctor_name or 'выбранный врач'}, "
-            f"{format_datetime(action.slot.scheduled_at)}{self.room_phrase(action.slot)}."
+        room = (
+            self.rooms.room(action.slot.doctor_id, action.slot.scheduled_at) if self.rooms else None
         )
+        return self.presenter.completed(action.slot, doctor_name, room)
 
     async def confirmation_phrase(self, state: DialogueState, turn: Turn) -> Reply:
         slot = state.proposal.slot
@@ -631,6 +636,10 @@ class BookingConversation:
         return reply(
             state,
             turn.turn_id,
-            f"Подтвердите: {slot.specialty}, {doctor_name}, {format_datetime(slot.scheduled_at)}{self.room_phrase(slot)}. Всё верно?",
+            *self.presenter.confirmation(
+                slot,
+                doctor_name,
+                self.rooms.room(slot.doctor_id, slot.scheduled_at) if self.rooms else None,
+            ),
             code="CONFIRMATION_REQUIRED",
         )

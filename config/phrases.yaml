@@ -246,6 +246,22 @@ templates:
     expect: free
     src: С-01
 
+  # Ответы backend без неизвестного кабинета и обещания ещё не подключённой SMS.
+  booking.confirm_without_room:
+    text: "Записываю: {specialty} {doctor}, {date:nomn}, {time:nomn}. Верно?"
+    expect: yes_no
+    src: С-01
+
+  booking.result:
+    text: "Вы записаны: {specialty} {doctor}, {date:nomn}, {time:nomn}, кабинет {room}."
+    expect: free
+    src: С-01
+
+  booking.result_without_room:
+    text: "Вы записаны: {specialty} {doctor}, {date:nomn}, {time:nomn}."
+    expect: free
+    src: С-01
+
   booking.slot_taken:
     text: Извините, это время только что заняли. Могу предложить {options}.
     options: 2

@@ -15,7 +15,13 @@ from app.dialogue.models import (
     TransferRequest,
     reply,
 )
-from app.dialogue.transitions import authorize_write, handoff_reply, observe_input, preempt_state
+from app.dialogue.transitions import (
+    authorize_write,
+    handoff_reply,
+    observe_input,
+    preempt_state,
+    start_input,
+)
 from app.storage.schema import dialogue_receipts as receipts
 from app.storage.schema import dialogue_sessions as sessions
 
@@ -106,7 +112,12 @@ class PostgresDialogueStore:
                     "Поступила новая реплика. Уточните выбор или подтвердите заново.",
                     code="TURN_INTERRUPTED",
                 )
-            state = state.model_copy(update={"last_turn_id": turn_id, "pending_turn_id": None})
+            state = state.model_copy(
+                update={
+                    "last_turn_id": max(turn_id, state.started_turn_id - 1),
+                    "pending_turn_id": None,
+                }
+            )
             await connection.execute(
                 update(sessions)
                 .where(sessions.c.call_id == state.call_id)
@@ -162,6 +173,16 @@ class PostgresDialogueStore:
     async def observe(self, call_id: str, turn_id: int, digest: str) -> DialogueState:
         async with self._locked(call_id) as (connection, row):
             state = observe_input(DialogueState.model_validate(row.state), turn_id, digest)
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"))
+            )
+            return state
+
+    async def start_input(self, call_id: str, turn_id: int) -> DialogueState:
+        async with self._locked(call_id) as (connection, row):
+            state = start_input(DialogueState.model_validate(row.state), turn_id)
             await connection.execute(
                 update(sessions)
                 .where(sessions.c.call_id == call_id)

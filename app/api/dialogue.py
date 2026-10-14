@@ -6,7 +6,7 @@ from asyncpg import PostgresError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.dialogue.models import CallId, DialogueError, DialogueState, Reply, Turn
+from app.dialogue.models import CallId, DialogueError, DialogueState, InputStart, Reply, Turn
 from app.dialogue.service import DialogueService
 
 router = APIRouter(prefix="/api/dialog", tags=["Автономный текстовый стенд"])
@@ -20,6 +20,16 @@ def get_service(request: Request) -> DialogueService:
 
 
 Service = Annotated[DialogueService, Depends(get_service)]
+
+
+@router.post("/{call_id}/input-started", response_model=Reply)
+async def input_started(call_id: CallId, body: InputStart, service: Service) -> Reply:
+    try:
+        return await service.input_started(call_id, body.turn_id)
+    except DialogueError as error:
+        raise HTTPException(409, detail=str(error)) from None
+    except (SQLAlchemyError, PostgresError, OSError):
+        raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None
 
 
 @router.post(

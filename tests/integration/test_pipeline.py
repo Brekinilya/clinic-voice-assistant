@@ -107,7 +107,8 @@ async def test_success_announces_confirmed_doctor_and_time():
         spoken = " ".join(result["utterances"])
         assert result["code"] == "BOOKED" and emulator.write_count == 1
         assert "Кузнецова" in spoken and "терапевт" in spoken
-        assert format_datetime(action.slot.scheduled_at) in spoken
+        assert "второе октября" in spoken and "десять тридцать" in spoken
+        assert emulator.records["demo"][result["visit_id"]].scheduled_at == action.slot.scheduled_at
 
 
 async def test_natural_booking_uses_eight_requests_with_fresh_narrow_confirmation():
@@ -183,6 +184,17 @@ async def test_budget_during_refinement_preserves_preferences_and_releases_old_h
         clock.value += timedelta(seconds=60)
         result = await turn(client, 5, "Хочу в понедельник")
         assert result["phase"] == "offered" and emulator.write_count == 0
+
+
+async def test_specialty_alias_does_not_discard_requested_date():
+    async with pipeline() as (client, service, emulator, *_):
+        await turn(client, 1, "Запишите к лору на пятницу")
+        before = await service.store.inspect("scenario")
+        assert before.preferences.date_from.isoweekday() == 5
+        result = await turn(client, 2, "К отоларингологу")
+        after = await service.store.inspect("scenario")
+        assert result["phase"] == "identifying"
+        assert after.preferences == before.preferences and emulator.write_count == 0
 
 
 async def test_yes_with_correction_never_confirms_previous_day():

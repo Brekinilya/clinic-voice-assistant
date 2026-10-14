@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field
 from app.booking.models import BookingModel
 from app.booking.preferences import SlotPreferences
 from app.mis.models import MisId, Visit
+from app.scheduling.matching import profile_key
 
 
 class VisitQuery(BookingModel):
@@ -20,7 +21,7 @@ class VisitQuery(BookingModel):
         return (
             (
                 self.specialty is None
-                or visit.doctor.specialty.casefold() == self.specialty.casefold()
+                or profile_key(visit.doctor.specialty) == profile_key(self.specialty)
             )
             and (
                 self.doctor is None

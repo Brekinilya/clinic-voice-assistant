@@ -16,7 +16,13 @@ from app.dialogue.models import (
     TransferRequest,
     reply,
 )
-from app.dialogue.transitions import authorize_write, handoff_reply, observe_input, preempt_state
+from app.dialogue.transitions import (
+    authorize_write,
+    handoff_reply,
+    observe_input,
+    preempt_state,
+    start_input,
+)
 
 
 class MemoryDialogueStore:
@@ -71,7 +77,10 @@ class MemoryDialogueStore:
                     code="TURN_INTERRUPTED",
                 )
             self.states[state.call_id] = state.model_copy(
-                update={"last_turn_id": turn_id, "pending_turn_id": None}
+                update={
+                    "last_turn_id": max(turn_id, state.started_turn_id - 1),
+                    "pending_turn_id": None,
+                }
             )
             old = self.receipts[(state.call_id, turn_id)]
             self.receipts[(state.call_id, turn_id)] = old.model_copy(update={"reply": result})
@@ -118,6 +127,12 @@ class MemoryDialogueStore:
             state = observe_input(
                 self.states.get(call_id, DialogueState(call_id=call_id)), turn_id, digest
             )
+            self.states[call_id] = state
+            return state
+
+    async def start_input(self, call_id: str, turn_id: int) -> DialogueState:
+        async with self._lock:
+            state = start_input(self.states.get(call_id, DialogueState(call_id=call_id)), turn_id)
             self.states[call_id] = state
             return state
 

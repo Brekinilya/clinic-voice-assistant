@@ -474,7 +474,7 @@ async def test_bootstrap_supplies_imported_roster_and_rooms(indexed):
     async with open_command_backend(settings, clock) as service:
         assert [d.id for d in await service.booking.mis.doctors()] == [907]
         action = await service.booking.options(1, "хирург", call_id="rooms")
-        assert "кабинет 203" in service.conversation.booked_phrase(
+        assert "кабинет двести три" in service.conversation.booked_phrase(
             type("Action", (), {"slot": action[0]})(), "Королёва"
         )
 
@@ -503,8 +503,8 @@ async def test_natural_booking_confirmation_and_result_include_room(indexed):
             "BOOKED",
         ]
         assert len(answers[1].options) == 2
-        assert "кабинет 203" in " ".join(answers[-2].utterances)
-        assert "кабинет 203" in " ".join(answers[-1].utterances)
+        assert "кабинет двести три" in " ".join(answers[-2].utterances)
+        assert "кабинет двести три" in " ".join(answers[-1].utterances)
 
 
 async def test_reschedule_uses_index_without_materializing_all_slots(indexed):
