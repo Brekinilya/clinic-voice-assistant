@@ -1,0 +1,16 @@
+# Asterisk для разработки и демо: docker compose -f deploy/asterisk/compose.yaml up --build
+# Пароли — в .env в корне репозитория (см. .env.example).
+services:
+  asterisk:
+    build: .
+    env_file: ../../.env
+    ports:
+      # SIP открыт в сеть: софтфон на телефоне регистрируется по IP компьютера
+      - "5060:5060/udp"
+      # ARI — только для голосового шлюза на этом компьютере
+      - "127.0.0.1:8088:8088"
+      - "10000-10099:10000-10099/udp"
+    volumes:
+      # Реплики «пациента» для call_test.py: 16 кГц, расширение .wav16
+      - ../../data/telephony/sounds:/var/lib/asterisk/sounds/clinic:ro
+    restart: unless-stopped

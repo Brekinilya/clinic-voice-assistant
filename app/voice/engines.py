@@ -4,6 +4,7 @@
 GigaAM int8 в ONNX получается из чекпойнта так же, как в замере (bench/speech/engines.py).
 """
 
+import math
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -26,6 +27,23 @@ def pcm_to_float(pcm: bytes) -> np.ndarray:
 
 def float_to_pcm(audio: np.ndarray) -> bytes:
     return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def resample(pcm: bytes, source: int, target: int) -> bytes:
+    """Сменить частоту PCM: синтез отдаёт 24 кГц, телефония ждёт 16 кГц."""
+    if source == target:
+        return pcm
+    divisor = math.gcd(source, target)
+    up, down = target // divisor, source // divisor
+    audio = pcm_to_float(pcm)
+    # Фильтр нижних частот перед прореживанием, иначе верх спектра превратится в шум
+    taps = 16 * max(up, down) + 1
+    cutoff = 0.5 / max(up, down)
+    n = np.arange(taps) - (taps - 1) / 2
+    kernel = 2 * cutoff * np.sinc(2 * cutoff * n) * np.hamming(taps) * up
+    stretched = np.zeros(len(audio) * up, dtype=np.float32)
+    stretched[::up] = audio
+    return float_to_pcm(np.convolve(stretched, kernel, mode="same")[::down])
 
 
 def _onnx_session(path: Path, threads: int):

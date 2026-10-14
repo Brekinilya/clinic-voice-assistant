@@ -34,6 +34,23 @@ class SocketChannel:
             await self.socket.send_bytes(data)
 
 
+def open_session(state, call_id: str, channel) -> CallSession:
+    """Звонок шлюза на моделях и диалоге приложения: из браузера и из телефонии одинаково."""
+    runtime = getattr(state, "runtime", None)
+    clock = getattr(runtime, "clock", None) or ClinicClock()
+    engines = state.voice
+    return CallSession(
+        call_id,
+        channel,
+        state.dialogue,
+        engines.vad.stream(),
+        engines.recognizer,
+        engines.synthesizer,
+        today=lambda: clock.now().date(),
+        settings=getattr(state, "voice_settings", None),
+    )
+
+
 @router.websocket("/api/voice/{call_id}")
 async def voice_call(socket: WebSocket, call_id: CallId) -> None:
     state = socket.app.state
@@ -43,18 +60,7 @@ async def voice_call(socket: WebSocket, call_id: CallId) -> None:
     if engines is None or dialogue is None:
         await socket.close(code=1013, reason="VOICE_DISABLED")
         return
-    runtime = getattr(state, "runtime", None)
-    clock = getattr(runtime, "clock", None) or ClinicClock()
-    session = CallSession(
-        call_id,
-        SocketChannel(socket),
-        dialogue,
-        engines.vad.stream(),
-        engines.recognizer,
-        engines.synthesizer,
-        today=lambda: clock.now().date(),
-        settings=getattr(state, "voice_settings", None),
-    )
+    session = open_session(state, call_id, SocketChannel(socket))
 
     async def receive() -> None:
         while True:
