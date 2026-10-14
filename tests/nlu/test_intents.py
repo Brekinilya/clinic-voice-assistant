@@ -42,6 +42,22 @@ def test_precedence(phrase, intent):
     assert intent_of(phrase) == intent
 
 
+@pytest.mark.parametrize(
+    "phrase, intent",
+    [
+        # отрицание при глаголе меняет смысл, отрицание рядом — нет
+        ("Не переносите, просто отмените", "I-03"),
+        ("Нет, не надо переносить, отменяйте", "I-03"),
+        ("Не отменяйте, лучше перенесите на пятницу", "I-02"),
+        ("Не могу прийти, давайте перенесём", "I-02"),
+        ("Не надо переносить", None),
+        ("Не отменяйте", None),
+    ],
+)
+def test_negated_action(phrase, intent):
+    assert intent_of(phrase) == intent
+
+
 def test_place_alone_counts_only_when_asked():
     assert intent_of("Которая к лору", by_place=True) == "I-01"
     assert intent_of("Которая к лору", by_place=False) is None
