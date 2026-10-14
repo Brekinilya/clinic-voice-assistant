@@ -4,6 +4,8 @@ from collections.abc import Awaitable, Callable
 
 from app.booking.models import ActionState
 from app.booking.service import BookingService
+from app.cancellation.models import CancelState
+from app.cancellation.service import CancellationService
 from app.dialogue.models import DialogueState, Phase, Reply, Turn, reply
 from app.dialogue.ports import DialogueStore
 from app.voice.phrases import load_phrasebook
@@ -13,9 +15,17 @@ TransferHandler = Callable[[DialogueState, Turn, str], Awaitable[tuple[DialogueS
 
 class MedicalConversation:
     def __init__(
-        self, booking: BookingService, store: DialogueStore, transfer: TransferHandler
+        self,
+        booking: BookingService,
+        store: DialogueStore,
+        transfer: TransferHandler,
+        *,
+        cancellation: CancellationService | None = None,
+        release=None,
     ) -> None:
         self.booking, self.store, self.transfer = booking, store, transfer
+        self.cancellation = cancellation
+        self.release = release if release is not None else booking.store.release_call_holds
         # Общий рендер словоформ подключится отдельным PR speech-render.
         # Здесь предложение фиксировано: терапевт, без подстановки симптомов или советов.
         phrases = load_phrasebook()
@@ -28,7 +38,7 @@ class MedicalConversation:
     async def question(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         if state.medical_boundary_pending:
             return await self.transfer(state, turn, "R-04")
-        await self.booking.store.release_call_holds(state.call_id)
+        await self.release(state.call_id)
         self.booking.clear_call_cache(state.call_id)
         preserve_action = state.phase == Phase.RECONCILING
         if state.proposal is not None:
@@ -37,6 +47,14 @@ class MedicalConversation:
                 ActionState.COMMITTING,
                 ActionState.RECONCILING,
                 ActionState.BOOKED,
+            }
+        preserve_cancel = state.phase == Phase.CANCEL_RECONCILING
+        if state.cancel_proposal is not None and self.cancellation is not None:
+            cancel = await self.cancellation.store.get(state.cancel_proposal.action_id)
+            preserve_cancel |= cancel.state in {
+                CancelState.COMMITTING,
+                CancelState.RECONCILING,
+                CancelState.CANCELLED,
             }
         changes = {
             "medical_boundary_pending": True,
@@ -47,18 +65,22 @@ class MedicalConversation:
             "visit_has_more": False,
             "misunderstandings": 0,
         }
-        if preserve_action:
+        if preserve_cancel:
+            changes["phase"] = Phase.CANCEL_RECONCILING
+        elif preserve_action:
             # Граничная фраза не стирает журнал уже отправленной операции.
             changes["phase"] = Phase.RECONCILING
         else:
             changes.update(
                 phase=Phase.IDENTIFIED if state.client_id is not None else Phase.READY,
                 proposal=None,
+                cancel_proposal=None,
+                cancel_target=None,
             )
         return self.prompt(state.model_copy(update=changes), turn)
 
     async def decline(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
-        if state.phase == Phase.RECONCILING:
+        if state.phase in {Phase.RECONCILING, Phase.CANCEL_RECONCILING}:
             return await self.transfer(state, turn, "R-08")
         state = await self.store.end(state.call_id)
         return state, reply(state, turn.turn_id, self.goodbye, code="CALL_ENDED")

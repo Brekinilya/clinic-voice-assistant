@@ -66,7 +66,7 @@ class DialogueService:
                     current = await self.store.preempt(
                         call_id, turn.turn_id, TransferRequest(route="R-08", priority="P3")
                     )
-                    await self.booking.store.release_call_holds(call_id)
+                    await self._release_call(call_id)
                     self.booking.clear_call_cache(call_id)
                     return reply(
                         current,
@@ -77,7 +77,7 @@ class DialogueService:
                     )
                 if transfer is not None:
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
-                    await self.booking.store.release_call_holds(call_id)
+                    await self._release_call(call_id)
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
         if not turn.is_final:
@@ -101,12 +101,14 @@ class DialogueService:
             state, result = await self._process(state, turn)
         except Exception:
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
-            await self.booking.store.release_call_holds(call_id)
+            await self._release_call(call_id)
             self.booking.clear_call_cache(call_id)
             state = state.model_copy(
                 update={
                     "phase": Phase.INTERRUPTED,
                     "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
                     "options": (),
                     "visit_items": (),
                     "visit_cursor": None,
@@ -122,7 +124,7 @@ class DialogueService:
         # После аварии процесса или отмены задачи квитанция остаётся processing.
         # Автоматически переисполнять её нельзя; разговор можно явно завершить.
         if not await self.store.complete(state, turn.turn_id, result):
-            await self.booking.store.release_call_holds(call_id)
+            await self._release_call(call_id)
             current = await self.store.inspect(call_id)
             if current.phase == Phase.HANDOFF:
                 self.booking.clear_call_cache(call_id)
@@ -143,9 +145,15 @@ class DialogueService:
     async def end(self, call_id: str) -> Reply:
         state = await self.store.end(call_id)
         # Повтор end снова пытается снять оставшиеся брони, если прежняя попытка прервалась.
-        await self.booking.store.release_call_holds(call_id)
+        await self._release_call(call_id)
         self.booking.clear_call_cache(call_id)
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
+
+    async def _release_call(self, call_id: str) -> None:
+        if self.conversation is not None:
+            await self.conversation.release_call(call_id)
+        else:
+            await self.booking.store.release_call_holds(call_id)
 
     async def _process(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         command = (

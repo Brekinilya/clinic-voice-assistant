@@ -5,6 +5,8 @@ from typing import Literal
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import SlotPreferences
 from app.booking.service import BookingService
+from app.cancellation.service import CancellationService
+from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.failures import mis_failure
 from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
@@ -29,6 +31,7 @@ class BookingConversation:
         *,
         nlu: NluInterpreter | None = None,
         rooms: DoctorRooms | None = None,
+        cancellation: CancellationService | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
@@ -37,7 +40,19 @@ class BookingConversation:
         self.visits = VisitConversation(
             booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
         )
-        self.medical = MedicalConversation(booking, store, self.transfer)
+        self.cancellation = (
+            CancellationConversation(booking, cancellation, store, self.transfer)
+            if cancellation is not None
+            else None
+        )
+        self.medical = MedicalConversation(
+            booking, store, self.transfer, cancellation=cancellation, release=self.release_call
+        )
+
+    async def release_call(self, call_id: str) -> None:
+        await self.booking.store.release_call_holds(call_id)
+        if self.cancellation is not None:
+            await self.cancellation.cancellation.store.release_call(call_id)
 
     async def short_reply(
         self, state: DialogueState, turn: Turn
@@ -72,7 +87,7 @@ class BookingConversation:
         state = await self.store.preempt(
             state.call_id, turn.turn_id, TransferRequest(route=route, priority=priority)
         )
-        await self.booking.store.release_call_holds(state.call_id)
+        await self.release_call(state.call_id)
         return state, handoff_reply(state, turn.turn_id)
 
     async def offer(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
@@ -157,7 +172,7 @@ class BookingConversation:
                 return await self.medical.decline(state, turn)
             # Уточнение дня начинает подбор, но не служит подтверждением записи.
             if "yes" in intents or (refinements and not intents & {"no", "maybe", "opt_out"}):
-                if state.phase == Phase.RECONCILING:
+                if state.phase in {Phase.RECONCILING, Phase.CANCEL_RECONCILING}:
                     return await self.transfer(state, turn, "R-08")
                 state = self.visits.booking_state(state).model_copy(
                     update={"medical_boundary_pending": False, "specialty": None}
@@ -171,12 +186,57 @@ class BookingConversation:
         if slots.on_behalf in {"other", "child"} or (
             requested_owner(turn.text) == "other"
             and (
-                state.purpose == "visits"
-                or "I-04" in intents
+                state.purpose in {"visits", "cancel"}
+                or intents & {"I-03", "I-04"}
                 or mentions_existing_visits(turn.text)
             )
         ):
             return await self.visits.privacy_transfer(state, turn)
+        if self.cancellation is not None and (state.purpose == "cancel" or "I-03" in intents):
+            if (
+                state.purpose == "cancel"
+                and "I-04" in intents
+                and "I-03" not in intents
+                and state.phase != Phase.CANCEL_RECONCILING
+            ):
+                await self.cancellation.cancellation.store.release_call(state.call_id)
+                state = state.model_copy(update={"cancel_proposal": None, "cancel_target": None})
+                return await self.visits.start(state, turn, result)
+            if (
+                state.purpose == "cancel"
+                and "I-01" in intents
+                and state.phase != Phase.CANCEL_RECONCILING
+            ):
+                await self.cancellation.cancellation.store.release_call(state.call_id)
+                state = self.visits.booking_state(state).model_copy(
+                    update={"cancel_proposal": None, "cancel_target": None}
+                )
+            else:
+                try:
+                    if state.purpose != "cancel":
+                        return await self.cancellation.start(state, turn, result)
+                    return await self.cancellation.step(state, turn, result)
+                except BookingError as error:
+                    if str(error) in {"ACTION_PENDING", "CANCELLATION_BUSY"}:
+                        return await self.transfer(state, turn, "R-08")
+                    if str(error) in {"VISIT_CHANGED", "VISIT_PAST", "HOLD_NOT_ACTIVE"}:
+                        await self.cancellation.cancellation.store.release_call(state.call_id)
+                        state = state.model_copy(
+                            update={
+                                "phase": Phase.CANCEL_CHOOSING,
+                                "cancel_proposal": None,
+                                "cancel_target": None,
+                                "visit_items": (),
+                                "authorization": None,
+                            }
+                        )
+                        return state, reply(
+                            state,
+                            turn.turn_id,
+                            "Данные записи изменились или подтверждение истекло. Скажите «повторите», чтобы получить актуальные записи.",
+                            code="VISIT_CHANGED",
+                        )
+                    raise
         if state.purpose == "visits":
             if "I-01" in intents and (
                 state.phase != Phase.VISITS_SHOWN

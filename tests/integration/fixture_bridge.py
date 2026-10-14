@@ -9,6 +9,8 @@ import yaml
 from app.booking.memory import MemoryBookingStore
 from app.booking.models import Slot
 from app.booking.service import BookingService
+from app.cancellation.memory import MemoryCancellationStore
+from app.cancellation.service import CancellationService
 from app.demo import EmulatorBudget
 from app.dialogue.memory import MemoryDialogueStore
 from app.dialogue.natural import BookingConversation
@@ -94,12 +96,15 @@ async def pipeline(setup=None, *, pg_engine=None):
     if pg_engine is None:
         dialogue_store = MemoryDialogueStore()
         booking_store = MemoryBookingStore(guard_reader=dialogue_store)
+        cancellation_store = MemoryCancellationStore(booking_store.ledger, dialogue_store)
     else:
         from app.storage.booking import PostgresBookingStore
+        from app.storage.cancellation import PostgresCancellationStore
         from app.storage.dialogue import PostgresDialogueStore
 
         dialogue_store = PostgresDialogueStore(pg_engine)
         booking_store = PostgresBookingStore(pg_engine)
+        cancellation_store = PostgresCancellationStore(pg_engine)
     async with httpx.AsyncClient(
         base_url="https://offline.invalid/api/v1/",
         headers={"Authorization": "Bearer demo"},
@@ -113,7 +118,13 @@ async def pipeline(setup=None, *, pg_engine=None):
             require_dialogue_guard=True,
         )
         safety = RulesSafety(clock)
-        conversation = BookingConversation(booking, dialogue_store, safety, rooms=FixtureRooms())
+        conversation = BookingConversation(
+            booking,
+            dialogue_store,
+            safety,
+            rooms=FixtureRooms(),
+            cancellation=CancellationService(booking.mis, cancellation_store, clock),
+        )
         service = DialogueService(
             booking, dialogue_store, KEY, safety=safety, conversation=conversation
         )

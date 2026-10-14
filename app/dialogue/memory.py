@@ -4,6 +4,8 @@ import asyncio
 
 from app.booking.guard import check_dialogue_guard
 from app.booking.models import Approval
+from app.cancellation.guard import check_cancel_guard
+from app.cancellation.models import CancelAction
 from app.dialogue.models import (
     Claim,
     DialogueError,
@@ -90,6 +92,8 @@ class MemoryDialogueStore:
                     "pending_turn_id": None,
                     "client_id": None,
                     "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
                     "options": (),
                     "retry_at": None,
                     "authorization": None,
@@ -127,6 +131,13 @@ class MemoryDialogueStore:
         async with self._lock:
             state = self.states.get(approval.call_id)
             check_dialogue_guard(None if state is None else state.model_dump(mode="json"), approval)
+
+    async def check_cancel_guard(self, approval: Approval, action: CancelAction) -> None:
+        async with self._lock:
+            state = self.states.get(approval.call_id)
+            check_cancel_guard(
+                None if state is None else state.model_dump(mode="json"), approval, action
+            )
 
     async def preempt(self, call_id: str, turn_id: int, transfer: TransferRequest) -> DialogueState:
         async with self._lock:

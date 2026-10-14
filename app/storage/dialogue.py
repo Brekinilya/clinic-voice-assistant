@@ -132,6 +132,8 @@ class PostgresDialogueStore:
                     "pending_turn_id": None,
                     "client_id": None,
                     "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
                     "options": (),
                     "retry_at": None,
                     "authorization": None,

@@ -22,13 +22,14 @@ def observe_input(state: DialogueState, turn_id: int, digest: str) -> DialogueSt
 def authorize_write(
     state: DialogueState, version: int, epoch: int, turn_id: int
 ) -> DialogueState | None:
+    proposal = state.cancel_proposal if state.phase == Phase.CANCEL_CONFIRM else state.proposal
     if (
-        state.phase != Phase.HELD
+        state.phase not in {Phase.HELD, Phase.CANCEL_CONFIRM}
         or state.version != version
         or state.input_epoch != epoch
         or state.observed_turn_id != turn_id
         or state.pending_turn_id != turn_id
-        or state.proposal is None
+        or proposal is None
     ):
         return None
     return state.model_copy(
@@ -37,8 +38,8 @@ def authorize_write(
                 turn_id=turn_id,
                 version=version,
                 input_epoch=epoch,
-                action_id=state.proposal.action_id,
-                revision=state.proposal.revision,
+                action_id=proposal.action_id,
+                revision=proposal.revision,
             )
         }
     )
@@ -61,6 +62,8 @@ def handoff_reply(state: DialogueState, turn_id: int):
 
 
 def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueState:
+    if state.cancel_proposal is not None:
+        transfer = transfer.model_copy(update={"action_id": state.cancel_proposal.action_id})
     if state.proposal is not None:
         transfer = transfer.model_copy(update={"action_id": state.proposal.action_id})
     return state.model_copy(
@@ -71,6 +74,8 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
             "pending_turn_id": None,
             "authorization": None,
             "proposal": None,
+            "cancel_proposal": None,
+            "cancel_target": None,
             "options": (),
             "retry_at": None,
             "transfer": transfer,

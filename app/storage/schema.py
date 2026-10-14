@@ -1,4 +1,4 @@
-"""Единая схема backend; версия 2 добавляет разговоры и квитанции команд."""
+"""Единая схема backend; версия 3 добавляет журнал отмены к разговорам и броням."""
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 actions = Table(
     "backend_booking_actions",
@@ -85,3 +85,31 @@ dialogue_receipts = Table(
     Column("reply", JSONB),
     CheckConstraint("turn_id > 0"),
 )
+cancellations = Table(
+    "backend_visit_cancellations",
+    metadata,
+    Column("action_id", String(32), primary_key=True),
+    Column("call_id", String(128), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("visit_id", Integer, nullable=False),
+    Column("client_id", Integer, nullable=False),
+    Column("snapshot", JSONB, nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("state", String(20), nullable=False),
+    Column("confirmed_turn", Integer),
+    Column("reason", String(30)),
+    Column("late", Integer, nullable=False, default=0),
+    Column("completed_at", DateTime(timezone=True)),
+    CheckConstraint("revision > 0 AND visit_id > 0 AND client_id > 0 AND late IN (0,1)"),
+    CheckConstraint(
+        "state IN ('prepared','committing','reconciling','cancelled','rejected','aborted','expired')"
+    ),
+    CheckConstraint("(state = 'cancelled') = (completed_at IS NOT NULL)"),
+)
+Index(
+    "backend_active_cancellation",
+    cancellations.c.visit_id,
+    unique=True,
+    postgresql_where=cancellations.c.state.in_(["prepared", "committing", "reconciling"]),
+)
+Index("backend_cancel_revision", cancellations.c.call_id, cancellations.c.revision, unique=True)

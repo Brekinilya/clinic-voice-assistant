@@ -1,6 +1,5 @@
 """Хранилище автономного стенда. Внешнюю МИС с ним подключать нельзя."""
 
-import asyncio
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -13,12 +12,14 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
+from app.storage.memory_ledger import MemoryLedger
 
 
 class MemoryBookingStore:
     def __init__(self, guard_reader=None) -> None:
-        self.actions: dict[str, BookingAction] = {}
-        self._lock = asyncio.Lock()
+        self.ledger = MemoryLedger()
+        self.actions = self.ledger.bookings
+        self._lock = self.ledger.lock
         self._guard_reader = guard_reader
 
     def _expire(self, now: datetime) -> None:

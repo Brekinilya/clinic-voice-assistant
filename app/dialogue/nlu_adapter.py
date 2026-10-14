@@ -23,9 +23,10 @@ class RulesInput:
             else "full_name"
             if state.phase == Phase.IDENTIFYING
             else "choice"
-            if state.phase == Phase.OFFERED
+            if state.phase in {Phase.OFFERED, Phase.CANCEL_CHOOSING}
             else "yes_no"
-            if state.phase in {Phase.HELD, Phase.VERIFYING_OWNER, Phase.VISITS_SHOWN}
+            if state.phase
+            in {Phase.HELD, Phase.VERIFYING_OWNER, Phase.VISITS_SHOWN, Phase.CANCEL_CONFIRM}
             else "free"
         )
         options = tuple(
@@ -38,8 +39,25 @@ class RulesInput:
             )
             for s in state.options
         )
+        if state.phase == Phase.CANCEL_CHOOSING:
+            options = tuple(
+                DialogOption(
+                    id=f"visit-{v.visit_id}",
+                    day=v.scheduled_at.date(),
+                    at=v.scheduled_at.time(),
+                    doctor=v.doctor_name,
+                    specialty=v.specialty,
+                )
+                for v in state.visit_items
+            )
         context = NluContext(
-            intent="I-04" if state.purpose == "visits" else "I-01" if state.specialty else None,
+            intent="I-03"
+            if state.purpose == "cancel"
+            else "I-04"
+            if state.purpose == "visits"
+            else "I-01"
+            if state.specialty
+            else None,
             slots=PublicSlots(**({"specialty": state.specialty} if state.specialty else {})),
         )
         request = NluRequest(

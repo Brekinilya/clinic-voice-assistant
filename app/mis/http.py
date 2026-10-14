@@ -181,6 +181,13 @@ class HttpMedicalSystem:
         self._cache(self._client_cache, key, result, 300)
         return result
 
+    async def visit(self, visit_id: int) -> Visit:
+        self._id(visit_id)
+        result = self._decode(await self._request("GET", f"visits/{visit_id}"), Visit)
+        if result.id != visit_id:
+            raise MisUnavailable("INVALID_RESPONSE")
+        return result
+
     async def visits(
         self,
         *,

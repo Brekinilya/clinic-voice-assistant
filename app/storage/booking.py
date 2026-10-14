@@ -2,7 +2,6 @@
 
 import hashlib
 import math
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -27,6 +26,7 @@ from app.booking.models import (
     check_approval,
 )
 from app.mis.ports import BudgetExhausted
+from app.storage.journal import journal_transaction
 from app.storage.schema import (
     SCHEMA_VERSION,
     actions,
@@ -40,16 +40,16 @@ from app.storage.schema import (
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграция 1 → 2 добавляет таблицы диалога, сохраняя прежние брони и журнал."""
+    """Миграции 1/2 → 3 добавляют диалог и журнал отмены без удаления прежних данных."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
-        elif versions == [1]:
+        elif versions in ([1], [2]):
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
@@ -71,13 +71,8 @@ class PostgresBookingStore:
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
 
-    @asynccontextmanager
-    async def _transaction(self):
-        async with self.engine.begin() as connection:
-            # При лимите МИС 8/мин одна короткая блокировка проще порядка множества замков.
-            # Замок общий для всех процессов; снимается при commit/rollback/разрыве соединения.
-            await connection.execute(text("SELECT pg_advisory_xact_lock(142002)"))
-            yield connection
+    def _transaction(self):
+        return journal_transaction(self.engine)
 
     async def _expire(self, connection, now: datetime) -> None:
         await connection.execute(

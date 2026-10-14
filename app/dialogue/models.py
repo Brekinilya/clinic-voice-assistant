@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field, StrictBool, field_validator
 
 from app.booking.models import BookingModel, Slot
 from app.booking.preferences import SlotPreferences
+from app.cancellation.models import CancelProposal
 from app.mis.models import MisId
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
 
@@ -28,6 +29,11 @@ class Phase(StrEnum):
     HANDOFF = "handoff"
     VERIFYING_OWNER = "verifying_owner"
     VISITS_SHOWN = "visits_shown"
+    CANCEL_CHOOSING = "cancel_choosing"
+    CANCEL_OFFER = "cancel_offer"
+    CANCEL_CONFIRM = "cancel_confirm"
+    CANCEL_RECONCILING = "cancel_reconciling"
+    CANCELLED = "cancelled"
 
 
 class Turn(BookingModel):
@@ -87,7 +93,10 @@ class DialogueState(BookingModel):
     medical_boundary_pending: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
-    purpose: Literal["booking", "visits"] = "booking"
+    purpose: Literal["booking", "visits", "cancel"] = "booking"
+    cancel_proposal: CancelProposal | None = None
+    cancel_target: VisitSummary | None = None
+    cancel_reschedule_offered: bool = False
     query_for_self: bool = False
     identity_attempts: int = 0
     visit_query: VisitQuery = Field(default_factory=VisitQuery)
@@ -111,6 +120,7 @@ class Reply(BookingModel):
     visit_id: int | None = None
     visits: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     has_more_visits: bool = False
+    cancel_proposal: CancelProposal | None = None
 
     @field_validator("utterances")
     @classmethod
@@ -142,6 +152,7 @@ def reply(
         visit_id=state.visit_id,
         visits=state.visit_items,
         has_more_visits=state.visit_has_more,
+        cancel_proposal=state.cancel_proposal,
     )
 
 

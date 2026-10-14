@@ -27,6 +27,7 @@ class NluInterpreter(Protocol):
 
 
 class Conversation(Protocol):
+    async def release_call(self, call_id: str) -> None: ...
     async def short_reply(
         self, state: DialogueState, turn: Turn
     ) -> tuple[DialogueState, Reply] | None: ...
