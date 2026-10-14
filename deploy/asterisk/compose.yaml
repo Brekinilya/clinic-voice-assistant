@@ -12,5 +12,5 @@ services:
       - "10000-10099:10000-10099/udp"
     volumes:
       # Реплики «пациента» для call_test.py: 16 кГц, расширение .wav16
-      - ../../data/telephony/sounds:/var/lib/asterisk/sounds/clinic:ro
+      - ../../data/telephony/sounds:/usr/share/asterisk/sounds/clinic:ro
     restart: unless-stopped

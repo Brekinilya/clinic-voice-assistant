@@ -21,6 +21,8 @@ from app.voice.rtp import RATE, RtpEndpoint, open_endpoint
 
 log = logging.getLogger(__name__)
 
+# Столько без RTP — и шлюз считает, что пациент молчит
+SILENCE_GAP_S = 0.1
 # Раздел 7.5: сколько ждать ответа регистратора по приоритету перевода
 OPERATOR_TIMEOUT_S = {"P1": 20, "P2": 30, "P3": 90}
 
@@ -165,6 +167,8 @@ class PhoneChannel:
 
     async def send_json(self, message: dict) -> None:
         kind = message["type"]
+        # Текст разговора в журнал не пишем: только событие и номер реплики
+        log.debug("звонок %s: %s %s", self.call.caller, kind, message.get("turn_id", ""))
         if kind == "speak":
             self.call.rate = message["sample_rate"]
         elif kind == "stop":
@@ -258,8 +262,14 @@ class Telephony:
         call.session = self.sessions(caller, PhoneChannel(self, call))
 
         async def listen() -> None:
+            # Пока пациент молчит, Asterisk может не слать RTP совсем. Без кадров тишины шлюз
+            # не заметит конец фразы, поэтому паузы в потоке заполняем тишиной сами.
             while True:
-                await call.session.feed(await audio.get())
+                try:
+                    pcm = await asyncio.wait_for(audio.get(), SILENCE_GAP_S)
+                except TimeoutError:
+                    pcm = bytes(int(RATE * SILENCE_GAP_S) * 2)
+                await call.session.feed(pcm)
 
         self.spawn(call, listen())
         await call.session.start()

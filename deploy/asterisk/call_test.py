@@ -6,6 +6,7 @@
 
     python deploy/asterisk/call_test.py want name first yes no
     python deploy/asterisk/call_test.py want barge:name     — перебить ассистента репликой name
+    python deploy/asterisk/call_test.py now:want             — сказать сразу, не дожидаясь ассистента
 """
 
 import argparse
@@ -62,7 +63,9 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
                     event = await asyncio.wait_for(events.get(), left)
                 except TimeoutError:
                     return None
-                if event["type"] in kinds and event.get("channel", {}).get("id") in (patient, None):
+                channel = event.get("channel", {}).get("id")
+                # пока канал «пациента» не известен, подходит любой
+                if event["type"] in kinds and (patient is None or channel in (patient, None)):
                     return event
                 if event["type"] == "StasisEnd" and event["channel"]["id"] == patient:
                     return event
@@ -105,14 +108,15 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
 
         hung_up = False
         for step in steps:
-            barge = step.startswith("barge:")
-            sound = step.split(":")[-1]
-            event = await until("ChannelTalkingStarted" if barge else "ChannelTalkingFinished")
-            if event is None or event["type"] == "StasisEnd":
-                hung_up = event is not None
-                break
-            note("ассистент заговорил" if barge else "ассистент договорил")
-            await asyncio.sleep(1.5 if barge else 0.3)
+            mode, _, sound = step.rpartition(":")
+            if mode != "now":
+                barge = mode == "barge"
+                event = await until("ChannelTalkingStarted" if barge else "ChannelTalkingFinished")
+                if event is None or event["type"] == "StasisEnd":
+                    hung_up = event is not None
+                    break
+                note("ассистент заговорил" if barge else "ассистент договорил")
+                await asyncio.sleep(1.5 if barge else 0.3)
             note(f"пациент: {sound}")
             await http.post(f"channels/{patient}/play", params={"media": f"sound:clinic/{sound}"})
             await until("PlaybackFinished")

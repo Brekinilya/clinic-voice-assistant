@@ -130,10 +130,18 @@ async def test_caller_audio_reaches_gateway(line):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.sendto(RtpSender().packet(PCM), ("127.0.0.1", port))
     for _ in range(50):
-        if line.sessions_made[0].audio:
+        if PCM in bytes(line.sessions_made[0].audio):
             break
         await asyncio.sleep(0.01)
-    assert bytes(line.sessions_made[0].audio) == PCM
+    assert PCM in bytes(line.sessions_made[0].audio)
+
+
+async def test_silence_fills_gaps_without_rtp(line):
+    await line.handle(start("caller-1", "inbound"))
+    await asyncio.sleep(0.35)
+    # пациент молчит, RTP нет — шлюз всё равно получает тишину и может закончить фразу
+    assert len(line.sessions_made[0].audio) >= 3200 * 2
+    assert not any(line.sessions_made[0].audio)
 
 
 async def test_caller_hangup_releases_everything(line):
