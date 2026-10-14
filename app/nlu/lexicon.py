@@ -32,12 +32,16 @@ def tokenize(text: str) -> list[str]:
     return TOKEN.findall(normalize(text))
 
 
-@lru_cache(maxsize=65536)
-def lemmas(token: str) -> frozenset[str]:
+def morph() -> pymorphy3.MorphAnalyzer:
     global _morph
     if _morph is None:
         _morph = pymorphy3.MorphAnalyzer()
-    forms = {normalize(p.normal_form) for p in _morph.parse(token)}
+    return _morph
+
+
+@lru_cache(maxsize=65536)
+def lemmas(token: str) -> frozenset[str]:
+    forms = {normalize(p.normal_form) for p in morph().parse(token)}
     forms.add(token)
     return frozenset(forms)
 
