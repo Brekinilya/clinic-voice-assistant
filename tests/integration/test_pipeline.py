@@ -19,6 +19,7 @@ IDENTITY = "Смирнова Ольга Викторовна, двенадцат
 def cases():
     paths = [
         "main/c01_booking.yaml",
+        "main/c05_my_visit.yaml",
         "control/01_red_flag_during_booking.yaml",
         "control/01b_red_flag_at_confirmation.yaml",
         "control/06_ent_with_constraints.yaml",
@@ -38,11 +39,17 @@ async def test_yaml_scenarios_through_http(case):
         client_ids,
     ):
         number = 0
+        initial_records = dict(emulator.records["demo"])
         for step in case["steps"]:
             if "patient" not in step:
                 continue
             number += 1
             result = await turn(client, number, step["patient"])
+            if step.get("say") == "my_visits.one":
+                assert result["code"] == "INFO_GIVEN" and len(result["visits"]) == 1
+                assert result["visits"][0]["room"] == "118"
+                assert "понедельник" in " ".join(result["utterances"])
+                assert "Лебедев" in " ".join(result["utterances"])
             if "options" in step:
                 assert [
                     format_datetime(s.scheduled_at)
@@ -59,7 +66,7 @@ async def test_yaml_scenarios_through_http(case):
         expected = case["result"]["stand"]
         records = list(emulator.records["demo"].values())
         if expected == "unchanged":
-            assert records == [] and emulator.write_count == 0
+            assert emulator.records["demo"] == initial_records and emulator.write_count == 0
         else:
             assert len(records) == len(expected["created"]) == emulator.write_count
             for actual, target in zip(records, expected["created"]):

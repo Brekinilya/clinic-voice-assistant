@@ -8,6 +8,7 @@ from pydantic import AwareDatetime, Field, StrictBool, field_validator
 from app.booking.models import BookingModel, Slot
 from app.booking.preferences import SlotPreferences
 from app.mis.models import MisId
+from app.visits.models import VisitCursor, VisitQuery, VisitSummary
 
 CallId = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -25,6 +26,8 @@ class Phase(StrEnum):
     BOOKED = "booked"
     RECONCILING = "reconciling"
     HANDOFF = "handoff"
+    VERIFYING_OWNER = "verifying_owner"
+    VISITS_SHOWN = "visits_shown"
 
 
 class Turn(BookingModel):
@@ -83,6 +86,13 @@ class DialogueState(BookingModel):
     recording_opt_out: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
+    purpose: Literal["booking", "visits"] = "booking"
+    query_for_self: bool = False
+    identity_attempts: int = 0
+    visit_query: VisitQuery = Field(default_factory=VisitQuery)
+    visit_items: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
+    visit_cursor: VisitCursor | None = None
+    visit_has_more: bool = False
 
 
 class Reply(BookingModel):
@@ -98,6 +108,8 @@ class Reply(BookingModel):
     retry_at: AwareDatetime | None = None
     transfer: TransferRequest | None = None
     visit_id: int | None = None
+    visits: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
+    has_more_visits: bool = False
 
     @field_validator("utterances")
     @classmethod
@@ -127,6 +139,8 @@ def reply(
         kind=kind,
         transfer=state.transfer,
         visit_id=state.visit_id,
+        visits=state.visit_items,
+        has_more_visits=state.visit_has_more,
     )
 
 

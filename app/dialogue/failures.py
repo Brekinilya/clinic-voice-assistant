@@ -9,6 +9,8 @@ from app.mis.ports import MisError
 def mis_failure(
     state: DialogueState, turn: Turn, now: datetime, error: MisError
 ) -> tuple[DialogueState, Reply]:
+    if state.purpose == "visits":
+        state = state.model_copy(update={"visit_items": ()})
     if error.retry_after is not None:
         state = state.model_copy(update={"retry_at": now + timedelta(seconds=error.retry_after)})
         return state, reply(

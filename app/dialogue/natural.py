@@ -1,4 +1,4 @@
-"""С-01 текстом: распознавание делегировано Илье, правила действий принадлежат backend."""
+"""Текстовый маршрутизатор: NLU Ильи, сценарии С-01/С-05 и правила действий backend."""
 
 from typing import Literal
 
@@ -11,8 +11,12 @@ from app.dialogue.nlu_adapter import RulesInput
 from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
+from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
+from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
+from app.visits.ports import DoctorRooms
+from app.visits.service import VisitService
 
 
 class BookingConversation:
@@ -23,11 +27,15 @@ class BookingConversation:
         safety: SafetyChecker,
         *,
         nlu: NluInterpreter | None = None,
+        rooms: DoctorRooms | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
         self.safety = safety
         self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
+        self.visits = VisitConversation(
+            booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
+        )
 
     def short_reply(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
         decision = self.safety.evaluate(state.call_id, turn)
@@ -126,6 +134,26 @@ class BookingConversation:
                 code="RECORDING_OPT_OUT",
             )
         slots, intents = result.slots, set(result.intents)
+        if slots.on_behalf in {"other", "child"} or (
+            requested_owner(turn.text) == "other"
+            and (
+                state.purpose == "visits"
+                or "I-04" in intents
+                or mentions_existing_visits(turn.text)
+            )
+        ):
+            return await self.visits.privacy_transfer(state, turn)
+        if state.purpose == "visits":
+            if "I-01" in intents and (
+                state.phase != Phase.VISITS_SHOWN
+                or not state.visit_items
+                or wants_new_booking(turn.text)
+            ):
+                state = self.visits.booking_state(state)
+            elif intents & {"I-02", "I-03"}:
+                return await self.transfer(state, turn, "R-08")
+            else:
+                return await self.visits.step(state, turn, result)
         if "I-04" in intents:
             if state.proposal is not None:
                 known = await self.booking.store.get(state.proposal.action_id)
@@ -155,7 +183,7 @@ class BookingConversation:
                     "Результат всё ещё уточняется. Повторную запись не отправляю.",
                     code="RECONCILING",
                 )
-            return await self.transfer(state, turn, "R-08")
+            return await self.visits.start(state, turn, result)
         if state.phase == Phase.RECONCILING:
             if "no" in intents or intents & {"I-01", "I-02", "I-03"}:
                 # Уже отправленная операция не отменяется местным снятием брони.

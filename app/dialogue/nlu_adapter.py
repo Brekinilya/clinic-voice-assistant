@@ -23,7 +23,7 @@ class RulesInput:
             else "choice"
             if state.phase == Phase.OFFERED
             else "yes_no"
-            if state.phase == Phase.HELD
+            if state.phase in {Phase.HELD, Phase.VERIFYING_OWNER, Phase.VISITS_SHOWN}
             else "free"
         )
         options = tuple(
@@ -37,7 +37,7 @@ class RulesInput:
             for s in state.options
         )
         context = NluContext(
-            intent="I-01" if state.specialty else None,
+            intent="I-04" if state.purpose == "visits" else "I-01" if state.specialty else None,
             slots=PublicSlots(**({"specialty": state.specialty} if state.specialty else {})),
         )
         request = NluRequest(

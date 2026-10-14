@@ -101,7 +101,14 @@ class DialogueService:
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
             await self.booking.store.release_call_holds(call_id)
             state = state.model_copy(
-                update={"phase": Phase.INTERRUPTED, "proposal": None, "options": ()}
+                update={
+                    "phase": Phase.INTERRUPTED,
+                    "proposal": None,
+                    "options": (),
+                    "visit_items": (),
+                    "visit_cursor": None,
+                    "visit_has_more": False,
+                }
             )
             result = reply(
                 state,

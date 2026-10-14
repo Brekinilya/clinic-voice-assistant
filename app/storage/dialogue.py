@@ -135,6 +135,10 @@ class PostgresDialogueStore:
                     "options": (),
                     "retry_at": None,
                     "authorization": None,
+                    "visit_items": (),
+                    "visit_cursor": None,
+                    "visit_has_more": False,
+                    "query_for_self": False,
                 }
             )
             await connection.execute(

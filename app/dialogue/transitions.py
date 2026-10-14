@@ -73,5 +73,8 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
             "options": (),
             "retry_at": None,
             "transfer": transfer,
+            "visit_items": (),
+            "visit_cursor": None,
+            "visit_has_more": False,
         }
     )

@@ -17,7 +17,7 @@ from app.dialogue.service import DialogueService
 from app.main import create_app
 from app.mis.emulator import MisEmulator
 from app.mis.http import HttpMedicalSystem
-from app.mis.models import Client, Doctor, parse_datetime
+from app.mis.models import Client, Doctor, Visit, VisitStatus, parse_datetime
 from app.settings import Settings
 
 SCENARIOS = Path(__file__).resolve().parents[1] / "scenarios"
@@ -73,6 +73,24 @@ async def pipeline(setup=None, *, pg_engine=None):
         (client_ids["ivanov_sp"], doctor_ids["belova"]),
     }
     emulator = MisEmulator(clock, doctors, {"demo": clients})
+    for i, data in enumerate(setup.get("visits", []), 1):
+        emulator.records["demo"][i] = Visit(
+            id=i,
+            client_id=client_ids[data["client"]],
+            doctor=emulator.doctors[doctor_ids[data["doctor"]]],
+            scheduled_at=parse_datetime(data["at"]),
+            status=VisitStatus(data.get("status", VisitStatus.PLANNED)),
+            created_at=clock.now(),
+            updated_at=clock.now(),
+        )
+
+    class FixtureRooms:
+        def room(self, doctor_id, scheduled_at):
+            # В учебном справочнике кабинеты постоянные; реальный источник может учитывать дату.
+            key = next(key for key, value in doctor_ids.items() if value == doctor_id)
+            value = raw["doctors"][key].get("room")
+            return None if value is None else str(value)
+
     if pg_engine is None:
         dialogue_store = MemoryDialogueStore()
         booking_store = MemoryBookingStore(guard_reader=dialogue_store)
@@ -95,7 +113,7 @@ async def pipeline(setup=None, *, pg_engine=None):
             require_dialogue_guard=True,
         )
         safety = RulesSafety(clock)
-        conversation = BookingConversation(booking, dialogue_store, safety)
+        conversation = BookingConversation(booking, dialogue_store, safety, rooms=FixtureRooms())
         service = DialogueService(
             booking, dialogue_store, KEY, safety=safety, conversation=conversation
         )
