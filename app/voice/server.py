@@ -108,17 +108,15 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         raise RuntimeError("для телефонии нужен диалог: BACKEND_DEMO_ENABLED=true")
     from app.voice.engines import resample
     from app.voice.render import default_renderer
-    from app.voice.rtp import RATE
     from app.voice.telephony import Ari, Telephony
 
     renderer = default_renderer()
     synthesizer = app.state.voice.synthesizer
 
-    async def say(template: str) -> bytes:
+    async def say(template: str) -> tuple[bytes, int]:
         today = ClinicClock().now().date()
         speech = renderer.speak(renderer.render(template, today).text, today)
-        pcm, rate = await asyncio.to_thread(synthesizer.synthesize, speech)
-        return resample(pcm, rate, RATE)
+        return await asyncio.to_thread(synthesizer.synthesize, speech)
 
     ari = Ari(settings)
     line = Telephony(

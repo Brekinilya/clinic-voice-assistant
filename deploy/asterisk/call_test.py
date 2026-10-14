@@ -35,7 +35,7 @@ def credentials() -> tuple[str, str]:
     return values["ARI_USER"], values["ARI_PASSWORD"]
 
 
-async def main(steps: list[str], url: str, name: str, wait: float) -> None:
+async def main(steps: list[str], url: str, name: str, wait: float, verbose: bool) -> None:
     user, password = credentials()
     http = httpx.AsyncClient(base_url=f"{url}/ari/", auth=(user, password), timeout=5)
     header = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
@@ -52,7 +52,10 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
 
         async def listen() -> None:
             async for message in socket:
-                await events.put(json.loads(message))
+                event = json.loads(message)
+                if verbose:
+                    note(f"событие {event['type']} {event.get('channel', {}).get('name', '')}")
+                await events.put(event)
 
         listener = asyncio.create_task(listen())
 
@@ -65,13 +68,15 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
                     return None
                 channel = event.get("channel", {}).get("id")
                 # пока канал «пациента» не известен, подходит любой
-                if event["type"] in kinds and (patient is None or channel in (patient, None)):
+                if event["type"] in kinds and (
+                    patient is None or channel in (patient, listen, None)
+                ):
                     return event
                 if event["type"] == "StasisEnd" and event["channel"]["id"] == patient:
                     return event
             return None
 
-        patient = None
+        patient = listen = None
         response = await http.post(
             "channels",
             params={
@@ -86,8 +91,15 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
         first = await until("StasisStart")
         patient = first["channel"]["id"]
         note(f"на линии, канал {patient}")
+        # Говорит ли ассистент, видно по звуку, который приходит к «пациенту» (spy=in)
+        listen = (
+            await http.post(
+                f"channels/{patient}/snoop",
+                params={"spy": "in", "app": APP, "snoopId": f"{name}-in"},
+            )
+        ).json()["id"]
         await http.post(
-            f"channels/{patient}/variable",
+            f"channels/{listen}/variable",
             params={"variable": "TALK_DETECT(set)", "value": "1200"},
         )
         snoop = (
@@ -128,6 +140,7 @@ async def main(steps: list[str], url: str, name: str, wait: float) -> None:
         if not hung_up:
             await http.delete(f"channels/{patient}")
         await http.delete(f"channels/{snoop}")
+        await http.delete(f"channels/{listen}")
         await asyncio.sleep(0.5)
         listener.cancel()
     await http.aclose()
@@ -142,5 +155,6 @@ if __name__ == "__main__":
     parser.add_argument("--url", default="http://127.0.0.1:8088")
     parser.add_argument("--name", default=time.strftime("call-%H%M%S"))
     parser.add_argument("--wait", type=float, default=20, help="сколько ждать конца разговора, с")
+    parser.add_argument("--verbose", action="store_true", help="печатать все события ARI")
     args = parser.parse_args()
-    asyncio.run(main(args.steps, args.url, args.name, args.wait))
+    asyncio.run(main(args.steps, args.url, args.name, args.wait, args.verbose))

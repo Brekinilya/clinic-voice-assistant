@@ -5,7 +5,7 @@ import socket
 
 import pytest
 
-from app.voice.rtp import RtpSender
+from app.voice.rtp import CODECS, RtpSender, Upsampler
 from app.voice.telephony import PhoneChannel, Telephony, TelephonySettings
 
 PCM = bytes(range(256)) * 5
@@ -89,7 +89,7 @@ async def line():
 
     async def say(template):
         said.append(template)
-        return PCM
+        return PCM, 8000
 
     telephony = Telephony(Ari(), settings, new_session, say, lambda pcm, src, dst: pcm)
     telephony.sessions_made = sessions
@@ -127,13 +127,16 @@ async def test_incoming_call_bridges_caller_with_gateway(line):
 async def test_caller_audio_reaches_gateway(line):
     await line.handle(start("caller-1", "inbound"))
     port = line.settings.media_ports[0]
+    ulaw = CODECS["ulaw"]
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.sendto(RtpSender().packet(PCM), ("127.0.0.1", port))
+        s.sendto(RtpSender(ulaw).packet(PCM), ("127.0.0.1", port))
+    # ulaw 8 кГц приходит к шлюзу уже PCM 16 кГц
+    expected = Upsampler()(ulaw.decode(ulaw.encode(PCM)))
     for _ in range(50):
-        if PCM in bytes(line.sessions_made[0].audio):
+        if expected in bytes(line.sessions_made[0].audio):
             break
         await asyncio.sleep(0.01)
-    assert PCM in bytes(line.sessions_made[0].audio)
+    assert expected in bytes(line.sessions_made[0].audio)
 
 
 async def test_silence_fills_gaps_without_rtp(line):
@@ -163,7 +166,8 @@ async def test_goodbye_hangs_up_after_reply_played(line):
     await channel.send_json({"type": "speak", "sample_rate": 16000})
     await channel.send_bytes(PCM * 3)
     await channel.send_json({"type": "end", "reason": "ended"})
-    await asyncio.sleep(0.2)
+    # на 8 кГц этот звук играет 240 мс
+    await asyncio.sleep(0.5)
     assert ("hangup", "caller-1") in line.ari.calls
 
 

@@ -12,12 +12,13 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 import httpx
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.voice.rtp import RATE, RtpEndpoint, open_endpoint
+from app.voice.rtp import CODECS, RATE, Codec, RtpEndpoint, Upsampler, open_endpoint
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class TelephonySettings(BaseSettings):
     media_ports: tuple[int, int] = (40000, 40099)
     # Куда шлюз шлёт ответ: порты RTP Asterisk опубликованы на этом адресе
     asterisk_rtp_host: str = "127.0.0.1"
+    # Формат звука внешнего медиаканала. slin16 Asterisk 20 из пакетов Ubuntu принимать не умеет
+    media_format: Literal["ulaw", "slin16"] = "ulaw"
     operator_endpoint: str = "PJSIP/operator"
 
 
@@ -102,7 +105,7 @@ class Ari:
             "channels/externalMedia",
             app=self.settings.app,
             external_host=host,
-            format="slin16",
+            format=self.settings.media_format,
             encapsulation="rtp",
             transport="udp",
             direction="both",
@@ -155,6 +158,7 @@ class PhoneCall:
     priority: str = "P3"
     connected: bool = False
     rate: int = 24000
+    codec: Codec = field(default_factory=lambda: CODECS["ulaw"])
     tasks: set[asyncio.Task] = field(default_factory=set)
 
 
@@ -179,11 +183,13 @@ class PhoneChannel:
             self.telephony.spawn(self.call, self.telephony.finish(self.call, message))
 
     async def send_bytes(self, data: bytes) -> None:
-        self.call.rtp.play(self.telephony.resample(data, self.call.rate, RATE))
+        codec = self.call.codec
+        self.call.rtp.play(self.telephony.resample(data, self.call.rate, codec.rate))
 
 
 SessionFactory = Callable[[str, PhoneChannel], object]
-Say = Callable[[str], Awaitable[bytes]]
+# Реплика по шаблону: PCM и его частота
+Say = Callable[[str], Awaitable[tuple[bytes, int]]]
 
 
 class Telephony:
@@ -244,11 +250,16 @@ class Telephony:
             log.error("нет свободных портов RTP")
             await self.ari.hangup(caller)
             return
-        call = PhoneCall(caller=caller, port=self._ports.pop(0))
+        codec = CODECS[self.settings.media_format]
+        call = PhoneCall(caller=caller, port=self._ports.pop(0), codec=codec)
         self.calls[caller] = call
         audio: asyncio.Queue[bytes] = asyncio.Queue()
+        # Шлюз слушает 16 кГц; ulaw приходит с частотой 8 кГц
+        upsample = Upsampler() if codec.rate != RATE else (lambda pcm: pcm)
 
-        call.rtp = await open_endpoint(call.port, audio.put_nowait, self.settings.media_bind)
+        call.rtp = await open_endpoint(
+            call.port, lambda pcm: audio.put_nowait(upsample(pcm)), codec, self.settings.media_bind
+        )
         await self.ari.answer(caller)
         call.media, rtp_port = await self.ari.external_media(
             f"{self.settings.media_host}:{call.port}"
@@ -289,8 +300,9 @@ class Telephony:
             call.operator = await self.ari.originate(
                 self.settings.operator_endpoint, ["operator", call.caller], timeout
             )
-        except AriError:
-            log.exception("не удалось вызвать регистратора")
+        except AriError as error:
+            # Обычно софтфон регистратора не в сети: это не сбой шлюза, а неотвеченный перевод
+            log.warning("регистратор недоступен: %s", error)
             await self._operator_failed(call)
             return
         self._operators[call.operator] = call
@@ -309,7 +321,8 @@ class Telephony:
         # который диалог уже подготовил для регистратора
         await self._music(call, False)
         template = "emergency.no_answer" if call.priority == "P1" else "callback.created"
-        call.rtp.play(await self.say(template))
+        pcm, rate = await self.say(template)
+        call.rtp.play(self.resample(pcm, rate, call.codec.rate))
         await call.rtp.drained()
         await self.ari.hangup(call.caller)
 
