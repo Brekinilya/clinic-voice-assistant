@@ -56,7 +56,7 @@ class EmulatorBudget:
         pass
 
 
-def demo_emulator(clock: DemoClock) -> MisEmulator:
+def demo_emulator(clock: DemoClock, *, doctors=None) -> MisEmulator:
     clients = [
         Client(
             id=i,
@@ -71,7 +71,11 @@ def demo_emulator(clock: DemoClock) -> MisEmulator:
     ]
     return MisEmulator(
         clock,
-        [Doctor(id=1, full_name="Образцова Анна Тестовна", specialty="терапевт", is_active=True)],
+        doctors
+        if doctors is not None
+        else [
+            Doctor(id=1, full_name="Образцова Анна Тестовна", specialty="терапевт", is_active=True)
+        ],
         {"demo": clients},
     )
 

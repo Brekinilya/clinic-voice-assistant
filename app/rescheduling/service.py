@@ -7,6 +7,8 @@ from app.cancellation.models import same_visit, summary
 from app.mis.models import VisitChange, VisitCreate, VisitStatus
 from app.mis.ports import BudgetExhausted, MisError, MisOutcomeUnknown
 from app.rescheduling.models import MoveState, check_approval, matches_new
+from app.scheduling.matching import profile_key
+from app.scheduling.query import IndexedSource, candidates, doctor_matches, remember
 from app.visits.models import VisitSummary
 
 
@@ -43,7 +45,7 @@ class RescheduleService:
             v
             for v in visits
             if v.id != before.id
-            and v.doctor.specialty == before.doctor.specialty
+            and profile_key(v.doctor.specialty) == profile_key(before.doctor.specialty)
             and v.scheduled_at >= self.clock.now()
         ]
 
@@ -60,15 +62,20 @@ class RescheduleService:
         if await self._others(before, call_id=call_id):
             raise BookingError("SPECIALTY_ALREADY_BOOKED")
         preferences = preferences or SlotPreferences()
+        if isinstance(self.booking.schedule, IndexedSource):
+            remember(self.booking.schedule, await self.mis.client(client_id))
         doctors = {d.id: d for d in await self.mis.doctors(before.doctor.specialty)}
         slots = []
-        for slot in self.booking.schedule.slots():
+        for slot in candidates(
+            self.booking.schedule, before.doctor.specialty, preferences, self.clock.now()
+        ):
             doctor = doctors.get(slot.doctor_id)
             if (
                 doctor is None
                 or not doctor.is_active
                 or doctor.specialty != slot.specialty
-                or slot.specialty != before.doctor.specialty
+                or profile_key(slot.specialty) != profile_key(before.doctor.specialty)
+                or not doctor_matches(self.booking.schedule, doctor)
                 or not preferences.matches(slot)
                 or (slot.doctor_id, slot.scheduled_at) == (before.doctor.id, before.scheduled_at)
             ):
@@ -112,12 +119,19 @@ class RescheduleService:
         return tuple(result)
 
     async def _preflight(self, before, slot, call_id, *, fresh):
+        if isinstance(self.booking.schedule, IndexedSource):
+            remember(self.booking.schedule, await self.mis.client(before.client_id))
         self.booking.validate_slot(before.client_id, slot)
-        if slot.specialty != before.doctor.specialty:
+        if profile_key(slot.specialty) != profile_key(before.doctor.specialty):
             raise BookingError("WRONG_SPECIALTY")
         doctors = {d.id: d for d in await self.mis.doctors(slot.specialty, fresh=fresh)}
         doctor = doctors.get(slot.doctor_id)
-        if doctor is None or not doctor.is_active or doctor.specialty != slot.specialty:
+        if (
+            doctor is None
+            or not doctor.is_active
+            or doctor.specialty != slot.specialty
+            or not doctor_matches(self.booking.schedule, doctor)
+        ):
             raise BookingError("DOCTOR_UNAVAILABLE")
         busy = await self.mis.visits(
             doctor_id=slot.doctor_id,

@@ -43,9 +43,15 @@ class Settings(BaseSettings):
     dialogue_storage: Literal["memory", "postgres"] = "memory"
     dialogue_hash_key: SecretStr = SecretStr("")
     schedule_path: Path | None = None
+    schedule_index_path: Path | None = None
+    schedule_access_path: Path | None = None
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:
+        if self.schedule_path is not None and self.schedule_index_path is not None:
+            raise ValueError("выберите один источник: SCHEDULE_PATH или SCHEDULE_INDEX_PATH")
+        if self.schedule_access_path is not None and self.schedule_index_path is None:
+            raise ValueError("SCHEDULE_ACCESS_PATH применяется только к SQLite-индексу")
         if self.backend_demo_enabled and self.app_mode != AppMode.OFFLINE_TEST:
             raise ValueError("командный HTTP-стенд доступен только в offline_test")
         if (

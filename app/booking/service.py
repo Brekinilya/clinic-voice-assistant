@@ -16,6 +16,8 @@ from app.clock import CLINIC_TIMEZONE
 from app.mis.models import Client, Visit, VisitCreate, VisitStatus, name_key
 from app.mis.ports import BudgetExhausted, MedicalSystem, MisError, MisOutcomeUnknown
 from app.ports import Clock
+from app.scheduling.matching import profile_key
+from app.scheduling.query import available_doctors, candidates, contains, doctor_matches, remember
 
 
 class BookingService:
@@ -51,6 +53,7 @@ class BookingService:
         if len(candidates) != 1:
             # Никакого автоматического создания пациента и угадывания похожей фамилии.
             raise BookingError("IDENTIFICATION_REQUIRED")
+        remember(self.schedule, candidates[0])
         return candidates[0]
 
     def clear_call_cache(self, call_id: str) -> None:
@@ -69,7 +72,7 @@ class BookingService:
         )
         if any(
             v.client_id == client_id
-            and v.doctor.specialty == specialty
+            and profile_key(v.doctor.specialty) == profile_key(specialty)
             and v.status == VisitStatus.PLANNED
             and v.scheduled_at >= now
             for v in visits
@@ -78,7 +81,7 @@ class BookingService:
 
     def _check_slot(self, client_id: int, slot: Slot) -> None:
         now = self.clock.now().astimezone(CLINIC_TIMEZONE)
-        if slot not in self.schedule.slots() or not self.schedule.eligible(client_id, slot):
+        if not contains(self.schedule, slot) or not self.schedule.eligible(client_id, slot):
             raise BookingError("ELIGIBILITY_UNKNOWN")
         # Четырнадцать календарных дней: сегодняшний день входит в горизонт.
         if not now.date() <= slot.scheduled_at.date() <= now.date() + timedelta(days=13):
@@ -102,22 +105,19 @@ class BookingService:
         if not 1 <= limit <= 3:
             raise ValueError("предлагаем от одного до трёх вариантов")
         preferences = preferences if preferences is not None else SlotPreferences()
-        await self.mis.client(client_id)
-        doctors = {d.id: d for d in await self.mis.doctors(specialty)}
+        remember(self.schedule, await self.mis.client(client_id))
+        doctors = await available_doctors(self.schedule, self.mis, specialty)
         await self._check_specialty(client_id, specialty, call_id)
         result = []
-        slots = sorted(
-            self.schedule.slots(),
-            key=lambda s: (s.scheduled_at, s.doctor_id),
-            reverse=preferences.time_pref == "late",
-        )
+        slots = candidates(self.schedule, specialty, preferences, self.clock.now())
         eligible = []
         for slot in slots:
             if (
-                slot.specialty != specialty
+                profile_key(slot.specialty) != profile_key(specialty)
                 or slot.doctor_id not in doctors
                 or not doctors[slot.doctor_id].is_active
                 or doctors[slot.doctor_id].specialty != slot.specialty
+                or not doctor_matches(self.schedule, doctors[slot.doctor_id])
                 or not preferences.matches(slot)
             ):
                 continue
@@ -156,10 +156,16 @@ class BookingService:
     async def _preflight(
         self, client_id: int, slot: Slot, *, call_id: str, fresh: bool = False
     ) -> None:
-        await self.mis.client(client_id)
+        remember(self.schedule, await self.mis.client(client_id))
+        self._check_slot(client_id, slot)
         doctors = {d.id: d for d in await self.mis.doctors(slot.specialty, fresh=fresh)}
         doctor = doctors.get(slot.doctor_id)
-        if doctor is None or not doctor.is_active or doctor.specialty != slot.specialty:
+        if (
+            doctor is None
+            or not doctor.is_active
+            or doctor.specialty != slot.specialty
+            or not doctor_matches(self.schedule, doctor)
+        ):
             raise BookingError("DOCTOR_UNAVAILABLE")
         visits = await self.mis.visits(
             doctor_id=slot.doctor_id,

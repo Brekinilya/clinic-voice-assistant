@@ -40,6 +40,7 @@ class BookingConversation:
         self.booking = booking
         self.store = store
         self.safety = safety
+        self.rooms = rooms
         self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
         self.visits = VisitConversation(
             booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
@@ -611,11 +612,14 @@ class BookingConversation:
             code="NOT_UNDERSTOOD",
         )
 
-    @staticmethod
-    def booked_phrase(action, doctor_name: str | None) -> str:
+    def room_phrase(self, slot) -> str:
+        room = self.rooms.room(slot.doctor_id, slot.scheduled_at) if self.rooms else None
+        return f", кабинет {room}" if room else ""
+
+    def booked_phrase(self, action, doctor_name: str | None) -> str:
         return (
             f"Вы записаны: {action.slot.specialty}, {doctor_name or 'выбранный врач'}, "
-            f"{format_datetime(action.slot.scheduled_at)}."
+            f"{format_datetime(action.slot.scheduled_at)}{self.room_phrase(action.slot)}."
         )
 
     async def confirmation_phrase(self, state: DialogueState, turn: Turn) -> Reply:
@@ -627,6 +631,6 @@ class BookingConversation:
         return reply(
             state,
             turn.turn_id,
-            f"Подтвердите: {slot.specialty}, {doctor_name}, {format_datetime(slot.scheduled_at)}. Всё верно?",
+            f"Подтвердите: {slot.specialty}, {doctor_name}, {format_datetime(slot.scheduled_at)}{self.room_phrase(slot)}. Всё верно?",
             code="CONFIRMATION_REQUIRED",
         )
