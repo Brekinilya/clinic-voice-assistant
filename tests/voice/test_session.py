@@ -164,6 +164,31 @@ async def test_pause_mid_sentence_glues_phrases():
     await call.close()
 
 
+async def test_phrase_after_dialogue_answered_is_new_turn():
+    answer = "Назовите, пожалуйста, фамилию, имя, отчество."
+
+    class SlowSynthesizer(Synthesizer):
+        def synthesize(self, speech):
+            if "фамилию" in speech:
+                time.sleep(0.3)
+            return super().synthesize(speech)
+
+    dialogue = Dialogue(lambda turn: reply(answer))
+    recognizer = Recognizer({10: "Мне к терапевту", 8: "Тестов Александр"})
+    call, channel = session(dialogue, recognizer, SlowSynthesizer())
+    await answered(call)
+    await call.feed(phrase(10))
+    await until(lambda: len(dialogue.turns) == 1)
+    # ответ ещё синтезируется, а пациент уже говорит дальше
+    await call.feed(phrase(8))
+    await until(lambda: len(dialogue.turns) == 2)
+    assert [(t.turn_id, t.text) for t in dialogue.turns] == [
+        (1, "Мне к терапевту"),
+        (2, "Тестов Александр"),
+    ]
+    await call.close()
+
+
 async def test_slow_answer_gets_wait_phrase():
     dialogue = Dialogue(lambda turn: reply("Есть завтра в девять."), delay=0.6)
     call, channel = session(dialogue, Recognizer({10: "К терапевту"}))

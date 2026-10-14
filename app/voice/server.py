@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.clock import ClinicClock
 from app.main import create_app
 from app.settings import Settings
 from app.voice.api import router
@@ -21,11 +22,24 @@ from app.voice.settings import VoiceSettings
 WEB = Path(__file__).resolve().parents[2] / "web"
 
 
+# Реплики без подстановок, которые звучат чаще всего: синтезируем при запуске, дальше — из кэша
+FREQUENT = (
+    "greeting.inbound",
+    "ask.how_can_help",
+    "wait.schedule",
+    "reask.first",
+    "silence.first",
+    "silence.final",
+    "transfer.mis_down",
+    "closing.goodbye",
+)
+
+
 def load_engines(settings: VoiceSettings):
     from app.voice.engines import Engines, GigaAmRecognizer, SileroSynthesizer, SileroVad
-    from app.voice.render import load_pronunciation
+    from app.voice.render import default_renderer, load_pronunciation
 
-    return Engines(
+    engines = Engines(
         vad=SileroVad(settings.path(settings.vad_model)),
         recognizer=GigaAmRecognizer(
             settings.path(settings.asr_model),
@@ -40,6 +54,14 @@ def load_engines(settings: VoiceSettings):
             settings.threads,
         ),
     )
+    # Первый прогон моделей медленный: делаем его до первого звонка
+    engines.recognizer.transcribe(bytes(32000))
+    renderer = default_renderer()
+    today = ClinicClock().now().date()
+    for template in FREQUENT:
+        text = renderer.render(template, today).text
+        engines.synthesizer.synthesize(renderer.speak(text, today))
+    return engines
 
 
 def create_voice_app(

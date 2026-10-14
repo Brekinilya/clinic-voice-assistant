@@ -98,7 +98,8 @@ class CallSession:
         self._buffer = bytearray()
         self._playback_end = 0.0
         self._interruptible = True
-        self._spoken_turn = -1
+        # Последняя реплика, которую уже получил диалог: её не склеиваем со следующей
+        self._asked_turn = 0
         self._last_reply: list[str] = []
         self._barged_in = False
         self._answered: set[int] = set()
@@ -162,8 +163,9 @@ class CallSession:
             self._playback_end = 0.0
             await self.channel.send_json({"type": "stop", "turn_id": self.turn_id - 1})
         if self._responder is not None and not self._responder.done():
-            if self._spoken_turn != self.turn_id - 1:
-                # Ответ на прошлую фразу ещё не звучал — пациент договаривает её же
+            if self._asked_turn != self.turn_id - 1:
+                # Прошлая фраза ещё распознаётся — пациент договаривает её же. Если диалог её
+                # уже получил, это новая реплика: склейка повторила бы прошлую в следующей.
                 self._carry_audio = self._responder_audio
             self._responder.cancel()
 
@@ -190,6 +192,7 @@ class CallSession:
                 await self._say(turn, self._last_reply[-1:])
                 self._watch_silence()
             return
+        self._asked_turn = turn
         reply = await self._ask(turn, text)
         if turn in self._answered:
             return
@@ -285,7 +288,6 @@ class CallSession:
                 {"type": "speak", "turn_id": turn, "text": text, "sample_rate": rate}
             )
             await self.channel.send_bytes(pcm)
-            self._spoken_turn = turn
             self._playback_end = max(self.now(), self._playback_end) + len(pcm) / 2 / rate
             if timing is not None:
                 timing["tts_ms"] = round((self.now() - started) * 1000)
