@@ -84,6 +84,7 @@ class DialogueState(BookingModel):
     preferences: SlotPreferences = Field(default_factory=SlotPreferences)
     misunderstandings: int = 0
     recording_opt_out: bool = False
+    medical_boundary_pending: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     purpose: Literal["booking", "visits"] = "booking"

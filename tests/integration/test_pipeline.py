@@ -22,6 +22,7 @@ def cases():
         "main/c05_my_visit.yaml",
         "control/01_red_flag_during_booking.yaml",
         "control/01b_red_flag_at_confirmation.yaml",
+        "control/02_medicine_question.yaml",
         "control/06_ent_with_constraints.yaml",
         "control/12_not_understood.yaml",
     ]
@@ -50,6 +51,9 @@ async def test_yaml_scenarios_through_http(case):
                 assert result["visits"][0]["room"] == "118"
                 assert "понедельник" in " ".join(result["utterances"])
                 assert "Лебедев" in " ".join(result["utterances"])
+            if step.get("say") == "medical.boundary":
+                assert result["code"] == "MEDICAL_BOUNDARY" and result["transfer"] is None
+                assert "Записать вас к терапевту?" in " ".join(result["utterances"])
             if "options" in step:
                 assert [
                     format_datetime(s.scheduled_at)
@@ -223,9 +227,7 @@ async def test_failed_safety_closes_automatic_booking(failure):
         assert emulator.write_count == 0
 
 
-@pytest.mark.parametrize(
-    "danger", ["ой, не могу дышать", "Соедините с оператором", "Какую таблетку принять?"]
-)
+@pytest.mark.parametrize("danger", ["ой, не могу дышать", "Соедините с оператором"])
 async def test_partial_danger_preempts_confirmation(danger):
     async with pipeline() as (client, service, emulator, *_):
         await reserve(client)
@@ -272,6 +274,8 @@ async def test_unknown_birth_century_is_not_chosen_or_stored():
 async def test_operator_and_medical_routes_are_server_decisions():
     async with pipeline() as (client, _, emulator, *_):
         result = await turn(client, 1, "Какую таблетку от давления выпить?")
+        assert result["code"] == "MEDICAL_BOUNDARY" and result["transfer"] is None
+        result = await turn(client, 2, "Нет, вы мне просто скажите, что можно выпить")
         assert result["transfer"]["route"] == "R-04"
         assert result["transfer"]["status"] == "requested" and emulator.write_count == 0
 

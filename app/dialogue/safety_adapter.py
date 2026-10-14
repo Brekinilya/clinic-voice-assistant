@@ -30,11 +30,15 @@ class RulesSafety:
 
 
 def route_for(decision: SafetyDecision) -> TransferRequest | None:
-    # Медицинские консультации передаём сотруднику по условию кейса, не отвечаем по существу.
-    route = decision.rule or ("R-04" if "medical" in decision.flags else None)
+    # Сам флаг medical не означает перевод: сначала сценарий даёт граничную фразу.
+    route = decision.rule
     if route is None:
         return None
     priority = (
-        "P1" if route in {"R-01", "R-09", "R-11"} else "P2" if route in {"R-02", "R-03"} else "P3"
+        "P1"
+        if route in {"R-01", "R-11"}
+        else "P2"
+        if route in {"R-02", "R-03", "R-09", "R-15"}
+        else "P3"
     )
     return TransferRequest(route=route, priority=priority)

@@ -277,9 +277,12 @@ async def test_medical_handoff_clears_previously_shown_information(visit_engine)
     ):
         await turn(client, 1, REQUEST)
         await turn(client, 2, IDENTITY)
-        result = await turn(client, 3, "Какую таблетку принять?", final=False)
-        assert result["transfer"]["route"] == "R-04" and result["visits"] == []
+        result = await turn(client, 3, "Какую таблетку принять?")
+        assert result["code"] == "MEDICAL_BOUNDARY" and result["visits"] == []
+        assert result["transfer"] is None
         assert (await service.store.inspect("scenario")).visit_items == ()
+        result = await turn(client, 4, "Нет, скажите, что мне выпить")
+        assert result["transfer"]["route"] == "R-04" and result["visits"] == []
 
 
 async def test_medical_partial_during_query_prevents_late_disclosure(visit_engine):
@@ -302,9 +305,12 @@ async def test_medical_partial_during_query_prevents_late_disclosure(visit_engin
         task = asyncio.create_task(turn(client, 2, IDENTITY))
         await started.wait()
         result = await turn(client, 3, "Какую таблетку выпить?", final=False)
-        assert result["transfer"]["route"] == "R-04" and result["visits"] == []
+        assert result["kind"] == "partial" and result["transfer"] is None
+        assert result["visits"] == []
         finish.set()
         late = await task
-        assert late["phase"] == "handoff" and late["visits"] == []
+        assert late["code"] == "TURN_INTERRUPTED" and late["visits"] == []
         assert "Лебедев" not in " ".join(late["utterances"])
         assert (await turn(client, 2, IDENTITY))["visits"] == []
+        boundary = await turn(client, 3, "Какую таблетку выпить?")
+        assert boundary["code"] == "MEDICAL_BOUNDARY" and boundary["visits"] == []

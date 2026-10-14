@@ -173,7 +173,7 @@ class DialogueService:
                     update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
                 )
         if self.conversation is not None:
-            shortcut = self.conversation.short_reply(state, turn)
+            shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:
                 return shortcut
         if state.retry_at is not None:

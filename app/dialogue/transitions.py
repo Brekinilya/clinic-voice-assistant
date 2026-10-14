@@ -1,6 +1,7 @@
 """Общие переходы памяти и PostgreSQL: только сервер меняет разрешение записи."""
 
 from app.dialogue.models import DialogueState, Phase, TransferRequest, WriteAuthorization, reply
+from app.voice.phrases import load_phrasebook
 
 
 def observe_input(state: DialogueState, turn_id: int, digest: str) -> DialogueState:
@@ -51,7 +52,7 @@ def handoff_reply(state: DialogueState, turn_id: int):
             "Не ждите приёма в поликлинике. Запрос регистратору подготовлен.",
         )
     elif route == "R-04":
-        phrases = ("Я не даю медицинских советов. Подготовлен запрос регистратору.",)
+        phrases = (load_phrasebook().get("transfer.medical").text,)
     else:
         phrases = ("Подготовлен запрос регистратору. Автоматическая запись остановлена.",)
     return reply(

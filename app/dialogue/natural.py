@@ -6,6 +6,7 @@ from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import SlotPreferences
 from app.booking.service import BookingService
 from app.dialogue.failures import mis_failure
+from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
 from app.dialogue.nlu_adapter import RulesInput
 from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
@@ -36,9 +37,14 @@ class BookingConversation:
         self.visits = VisitConversation(
             booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
         )
+        self.medical = MedicalConversation(booking, store, self.transfer)
 
-    def short_reply(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
+    async def short_reply(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply] | None:
         decision = self.safety.evaluate(state.call_id, turn)
+        if "medical" in decision.flags:
+            return await self.medical.question(state, turn)
         if "robot" in decision.flags:
             return state, reply(
                 state,
@@ -118,6 +124,8 @@ class BookingConversation:
         transfer = route_for(decision)
         if transfer:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
+        if "medical" in decision.flags or "I-13" in result.intents:
+            return await self.medical.question(state, turn)
         if "robot" in decision.flags:
             return state, reply(
                 state,
@@ -134,6 +142,32 @@ class BookingConversation:
                 code="RECORDING_OPT_OUT",
             )
         slots, intents = result.slots, set(result.intents)
+        if state.medical_boundary_pending:
+            refinements = {
+                "date_from",
+                "date_to",
+                "time_from",
+                "time_to",
+                "time_pref",
+                "exclude_weekdays",
+            } & slots.model_fields_set
+            if "repeat" in intents:
+                return self.medical.prompt(state, turn)
+            if "no" in intents and not ("I-01" in intents or slots.specialty):
+                return await self.medical.decline(state, turn)
+            # Уточнение дня начинает подбор, но не служит подтверждением записи.
+            if "yes" in intents or (refinements and not intents & {"no", "maybe", "opt_out"}):
+                if state.phase == Phase.RECONCILING:
+                    return await self.transfer(state, turn, "R-08")
+                state = self.visits.booking_state(state).model_copy(
+                    update={"medical_boundary_pending": False, "specialty": None}
+                )
+                slots = slots.model_copy(update={"specialty": slots.specialty or "терапевт"})
+                intents.add("I-01")
+            elif intents & {"I-01", "I-04"} or slots.specialty or slots.doctor:
+                state = state.model_copy(update={"medical_boundary_pending": False})
+            elif refinements:
+                return self.medical.prompt(state, turn)
         if slots.on_behalf in {"other", "child"} or (
             requested_owner(turn.text) == "other"
             and (

@@ -18,7 +18,9 @@ class RulesInput:
         names = {d.id: d.full_name for d in doctors}
         parser = RulesNlu(names.values())
         expect = (
-            "full_name"
+            "yes_no"
+            if state.medical_boundary_pending
+            else "full_name"
             if state.phase == Phase.IDENTIFYING
             else "choice"
             if state.phase == Phase.OFFERED
