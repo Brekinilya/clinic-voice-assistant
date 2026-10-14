@@ -31,6 +31,13 @@ FILES = {
         ("https://models.silero.ai/models/tts/ru/v5_5_ru.pt", "silero/v5_5_ru.pt"),
         ("https://models.silero.ai/models/tts/ru/v5_cis_base.pt", "silero/v5_cis_base.pt"),
     ],
+    # Определение речи для голосового шлюза (MIT)
+    "vad": [
+        (
+            "https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx",
+            "silero/silero_vad.onnx",
+        ),
+    ],
     "piper": [
         (f"{PIPER}/irina/medium/ru_RU-irina-medium.onnx", "piper/ru_RU-irina-medium.onnx"),
         (
