@@ -83,3 +83,28 @@ bench/speech/.venv/Scripts/python bench/speech/bench.py run
 Памяти на машине организаторов хватает: распознавание 0,5 ГБ + синтез 0,1–0,6 ГБ из 4 ГБ.
 
 **Что дальше:** записать 20–30 живых фраз (`data/bench/real/`), в том числе по телефону; перемерить на машине организаторов; добавить детектор конца фразы и замерить задержку целиком.
+
+## Модели для голосового шлюза
+
+Шлюз (`app/voice`) берёт модели из `models/`, в git их нет. Готовятся в окружении замера:
+
+```
+python bench/speech/download.py gigaam vad silero
+python bench/speech/export_gigaam.py
+```
+
+| Файл | Откуда |
+|---|---|
+| `models/silero/silero_vad.onnx` | Silero VAD v5.1.2, MIT, скачивается как есть |
+| `models/silero/v5_5_ru.pt` | Silero TTS v5_5_ru, скачивается как есть |
+| `models/gigaam/v3_ctc_onnx/v3_ctc_int8.onnx` | экспорт чекпойнта v3_ctc в ONNX и квантизация MatMul/Gemm в int8 |
+| `models/gigaam/v3_ctc_onnx/v3_ctc.yaml` | конфигурация экспорта: словарь CTC |
+
+`export_gigaam.py` печатает версии пакетов и SHA-256 файлов. На машине, где их сделали впервые
+(gigaam 0.2.0, torch 2.14.1, onnxruntime 1.23.2):
+
+```
+v3_ctc_int8.onnx  0fe7c9e2fb9a46e43fefd84be5bf69dc3387abbc97e989a6052090485f38990e
+v3_ctc.yaml       b69958b88c26a6cc3d09cb6ef3718aff9a0df2e4811c8cad694e1b5c36f89584
+```
+

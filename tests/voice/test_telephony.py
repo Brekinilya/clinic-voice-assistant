@@ -204,7 +204,7 @@ async def test_transfer_connects_registrar(line):
 
 @pytest.mark.parametrize(
     "priority, template, timeout",
-    [("P1", "emergency.no_answer", 20), ("P3", "callback.created", 90)],
+    [("P1", "emergency.no_answer", 20), ("P3", "transfer.no_answer", 90)],
 )
 async def test_registrar_does_not_answer(line, priority, template, timeout):
     await line.handle(start("caller-1", "inbound"))

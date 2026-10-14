@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.voice.endpoint import FRAME_BYTES
 from app.voice.session import CallSession
 from app.voice.settings import VoiceSettings
 from tests.voice.fakes import (
@@ -179,13 +180,71 @@ async def test_phrase_after_dialogue_answered_is_new_turn():
     await answered(call)
     await call.feed(phrase(10))
     await until(lambda: len(dialogue.turns) == 1)
-    # ответ ещё синтезируется, а пациент уже говорит дальше
-    await call.feed(phrase(8))
+    # ответ ещё синтезируется, а пациент уже говорит дальше. Ответ просит ФИО, и, если шлюз
+    # успел его получить, фраза кончается только после паузы диктовки — тишины даём с запасом
+    await call.feed(SPEECH * 8 + QUIET * 25)
     await until(lambda: len(dialogue.turns) == 2)
     assert [(t.turn_id, t.text) for t in dialogue.turns] == [
         (1, "Мне к терапевту"),
         (2, "Тестов Александр"),
     ]
+    await call.close()
+
+
+async def test_red_flag_reaches_dialogue_while_confirmation_is_slow():
+    """Итоговое «да» ждёт МИС, а пациент уже говорит о боли в груди: промежуточная реплика
+    должна дойти до диалога сразу, чтобы он успел отозвать запись."""
+    emergency = "Немедленно звоните сто три."
+    red = b"\x20\x00" * (FRAME_BYTES // 2)
+
+    class AnyVoice(Vad):
+        def probability(self, frame):
+            return 0.9 if any(frame) else 0.05
+
+    class Words(Recognizer):
+        def transcribe(self, pcm):
+            return "у меня давит в груди" if red in pcm else super().transcribe(pcm)
+
+    class SlowConfirmation(Dialogue):
+        def __init__(self):
+            super().__init__(None)
+            self.log = []
+
+        async def handle(self, call_id, turn):
+            self.calls.append(turn)
+            self.log.append(("start", turn.turn_id, turn.is_final))
+            if turn.is_final:
+                await asyncio.sleep(0.6)
+                self.log.append(("end", turn.turn_id, turn.is_final))
+                return reply("Вы записаны.")
+            if "груди" in turn.text:
+                return reply(emergency, transfer=SimpleNamespace(route="R-01", priority="P1"))
+            return reply("Ожидаю завершения команды.", kind="partial")
+
+    dialogue = SlowConfirmation()
+    channel = Channel()
+    call = CallSession(
+        "call-1",
+        channel,
+        dialogue,
+        AnyVoice(),
+        Words({10: "Да, верно"}),
+        Synthesizer(),
+        today=lambda: TODAY,
+        settings=SETTINGS.model_copy(update={"wait_phrase_s": 5}),
+    )
+    await answered(call)
+    await call.feed(phrase(10))
+    await until(lambda: ("start", 1, True) in dialogue.log)
+    await call.feed(red * 20)
+    await until(lambda: emergency in channel.said())
+    # экстренный ответ прозвучал, пока прежнее «да» ещё ждёт МИС
+    assert ("start", 2, False) in dialogue.log
+    assert ("end", 1, True) not in dialogue.log
+    # ответ на прежнее «да» пришёл позже и уже не звучит
+    await until(lambda: ("end", 1, True) in dialogue.log)
+    await asyncio.sleep(0.05)
+    assert "Вы записаны." not in channel.said()
     await call.close()
 
 

@@ -317,10 +317,10 @@ class Telephony:
         log.info("звонок %s передан регистратору", call.caller)
 
     async def _operator_failed(self, call: PhoneCall) -> None:
-        # Раздел 7.5: на P1 повторяем 103/112 и завершаем; иначе — обратный звонок по запросу,
-        # который диалог уже подготовил для регистратора
+        # Раздел 7.5: на P1 повторяем 103/112 и завершаем. Обратный звонок для P2 и P3 должен
+        # предложить диалог; пока он не знает о неответе, ничего не обещаем
         await self._music(call, False)
-        template = "emergency.no_answer" if call.priority == "P1" else "callback.created"
+        template = "emergency.no_answer" if call.priority == "P1" else "transfer.no_answer"
         pcm, rate = await self.say(template)
         call.rtp.play(self.resample(pcm, rate, call.codec.rate))
         await call.rtp.drained()

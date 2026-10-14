@@ -218,14 +218,21 @@ class CallSession:
         return await asyncio.shield(request)
 
     async def _handle(self, turn: int, text: str, final: bool) -> object | None:
+        # Итоговые реплики — по очереди. Промежуточная идёт сразу, даже пока диалог занят прошлой
+        # итоговой (ждёт МИС): по ней диалог проверяет safety и отзывает разрешение на запись
+        if not final:
+            return await self._ask_dialogue(turn, text, final)
         async with self._dialog_lock:
-            try:
-                return await self.dialogue.handle(
-                    self.call_id, Turn(turn_id=turn, text=text, is_final=final)
-                )
-            except Exception:
-                log.exception("диалог не ответил на реплику %s", turn)
-                return None
+            return await self._ask_dialogue(turn, text, final)
+
+    async def _ask_dialogue(self, turn: int, text: str, final: bool) -> object | None:
+        try:
+            return await self.dialogue.handle(
+                self.call_id, Turn(turn_id=turn, text=text, is_final=final)
+            )
+        except Exception:
+            log.exception("диалог не ответил на реплику %s", turn)
+            return None
 
     async def _deliver(
         self, turn: int, reply: object | None, timing: dict | None = None, detected: float = 0.0
@@ -315,7 +322,7 @@ class CallSession:
         await self.channel.send_json(
             {"type": "transcript", "turn_id": turn, "text": text, "final": False}
         )
-        if self._dialog_lock.locked() or self.closing:
+        if self.closing:
             return
         reply = await self._handle(turn, text, final=False)
         if reply is None or getattr(reply, "kind", "reply") == "partial" or turn in self._answered:

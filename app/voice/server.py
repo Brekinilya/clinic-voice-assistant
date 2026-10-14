@@ -35,7 +35,7 @@ FREQUENT = (
     "transfer.mis_down",
     "closing.goodbye",
     "emergency.no_answer",
-    "callback.created",
+    "transfer.no_answer",
 )
 
 
