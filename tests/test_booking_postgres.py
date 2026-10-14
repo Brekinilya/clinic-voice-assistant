@@ -1,16 +1,13 @@
 """Контракт хранилищ и реальные гонки PostgreSQL; каждая проверка в отдельной схеме."""
 
 import asyncio
-import os
 from datetime import timedelta
 from uuid import uuid4
 
 import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.booking.memory import MemoryBookingStore
 from app.booking.models import ActionState, Approval, BookingError
@@ -26,33 +23,7 @@ from app.storage.booking import (
     migrate,
     schema_versions,
 )
-
-
-@pytest_asyncio.fixture
-async def pg_engine():
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("настоящий PostgreSQL не задан: нужен TEST_DATABASE_URL")
-    admin = create_async_engine(url, hide_parameters=True)
-    schema = "test_backend_" + uuid4().hex
-    # Имя генерируем сами из фиксированного префикса и hex, ввод извне здесь невозможен.
-    async with admin.begin() as connection:
-        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-    engine = create_async_engine(
-        url,
-        pool_size=3,
-        max_overflow=0,
-        hide_parameters=True,
-        connect_args={"server_settings": {"search_path": schema}},
-    )
-    try:
-        await migrate(engine)
-        yield engine
-    finally:
-        await engine.dispose()
-        async with admin.begin() as connection:
-            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        await admin.dispose()
+from app.storage.schema import SCHEMA_VERSION
 
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.postgres)])
@@ -169,7 +140,9 @@ async def test_store_past_booking_does_not_block_future_specialty(store):
 async def test_real_database_constraints_and_idempotent_migration(pg_engine):
     await migrate(pg_engine)
     async with pg_engine.connect() as connection:
-        assert list((await connection.execute(select(schema_versions.c.version))).scalars()) == [1]
+        assert list((await connection.execute(select(schema_versions.c.version))).scalars()) == [
+            SCHEMA_VERSION
+        ]
     clock = DemoClock()
     store = PostgresBookingStore(pg_engine)
     action = await store.hold("call-1", 1, DemoSchedule(clock.now()).slots()[0], clock.now())

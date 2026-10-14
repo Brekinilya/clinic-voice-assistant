@@ -1,6 +1,7 @@
 """Настройки окружения: проверяем их до открытия внешних соединений."""
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, HttpUrl, SecretStr, model_validator
@@ -36,8 +37,22 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = SecretStr("clinic_dev")
     database_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
+    # Командный HTTP-стенд включается явно и работает только с автономной МИС.
+    backend_demo_enabled: bool = False
+    dialogue_storage: Literal["memory", "postgres"] = "memory"
+    dialogue_hash_key: SecretStr = SecretStr("")
+    schedule_path: Path | None = None
+
     @model_validator(mode="after")
     def validate_mode(self) -> Self:
+        if self.backend_demo_enabled and self.app_mode != AppMode.OFFLINE_TEST:
+            raise ValueError("командный HTTP-стенд доступен только в offline_test")
+        if (
+            self.backend_demo_enabled
+            and self.dialogue_storage == "postgres"
+            and len(self.dialogue_hash_key.get_secret_value().encode()) < 32
+        ):
+            raise ValueError("для долговечных квитанций нужен DIALOGUE_HASH_KEY от 32 байт")
         if self.app_mode == AppMode.CLINIC_PILOT:
             raise ValueError("clinic_pilot ещё не разрешён: контур реальной клиники не подготовлен")
         if self.app_mode == AppMode.HACKATHON and not self.mis_token.get_secret_value().strip():
