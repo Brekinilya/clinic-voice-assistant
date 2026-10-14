@@ -62,6 +62,8 @@
     byId('appointment').textContent=selected?[selected.slot.specialty,selected.doctor_name||'Выбранный врач',dateFormat.format(new Date(selected.slot.scheduled_at))].join('\n'):'Выбранный вариант появится здесь.';
     if(answer.visits?.length){byId('card-title').textContent=answer.visits.length===1?'Ваш ближайший приём':'Ваши ближайшие приёмы';byId('appointment').textContent=answer.visits.map(v=>[v.specialty,v.doctor_name,dateFormat.format(new Date(v.scheduled_at)),v.room?'Кабинет '+v.room:''].filter(Boolean).join('\n')).join('\n\n');byId('appointment-status').textContent='Данные получены после проверки пациента';}
     const hints={full_name:'Учебные данные: Тестов Александр Примерович, 01.01.1990',birth_date:'Назовите число, месяц и полный год рождения.',choice:'Выберите вариант или уточните удобный день.',yes_no:'Проверьте предложенные данные и ответьте «Да» или «Нет».',free:'Можно задать следующий вопрос.'};byId('hint').textContent=hints[answer.expect]||hints.free;
+    if(phase==='visits_shown')byId('hint').textContent='Можно перенести или отменить приём, задать вопрос либо завершить разговор.';
+    if(phase==='cancel_offer')byId('hint').textContent='Выберите перенос или подтвердите желание отменить приём.';
     if(['handoff','ended','interrupted'].includes(phase)){buttons([]);return;}
     if(answer.expect==='full_name'){buttons([['Учебный пациент: Александр','Тестов Александр Примерович, 01.01.1990'],['Учебный пациент: Иван','Тестов Иван Примерович, 02.01.1990']]);}
     else if(answer.expect==='choice'&&answer.options?.length){buttons(answer.options.map((s,i)=>[dateFormat.format(new Date(s.scheduled_at)),['Первый','Второй','Третий'][i]]));}
