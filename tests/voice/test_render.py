@@ -97,6 +97,8 @@ def test_doctor_by_surname():
     "name, form, words",
     [
         ("оториноларинголог", "datv", "лору"),
+        # как профиль записан на стенде
+        ("Лор (отоларинголог)", "datv", "лору"),
         ("Терапевт", "plur", "терапевты"),
         ("лор", "gent", "лора"),
         ("детский хирург", "datv", "детскому хирургу"),
@@ -259,14 +261,14 @@ def test_long_reply_drops_address_then_shortens_date():
         "my_visits.one",
         TODAY,
         patient="Александра Константиновна",
-        specialty="травматолог-ортопед",
+        specialty="акушер-гинеколог",
         doctor="Белоусова Анна Сергеевна",
         date=date(2026, 10, 28),
         time=time(19, 45),
         room="214а",
     )
     assert said.words <= MAX_WORDS
-    assert said.text.startswith("Вы записаны к травматологу-ортопеду Белоусовой")
+    assert said.text.startswith("Вы записаны к акушеру-гинекологу Белоусовой")
 
 
 def test_fitting_options():
@@ -304,7 +306,7 @@ LONGEST = dict(
     patient="Александра Константиновна",
     doctor="Белоусова Анна Сергеевна",
     substitute="Никитина Ирина Олеговна",
-    specialty="травматолог-ортопед",
+    specialty="акушер-гинеколог",
     date=date(2026, 10, 28),
     old_date=date(2026, 10, 12),
     time=time(19, 45),
