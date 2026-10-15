@@ -8,18 +8,13 @@ from sqlalchemy import select
 
 from app.backend import backend_engine
 from app.booking.memory import MemoryBookingStore
-from app.booking.service import BookingService
 from app.cancellation.memory import MemoryCancellationStore
-from app.cancellation.service import CancellationService
 from app.demo import DemoSchedule, EmulatorBudget, demo_emulator
+from app.dialogue.composition import assemble_dialogue
 from app.dialogue.memory import MemoryDialogueStore
-from app.dialogue.natural import BookingConversation
-from app.dialogue.safety_adapter import RulesSafety
-from app.dialogue.service import DialogueService
 from app.mis.http import HttpMedicalSystem
 from app.ports import Clock
 from app.rescheduling.memory import MemoryMoveStore
-from app.rescheduling.service import RescheduleService
 from app.scheduling.bootstrap import configured_schedule
 from app.scheduling.index import SqliteSchedule
 from app.settings import AppMode, Settings
@@ -68,31 +63,31 @@ async def open_command_backend(settings: Settings, clock: Clock):
             headers={"Authorization": "Bearer demo"},
             transport=emulator.transport(),
         ) as client:
-            booking = BookingService(
-                HttpMedicalSystem(client, EmulatorBudget()),
-                booking_store,
-                schedule,
+            yield assemble_dialogue(
+                settings,
                 clock,
-                require_dialogue_guard=settings.dialogue_mode == "natural",
-            )
-            safety = RulesSafety(clock) if settings.dialogue_mode == "natural" else None
-            conversation = (
-                BookingConversation(
-                    booking,
-                    dialogue_store,
-                    safety,
-                    rooms=schedule if isinstance(schedule, SqliteSchedule) else None,
-                    cancellation=CancellationService(booking.mis, cancellation_store, clock),
-                    rescheduling=RescheduleService(booking, move_store),
-                )
-                if safety is not None
-                else None
-            )
-            yield DialogueService(
-                booking, dialogue_store, key, safety=safety, conversation=conversation
+                HttpMedicalSystem(client, EmulatorBudget()),
+                schedule,
+                booking_store,
+                dialogue_store,
+                cancellation_store,
+                move_store,
+                key,
             )
     finally:
         if isinstance(schedule, SqliteSchedule):
             schedule.close()
         if engine is not None:
             await engine.dispose()
+
+
+@asynccontextmanager
+async def open_dialogue_backend(settings: Settings, clock: Clock):
+    if settings.app_mode == AppMode.HACKATHON:
+        from app.dialogue.live import open_live_backend
+
+        async with open_live_backend(settings, clock) as service:
+            yield service
+    else:
+        async with open_command_backend(settings, clock) as service:
+            yield service

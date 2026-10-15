@@ -49,6 +49,7 @@ packages = ["app"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "config" = "app/resources"
+"web" = "app/resources/web"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

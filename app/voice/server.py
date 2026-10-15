@@ -16,12 +16,15 @@ from fastapi.staticfiles import StaticFiles
 
 from app.clock import ClinicClock
 from app.main import create_app
+from app.resource_paths import config_directory
 from app.settings import Settings
 from app.voice.api import open_session, router
 from app.voice.settings import VoiceSettings
 from app.voice.telephony import TelephonySettings
 
 WEB = Path(__file__).resolve().parents[2] / "web"
+if not WEB.is_dir():
+    WEB = config_directory() / "web"
 
 
 # Реплики без подстановок, которые звучат чаще всего: синтезируем при запуске, дальше — из кэша
@@ -105,7 +108,7 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         yield
         return
     if getattr(app.state, "dialogue", None) is None:
-        raise RuntimeError("для телефонии нужен диалог: BACKEND_DEMO_ENABLED=true")
+        raise RuntimeError("для телефонии нужен включённый разговорный backend")
     from app.voice.engines import resample
     from app.voice.render import default_renderer
     from app.voice.telephony import Ari, Telephony

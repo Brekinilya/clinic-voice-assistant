@@ -186,3 +186,43 @@ async def test_partial_rejects_final_and_http_rejects_invalid_start_ids():
             )
             assert result.status_code == 422
         assert emulator.write_count == 0
+
+
+async def test_gateway_start_revokes_old_yes_before_recognition_finishes(voice_engine):
+    from app.voice.session import CallSession
+    from tests.voice.fakes import Channel, Recognizer, Synthesizer, Vad
+
+    async with pipeline(pg_engine=voice_engine) as (client, service, emulator, clock, *_):
+        await reserve(client)
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = service.booking._preflight
+
+        async def slow(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original(*args, **kwargs)
+
+        service.booking._preflight = slow
+        confirmation = asyncio.create_task(turn(client, 4, "Да"))
+        await asyncio.wait_for(entered.wait(), 3)
+        recognizer = Recognizer({}, delay=1)
+        call = CallSession(
+            "scenario",
+            Channel(),
+            service,
+            Vad(),
+            recognizer,
+            Synthesizer(),
+            today=lambda: clock.now().date(),
+        )
+        call.turn_id = 4
+        try:
+            await asyncio.wait_for(call._phrase_started(), 3)
+            state = await service.store.inspect("scenario")
+            assert state.observed_turn_id == 5 and state.authorization is None
+            assert recognizer.heard == []
+        finally:
+            release.set()
+        result = await asyncio.wait_for(confirmation, 3)
+        assert result["code"] != "BOOKED" and emulator.write_count == 0
+        await call.close()

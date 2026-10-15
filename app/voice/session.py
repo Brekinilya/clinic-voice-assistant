@@ -151,8 +151,17 @@ class CallSession:
             log.exception("диалог не завершил звонок")
 
     async def _phrase_started(self) -> None:
+        if self.ended or self.closing:
+            return
         self._cancel(self._watch)
         self.turn_id += 1
+        try:
+            # До ASR и вне очереди итоговых реплик отзываем прежнее «да».
+            await self.dialogue.input_started(self.call_id, self.turn_id)
+        except Exception:
+            log.error("диалог не подтвердил начало новой речи")
+            await self._deliver(self.turn_id, None)
+            return
         self._next_partial_ms = self.settings.partial_ms
         self._barged_in = False
         if not self._interruptible and self.speaking():

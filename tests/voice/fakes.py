@@ -60,11 +60,15 @@ class Dialogue:
         self.delay = delay
         self.urgent = urgent
         self.calls = []
+        self.started = []
         self.ended = False
 
     @property
     def turns(self):
         return [t for t in self.calls if t.is_final]
+
+    async def input_started(self, call_id, turn_id):
+        self.started.append((call_id, turn_id))
 
     async def handle(self, call_id, turn):
         self.calls.append(turn)
