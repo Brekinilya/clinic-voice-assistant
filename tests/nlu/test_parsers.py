@@ -281,7 +281,7 @@ VISITS = [
         day=date(2026, 10, 2),
         at=datetime(2026, 10, 2, 10, 40).time(),
         doctor="Белова",
-        specialty="оториноларинголог",
+        specialty="лор",
     ),
 ]
 
@@ -312,7 +312,7 @@ def test_choice_between_visits(text, expected):
 def test_expected_free_phrase():
     parsed = parse_expected("Мне к лору, но лучше не в пятницу, после обеда", "free", TODAY)
     assert parsed.slots == {
-        "specialty": "оториноларинголог",
+        "specialty": "лор",
         "exclude_weekdays": [5],
         "time_from": "12:00",
         "time_to": "16:00",

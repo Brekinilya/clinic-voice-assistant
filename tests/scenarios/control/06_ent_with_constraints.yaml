@@ -16,7 +16,7 @@ steps:
     intent: I-01
     parse:
       expect: free
-      slots: {specialty: оториноларинголог, exclude_weekdays: [5], time_from: "12:00", time_to: "16:00"}
+      slots: {specialty: лор, exclude_weekdays: [5], time_from: "12:00", time_to: "16:00"}
     say: ident.ask
   - patient: Иванов Сергей Петрович, третье января девяностого
     say: booking.offer_first

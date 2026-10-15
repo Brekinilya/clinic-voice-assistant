@@ -374,11 +374,11 @@ slot_examples:
   reference_date: "2026-09-30"
   cases:
     - say: к лору
-      slots: {specialty: оториноларинголог}
+      slots: {specialty: лор}
     - say: к окулисту
       slots: {specialty: офтальмолог}
     - say: к зубному
-      slots: {specialty: стоматолог}
+      slots: {specialty: стоматолог-терапевт}
     - say: в женскую консультацию
       slots: {specialty: акушер-гинеколог}
     - say: к своему врачу
