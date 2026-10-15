@@ -7,8 +7,9 @@ from pathlib import Path
 import yaml
 
 from app.nlu.lexicon import Entry, Lexicon, LexiconError
+from app.resource_paths import config_directory
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+CONFIG_DIR = config_directory()
 RED_FLAGS_PATH = CONFIG_DIR / "red_flags.yaml"
 FLAGS_PATH = CONFIG_DIR / "flags.yaml"
 SYNONYMS_PATH = CONFIG_DIR / "synonyms.yaml"

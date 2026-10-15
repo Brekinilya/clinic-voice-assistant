@@ -14,6 +14,8 @@ from app.booking.schedule import JsonSchedule, ScheduleError
 from app.booking.service import BookingService
 from app.clock import ClinicClock
 from app.mis.http import HttpMedicalSystem
+from app.scheduling.bootstrap import token_scope
+from app.scheduling.index import SqliteSchedule
 from app.settings import AppMode, Settings
 from app.storage.booking import PostgresBookingStore, PostgresBudget, migrate, schema_versions
 from app.storage.postgres import connection_url
@@ -36,6 +38,10 @@ def backend_engine(settings: Settings):
 async def open_backend(settings: Settings, schedule: Schedule):
     if settings.app_mode != AppMode.HACKATHON:
         raise ValueError("для внешней МИС нужен режим hackathon")
+    if isinstance(schedule, SqliteSchedule):
+        schedule.check_scope(
+            settings.app_mode.value, str(settings.mis_base_url), token_scope(settings)
+        )
     engine = backend_engine(settings)
     try:
         async with engine.connect() as connection:
@@ -51,7 +57,13 @@ async def open_backend(settings: Settings, schedule: Schedule):
                     settings.mis_rate_limit_per_min,
                 ),
             )
-            yield BookingService(mis, PostgresBookingStore(engine), schedule, ClinicClock())
+            yield BookingService(
+                mis,
+                PostgresBookingStore(engine),
+                schedule,
+                ClinicClock(),
+                require_dialogue_guard=True,
+            )
     finally:
         await engine.dispose()
 

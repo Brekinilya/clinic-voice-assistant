@@ -5,7 +5,7 @@ import math
 from collections import deque
 from datetime import timedelta
 
-from app.mis.ports import MisError
+from app.mis.ports import BudgetExhausted
 from app.ports import Clock
 
 
@@ -30,7 +30,7 @@ class MemoryBudget:
             if len(self._requests) >= self._limit:
                 delay = max(delay, 60 - (now - self._requests[0]).total_seconds())
             if delay > 0:
-                raise MisError("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
+                raise BudgetExhausted("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
             self._requests.append(now)
 
     async def defer(self, seconds: int) -> None:

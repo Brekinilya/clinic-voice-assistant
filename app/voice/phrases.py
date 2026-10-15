@@ -6,7 +6,9 @@ from pathlib import Path
 
 import yaml
 
-PHRASES_PATH = Path(__file__).resolve().parents[2] / "config" / "phrases.yaml"
+from app.resource_paths import config_directory
+
+PHRASES_PATH = config_directory() / "phrases.yaml"
 
 MAX_WORDS = 20
 MAX_OPTIONS = 3

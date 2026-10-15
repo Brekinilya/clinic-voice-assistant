@@ -2,12 +2,14 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import timedelta
+from uuid import uuid4
 
 import httpx
 import pytest
 from sqlalchemy import insert, select
 
-from app.booking.models import ActionState
+from app.booking.models import ActionState, BookingAction
 from app.demo import DemoClock, DemoSchedule
 from app.dialogue import bootstrap as dialogue_bootstrap
 from app.dialogue.memory import MemoryDialogueStore
@@ -102,10 +104,32 @@ async def test_upgrade_v1_keeps_existing_holds_and_is_repeatable(pg_blank_engine
         await connection.execute(insert(schema_versions).values(version=1))
     clock = DemoClock()
     store = PostgresBookingStore(pg_blank_engine)
-    action = await store.hold("legacy-call", 1, DemoSchedule(clock.now()).slots()[0], clock.now())
+    action = BookingAction(
+        action_id=uuid4().hex,
+        call_id="legacy-call",
+        revision=1,
+        client_id=1,
+        slot=DemoSchedule(clock.now()).slots()[0],
+        expires_at=clock.now() + timedelta(seconds=90),
+    )
+    # Старые данные создаём в схеме версии 1, без вызова сервиса новой версии.
+    async with pg_blank_engine.begin() as connection:
+        await connection.execute(
+            insert(actions).values(
+                action_id=action.action_id,
+                call_id=action.call_id,
+                revision=action.revision,
+                client_id=action.client_id,
+                doctor_id=action.slot.doctor_id,
+                scheduled_at=action.slot.scheduled_at,
+                specialty=action.slot.specialty,
+                expires_at=action.expires_at,
+                state=action.state,
+            )
+        )
     await migrate(pg_blank_engine)
     await migrate(pg_blank_engine)
-    assert (await store.get(action.action_id)).state == ActionState.HELD
+    assert await store.get(action.action_id) == action
     async with pg_blank_engine.connect() as connection:
         assert list((await connection.execute(select(schema_versions.c.version))).scalars()) == [
             SCHEMA_VERSION

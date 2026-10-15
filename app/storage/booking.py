@@ -2,7 +2,6 @@
 
 import hashlib
 import math
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -10,6 +9,8 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
+    or_,
     select,
     text,
     update,
@@ -17,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.booking.guard import check_dialogue_guard
 from app.booking.models import (
     ActionState,
     Approval,
@@ -25,29 +27,53 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
-from app.mis.ports import MisError
+from app.mis.ports import BudgetExhausted
+from app.storage.journal import journal_transaction
 from app.storage.schema import (
     SCHEMA_VERSION,
     actions,
     active,
+    active_moves,
     budget_blocks,
     budget_requests,
+    dialogue_sessions,
     metadata,
+    moves,
     schema_versions,
 )
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграция 1 → 2 добавляет таблицы диалога, сохраняя прежние брони и журнал."""
+    """Миграции 1/2/3/4 → 5 сохраняют прежние журналы и добавляют перенос."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [3], [4], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
-        elif versions == [1]:
+        elif versions in ([1], [2], [3], [4]):
+            checks = await connection.run_sync(
+                lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
+            )
+            kinds = [
+                c
+                for c in checks
+                if "cancellation_sms" in c["sqltext"] and "slot_released" in c["sqltext"]
+            ]
+            if len(kinds) != 1:
+                raise RuntimeError("неизвестное ограничение видов событий")
+            if "reschedule_sms" not in kinds[0]["sqltext"]:
+                name = connection.dialect.identifier_preparer.quote(kinds[0]["name"])
+                await connection.execute(
+                    text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+                    )
+                )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
@@ -69,15 +95,16 @@ class PostgresBookingStore:
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
 
-    @asynccontextmanager
-    async def _transaction(self):
-        async with self.engine.begin() as connection:
-            # При лимите МИС 8/мин одна короткая блокировка проще порядка множества замков.
-            # Замок общий для всех процессов; снимается при commit/rollback/разрыве соединения.
-            await connection.execute(text("SELECT pg_advisory_xact_lock(142002)"))
-            yield connection
+    def _transaction(self):
+        return journal_transaction(self.engine)
 
     async def _expire(self, connection, now: datetime) -> None:
+        await connection.execute(
+            text(
+                "UPDATE backend_reschedule_actions SET state = 'expired', data = jsonb_set(data, '{state}', '\"expired\"'::jsonb) WHERE state = 'held' AND expires_at <= :now"
+            ),
+            {"now": now},
+        )
         await connection.execute(
             update(actions)
             .where(actions.c.state == "held", actions.c.expires_at <= now)
@@ -99,7 +126,16 @@ class PostgresBookingStore:
                     actions.c.scheduled_at == slot.scheduled_at,
                 )
             )
-            return result.first() is None
+            other = (
+                await connection.execute(
+                    select(moves.c.action_id).where(
+                        active_moves,
+                        moves.c.doctor_id == slot.doctor_id,
+                        moves.c.scheduled_at == slot.scheduled_at,
+                    )
+                )
+            ).first()
+            return result.first() is None and other is None
 
     async def hold(self, call_id: str, client_id: int, slot: Slot, now: datetime) -> BookingAction:
         async with self._transaction() as connection:
@@ -109,6 +145,21 @@ class PostgresBookingStore:
                     await connection.execute(select(actions).where(actions.c.call_id == call_id))
                 ).all()
             )
+            other = (
+                await connection.execute(
+                    select(moves.c.action_id).where(
+                        active_moves,
+                        or_(
+                            (moves.c.doctor_id == slot.doctor_id)
+                            & (moves.c.scheduled_at == slot.scheduled_at),
+                            (moves.c.client_id == client_id)
+                            & (moves.c.specialty == slot.specialty),
+                        ),
+                    )
+                )
+            ).first()
+            if other:
+                raise BookingError("ACTION_PENDING")
             if any(a.state in {"committing", "reconciling"} for a in previous):
                 raise BookingError("ACTION_PENDING")
             await connection.execute(
@@ -164,6 +215,16 @@ class PostgresBookingStore:
                 raise BookingError("ACTION_NOT_FOUND")
             action = _decode(row)
             check_approval(action, approval)
+            if approval.guard_version is not None:
+                # Блокировку строки разговора держим до commit COMMITTING в той же транзакции.
+                state = (
+                    await connection.execute(
+                        select(dialogue_sessions.c.state)
+                        .where(dialogue_sessions.c.call_id == approval.call_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                check_dialogue_guard(state, approval)
             if action.state in {
                 ActionState.ARCHIVED,
                 ActionState.COMMITTING,
@@ -226,6 +287,24 @@ class PostgresBookingStore:
                 raise BookingError("HOLD_NOT_ACTIVE")
             return _decode(row)
 
+    async def restore_unsent(self, action_id: str, confirmed_turn: int) -> BookingAction:
+        async with self._transaction() as connection:
+            row = (
+                await connection.execute(
+                    update(actions)
+                    .where(
+                        actions.c.action_id == action_id,
+                        actions.c.state == "committing",
+                        actions.c.confirmed_turn == confirmed_turn,
+                    )
+                    .values(state="held", confirmed_turn=None)
+                    .returning(actions)
+                )
+            ).first()
+            if row is None:
+                raise BookingError("ACTION_NOT_UNSENT")
+            return _decode(row)
+
     async def release_call_holds(self, call_id: str) -> None:
         async with self._transaction() as connection:
             await connection.execute(
@@ -282,7 +361,7 @@ class PostgresBudget:
             if len(requests) >= self.limit:
                 delay = max(delay, 60 - (now - requests[0]).total_seconds())
             if delay > 0:
-                raise MisError("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
+                raise BudgetExhausted("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
             await connection.execute(
                 insert(budget_requests).values(scope=self.scope, requested_at=now)
             )

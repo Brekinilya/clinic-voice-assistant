@@ -1,6 +1,5 @@
 """Хранилище автономного стенда. Внешнюю МИС с ним подключать нельзя."""
 
-import asyncio
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -13,14 +12,22 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
+from app.rescheduling.models import ACTIVE_MOVES, MoveState
+from app.rescheduling.models import active as move_active
+from app.storage.memory_ledger import MemoryLedger
 
 
 class MemoryBookingStore:
-    def __init__(self) -> None:
-        self.actions: dict[str, BookingAction] = {}
-        self._lock = asyncio.Lock()
+    def __init__(self, guard_reader=None) -> None:
+        self.ledger = MemoryLedger()
+        self.actions = self.ledger.bookings
+        self._lock = self.ledger.lock
+        self._guard_reader = guard_reader
 
     def _expire(self, now: datetime) -> None:
+        for key, move in self.ledger.moves.items():
+            if move.state == "held" and move.expires_at <= now:
+                self.ledger.moves[key] = move.model_copy(update={"state": MoveState.EXPIRED})
         for key, action in self.actions.items():
             if action.state == ActionState.HELD and action.expires_at <= now:
                 self.actions[key] = action.model_copy(update={"state": ActionState.EXPIRED})
@@ -29,6 +36,11 @@ class MemoryBookingStore:
 
     def _available(self, slot: Slot) -> bool:
         return not any(
+            m.state in ACTIVE_MOVES
+            and m.slot.doctor_id == slot.doctor_id
+            and m.slot.scheduled_at == slot.scheduled_at
+            for m in self.ledger.moves.values()
+        ) and not any(
             a.slot.doctor_id == slot.doctor_id
             and a.slot.scheduled_at == slot.scheduled_at
             and a.state in ACTIVE_STATES
@@ -44,6 +56,16 @@ class MemoryBookingStore:
         async with self._lock:
             self._expire(now)
             previous = [a for a in self.actions.values() if a.call_id == call_id]
+            if any(
+                move_active(m, now)
+                and (
+                    (m.slot.doctor_id, m.slot.scheduled_at) == (slot.doctor_id, slot.scheduled_at)
+                    or m.before.client_id == client_id
+                    and m.slot.specialty == slot.specialty
+                )
+                for m in self.ledger.moves.values()
+            ):
+                raise BookingError("ACTION_PENDING")
             if any(a.state in {ActionState.COMMITTING, ActionState.RECONCILING} for a in previous):
                 raise BookingError("ACTION_PENDING")
             # Изменение выбора аннулирует предыдущую бронь и её подтверждение.
@@ -91,6 +113,10 @@ class MemoryBookingStore:
             if action is None:
                 raise BookingError("ACTION_NOT_FOUND")
             check_approval(action, approval)
+            if approval.guard_version is not None:
+                if self._guard_reader is None:
+                    raise BookingError("DIALOGUE_GUARD_REQUIRED")
+                await self._guard_reader.check_guard(approval)
             if action.state in {
                 ActionState.ARCHIVED,
                 ActionState.COMMITTING,
@@ -131,6 +157,20 @@ class MemoryBookingStore:
             if action.state != ActionState.HELD:
                 raise BookingError("HOLD_NOT_ACTIVE")
             action = action.model_copy(update={"state": ActionState.CANCELLED})
+            self.actions[action_id] = action
+            return action
+
+    async def restore_unsent(self, action_id: str, confirmed_turn: int) -> BookingAction:
+        async with self._lock:
+            action = self.actions.get(action_id)
+            if (
+                action is None
+                or action.state != ActionState.COMMITTING
+                or action.confirmed_turn != confirmed_turn
+            ):
+                raise BookingError("ACTION_NOT_UNSENT")
+            # Срок первоначальной брони не продлеваем ожиданием бюджета.
+            action = action.model_copy(update={"state": ActionState.HELD, "confirmed_turn": None})
             self.actions[action_id] = action
             return action
 

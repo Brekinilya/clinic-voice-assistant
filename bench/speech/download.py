@@ -16,6 +16,15 @@ GIGAAM = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 PIPER = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU"
 
 FILES = {
+    # Минимальный комплект именно для шлюза, без остальных моделей замера.
+    "voice": [
+        (
+            "https://raw.githubusercontent.com/snakers4/silero-vad/v5.1.2/src/silero_vad/data/silero_vad.onnx",
+            "silero/silero_vad.onnx",
+        ),
+        ("https://models.silero.ai/models/tts/ru/v5_5_ru.pt", "silero/v5_5_ru.pt"),
+        (f"{GIGAAM}/v3_ctc.ckpt", "gigaam/v3_ctc.ckpt"),
+    ],
     "gigaam": [
         (f"{GIGAAM}/v3_ctc.ckpt", "gigaam/v3_ctc.ckpt"),
         (f"{GIGAAM}/v3_e2e_ctc.ckpt", "gigaam/v3_e2e_ctc.ckpt"),
@@ -30,6 +39,13 @@ FILES = {
     "silero": [
         ("https://models.silero.ai/models/tts/ru/v5_5_ru.pt", "silero/v5_5_ru.pt"),
         ("https://models.silero.ai/models/tts/ru/v5_cis_base.pt", "silero/v5_cis_base.pt"),
+    ],
+    # Определение речи для голосового шлюза (MIT)
+    "vad": [
+        (
+            "https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx",
+            "silero/silero_vad.onnx",
+        ),
     ],
     "piper": [
         (f"{PIPER}/irina/medium/ru_RU-irina-medium.onnx", "piper/ru_RU-irina-medium.onnx"),

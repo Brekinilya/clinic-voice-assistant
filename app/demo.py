@@ -56,7 +56,7 @@ class EmulatorBudget:
         pass
 
 
-def demo_emulator(clock: DemoClock) -> MisEmulator:
+def demo_emulator(clock: DemoClock, *, doctors=None) -> MisEmulator:
     clients = [
         Client(
             id=i,
@@ -71,7 +71,11 @@ def demo_emulator(clock: DemoClock) -> MisEmulator:
     ]
     return MisEmulator(
         clock,
-        [Doctor(id=1, full_name="Образцова Анна Тестовна", specialty="терапевт", is_active=True)],
+        doctors
+        if doctors is not None
+        else [
+            Doctor(id=1, full_name="Образцова Анна Тестовна", specialty="терапевт", is_active=True)
+        ],
         {"demo": clients},
     )
 
@@ -102,7 +106,9 @@ class DemoSession:
                 self.client_id, self.options = client.id, ()
                 return ["Пациент найден. Укажите специальность командой «варианты терапевт»."]
             if command == "варианты" and self.client_id is not None:
-                self.options = await self.service.options(self.client_id, argument)
+                self.options = await self.service.options(
+                    self.client_id, argument, call_id=self.call_id
+                )
                 return [
                     f"{i}. {format_datetime(s.scheduled_at)}, врач Образцова Анна Тестовна."
                     for i, s in enumerate(self.options, 1)

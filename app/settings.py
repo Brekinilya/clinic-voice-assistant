@@ -37,18 +37,35 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = SecretStr("clinic_dev")
     database_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
-    # Командный HTTP-стенд включается явно и работает только с автономной МИС.
+    # Текстовый HTTP-стенд включается явно и работает только с автономной МИС.
     backend_demo_enabled: bool = False
+    # Внешний разговорный backend включается отдельно от учебной страницы.
+    dialogue_enabled: bool = False
+    dialogue_mode: Literal["commands", "natural"] = "commands"
     dialogue_storage: Literal["memory", "postgres"] = "memory"
     dialogue_hash_key: SecretStr = SecretStr("")
     schedule_path: Path | None = None
+    schedule_index_path: Path | None = None
+    schedule_access_path: Path | None = None
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:
+        if self.schedule_path is not None and self.schedule_index_path is not None:
+            raise ValueError("выберите один источник: SCHEDULE_PATH или SCHEDULE_INDEX_PATH")
+        if self.schedule_access_path is not None and self.schedule_index_path is None:
+            raise ValueError("SCHEDULE_ACCESS_PATH применяется только к SQLite-индексу")
         if self.backend_demo_enabled and self.app_mode != AppMode.OFFLINE_TEST:
             raise ValueError("командный HTTP-стенд доступен только в offline_test")
+        if self.dialogue_enabled and self.app_mode != AppMode.HACKATHON:
+            raise ValueError("DIALOGUE_ENABLED применяется только к режиму hackathon")
+        if self.dialogue_enabled and (
+            self.dialogue_mode != "natural"
+            or self.dialogue_storage != "postgres"
+            or self.schedule_index_path is None
+        ):
+            raise ValueError("для внешнего диалога нужны natural, postgres и SCHEDULE_INDEX_PATH")
         if (
-            self.backend_demo_enabled
+            (self.backend_demo_enabled or self.dialogue_enabled)
             and self.dialogue_storage == "postgres"
             and len(self.dialogue_hash_key.get_secret_value().encode()) < 32
         ):

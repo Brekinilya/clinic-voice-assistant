@@ -61,6 +61,8 @@ class Approval(BookingModel):
     turn_id: int = Field(strict=True, ge=1)
     is_final: StrictBool = False
     permitted: StrictBool = False
+    guard_version: int | None = Field(default=None, strict=True, ge=1)
+    input_epoch: int | None = Field(default=None, strict=True, ge=1)
 
 
 class BookingError(Exception):

@@ -1,4 +1,4 @@
-"""Командный HTTP-вход нашей части; выводит состояние, но не создаёт записи МИС."""
+"""Текстовый вход автономного стенда: команды или обычные фразы по настройке."""
 
 from typing import Annotated
 
@@ -6,10 +6,10 @@ from asyncpg import PostgresError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.dialogue.models import CallId, DialogueError, DialogueState, Reply, Turn
+from app.dialogue.models import CallId, DialogueError, DialogueState, InputStart, Reply, Turn
 from app.dialogue.service import DialogueService
 
-router = APIRouter(prefix="/api/dialog", tags=["Автономный командный стенд"])
+router = APIRouter(prefix="/api/dialog", tags=["Автономный текстовый стенд"])
 
 
 def get_service(request: Request) -> DialogueService:
@@ -22,10 +22,23 @@ def get_service(request: Request) -> DialogueService:
 Service = Annotated[DialogueService, Depends(get_service)]
 
 
+@router.post("/{call_id}/input-started", response_model=Reply)
+async def input_started(call_id: CallId, body: InputStart, service: Service) -> Reply:
+    try:
+        return await service.input_started(call_id, body.turn_id)
+    except DialogueError as error:
+        raise HTTPException(409, detail=str(error)) from None
+    except (SQLAlchemyError, PostgresError, OSError):
+        raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None
+
+
 @router.post(
     "/{call_id}/turn",
     response_model=Reply,
-    description="Явные команды с вымышленной МИС. Создание/изменение записей отключено.",
+    description=(
+        "Вымышленная МИС: команды либо обычные фразы для записи С-01 и справки С-05. "
+        "Режим задаётся на сервере; создание требует итогового подтверждения и проверки safety."
+    ),
 )
 async def turn(call_id: CallId, body: Turn, service: Service) -> Reply:
     try:

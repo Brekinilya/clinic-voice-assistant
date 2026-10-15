@@ -32,6 +32,7 @@ class MisEmulator:
         }
         self.records: dict[str, dict[int, Visit]] = {token: {} for token in clients}
         self.write_count = 0
+        self.patch_count = 0
         self.next_failure: str | None = None
         self._lock = asyncio.Lock()
 
@@ -146,6 +147,14 @@ class MisEmulator:
                     changes["updated_at"] = self.clock.now().replace(second=0, microsecond=0)
                     visit = visit.model_copy(update=changes)
                     self.records[token][item_id] = visit
+                    self.patch_count += 1
+                    failure, self.next_failure = self.next_failure, None
+                    if failure == "lost_response":
+                        raise httpx.ReadTimeout("ответ потерян", request=request)
+                    if failure == "server_error":
+                        return self.error(500)
+                    if failure == "invalid_response":
+                        return httpx.Response(200, json={"unexpected": True})
                     return httpx.Response(200, json=visit.model_dump(mode="json"))
             except (ValidationError, ValueError, TypeError, AttributeError):
                 return self.error(400)

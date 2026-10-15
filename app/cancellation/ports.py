@@ -1,0 +1,19 @@
+"""Граница долговечного журнала отмены; HTTP выполняется вне его транзакций."""
+
+from datetime import datetime
+from typing import Protocol
+
+from app.booking.models import Approval
+from app.cancellation.models import CancelAction, CancelState, Reason
+from app.mis.models import Visit
+
+
+class CancellationStore(Protocol):
+    async def prepare(
+        self, call_id: str, before: Visit, now: datetime, reason: Reason | None = None
+    ) -> CancelAction: ...
+    async def get(self, action_id: str) -> CancelAction: ...
+    async def claim(self, approval: Approval, now: datetime) -> tuple[CancelAction, bool]: ...
+    async def finish(self, action_id: str, state: CancelState, now: datetime) -> CancelAction: ...
+    async def restore_unsent(self, action_id: str, turn_id: int) -> CancelAction: ...
+    async def release_call(self, call_id: str) -> None: ...

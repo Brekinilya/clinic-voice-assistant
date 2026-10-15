@@ -12,7 +12,7 @@ from app.booking.service import BookingService
 from app.demo import DemoClock, DemoSchedule, DemoSession, EmulatorBudget, demo_emulator
 from app.mis.budget import MemoryBudget
 from app.mis.http import HttpMedicalSystem
-from app.mis.models import VisitCreate, parse_date
+from app.mis.models import Doctor, Visit, VisitCreate, VisitStatus, parse_date
 
 
 @pytest.fixture
@@ -48,7 +48,10 @@ async def test_identification_is_exact_and_no_patient_is_created(booking):
     service, emulator, _ = booking
     result = await service.identify("Тестов", "Александр", "Примерович", parse_date("01.01.1990"))
     assert result.id == 1
-    for last, middle in (("тестов", "Примерович"), ("Тестов", "Другое"), ("Тестов", None)):
+    assert (
+        await service.identify("тестов", "АЛЕКСАНДР", "примерович", parse_date("01.01.1990"))
+    ) == result
+    for last, middle in (("Тесстов", "Примерович"), ("Тестов", "Другое"), ("Тестов", None)):
         with pytest.raises(BookingError, match="IDENTIFICATION_REQUIRED"):
             await service.identify(last, "Александр", middle, parse_date("01.01.1990"))
     assert len(emulator.clients["demo"]) == 2 and emulator.write_count == 0
@@ -81,8 +84,94 @@ async def test_simple_full_scenario_fits_eight_request_budget(booking):
     service, emulator, clock = booking
     service.mis._budget = MemoryBudget(clock)
     patient = await service.identify("Тестов", "Александр", "Примерович", parse_date("01.01.1990"))
-    choices = await service.options(patient.id, "терапевт")
+    choices = await service.options(patient.id, "терапевт", call_id="call-1")
     action = await service.propose("call-1", patient.id, choices[0])
+    assert (await service.confirm(approval(action))).state == ActionState.BOOKED
+    assert emulator.write_count == 1
+
+
+async def test_identity_with_e_yo_and_case_after_complete_dob_search(booking):
+    service, emulator, _ = booking
+    template = emulator.clients["demo"][1]
+    emulator.clients["demo"] = {
+        i: template.model_copy(update={"id": i, "last_name": "Посторонний"}) for i in range(1, 51)
+    }
+    target = template.model_copy(
+        update={"id": 51, "last_name": "Королёва", "first_name": "Алёна", "middle_name": "Петровна"}
+    )
+    emulator.clients["demo"][51] = target
+    requests = []
+
+    async def capture(request):
+        requests.append(request)
+
+    service.mis._client.event_hooks["request"].append(capture)
+    assert await service.identify("КОРОЛЕВА", "алена", "петровна", target.birth_date) == target
+    assert [r.url.params["offset"] for r in requests] == ["0", "50"]
+    assert all(
+        dict(r.url.params) == {"birth_date": "01.01.1990", "limit": "50", "offset": offset}
+        for r, offset in zip(requests, ["0", "50"])
+    )
+    assert emulator.write_count == 0
+
+
+async def test_normalized_name_collision_and_wrong_dob_do_not_identify(booking):
+    service, emulator, _ = booking
+    original = emulator.clients["demo"][1].model_copy(update={"last_name": "Семёнов"})
+    emulator.clients["demo"] = {
+        1: original,
+        2: original.model_copy(update={"id": 2, "last_name": "Семенов"}),
+    }
+    with pytest.raises(BookingError, match="IDENTIFICATION_REQUIRED"):
+        await service.identify("семенов", "Александр", "Примерович", original.birth_date)
+
+    async def wrong_dob(*args):
+        return [original.model_copy(update={"birth_date": original.birth_date + timedelta(days=1)})]
+
+    service.mis.clients = wrong_dob
+    with pytest.raises(BookingError, match="IDENTIFICATION_REQUIRED"):
+        await service.identify("семенов", "Александр", "Примерович", original.birth_date)
+    assert emulator.write_count == 0
+
+
+@pytest.mark.parametrize("conflict", ["slot", "patient"])
+async def test_final_preflight_detects_external_changes_after_cached_offer(booking, conflict):
+    service, emulator, clock = booking
+    choices = await service.options(1, "терапевт", call_id="call-1")
+    action = await service.propose("call-1", 1, choices[0])
+    other_doctor = Doctor(
+        id=77, full_name="Другой Врач Тестович", specialty="терапевт", is_active=True
+    )
+    # Изменение сторонним клиентом МИС не уведомляет кэш нашего HTTP-адаптера.
+    emulator.records["demo"][99] = Visit(
+        id=99,
+        client_id=2 if conflict == "slot" else 1,
+        doctor=emulator.doctors[1] if conflict == "slot" else other_doctor,
+        scheduled_at=choices[0].scheduled_at,
+        status=VisitStatus.PLANNED,
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    code = "SLOT_BUSY" if conflict == "slot" else "SPECIALTY_ALREADY_BOOKED"
+    with pytest.raises(BookingError, match=code):
+        await service.confirm(approval(action))
+    assert emulator.write_count == 0
+    assert (await service.store.get(action.action_id)).state == ActionState.HELD
+
+
+async def test_past_planned_visit_today_does_not_block_new_specialty(booking):
+    service, emulator, clock = booking
+    emulator.records["demo"][99] = Visit(
+        id=99,
+        client_id=1,
+        doctor=emulator.doctors[1],
+        scheduled_at=clock.now() - timedelta(minutes=1),
+        status=VisitStatus.PLANNED,
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    choices = await service.options(1, "терапевт", call_id="call-1")
+    action = await service.propose("call-1", 1, choices[0])
     assert (await service.confirm(approval(action))).state == ActionState.BOOKED
     assert emulator.write_count == 1
 

@@ -7,10 +7,11 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
 from app.api.health import router as health_router
 from app.bootstrap import build_runtime
-from app.dialogue.bootstrap import open_command_backend
+from app.dialogue.bootstrap import open_dialogue_backend
 from app.dialogue.service import DialogueService
 from app.ports import Clock, Database
 from app.settings import Settings
@@ -33,9 +34,9 @@ def create_app(
         application.state.runtime = runtime
         try:
             async with AsyncExitStack() as resources:
-                if selected_settings.backend_demo_enabled:
+                if selected_settings.backend_demo_enabled or selected_settings.dialogue_enabled:
                     factory = (
-                        dialogue_factory if dialogue_factory is not None else open_command_backend
+                        dialogue_factory if dialogue_factory is not None else open_dialogue_backend
                     )
                     application.state.dialogue = await resources.enter_async_context(
                         factory(selected_settings, runtime.clock)
@@ -52,12 +53,14 @@ def create_app(
     application = FastAPI(
         title="Голосовой ассистент регистратуры",
         version="0.1.0",
-        description="Каркас сервиса. Диалог и операции МИС подключаются отдельными компонентами.",
+        description="Ассистент регистратуры: диалог, проверка безопасности и действия в МИС.",
         lifespan=lifespan,
     )
     application.include_router(health_router)
-    if selected_settings.backend_demo_enabled:
+    if selected_settings.backend_demo_enabled or selected_settings.dialogue_enabled:
         application.include_router(dialogue_router)
+        if selected_settings.backend_demo_enabled and selected_settings.dialogue_mode == "natural":
+            application.include_router(demo_router)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(_, error: RequestValidationError):

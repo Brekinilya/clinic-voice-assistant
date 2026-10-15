@@ -69,3 +69,39 @@ def test_settings_are_read_only():
     settings = Settings(_env_file=None)
     with pytest.raises(ValidationError):
         settings.app_mode = AppMode.HACKATHON
+
+
+def live_settings(**changes):
+    values = dict(
+        app_mode="hackathon",
+        mis_token="fictional-token",
+        dialogue_enabled=True,
+        dialogue_mode="natural",
+        dialogue_storage="postgres",
+        dialogue_hash_key="fictional-persistent-key-at-least-32-bytes",
+        schedule_index_path="schedule.sqlite",
+    )
+    return Settings(_env_file=None, **(values | changes))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"dialogue_storage": "memory"},
+        {"dialogue_mode": "commands"},
+        {"schedule_index_path": None},
+        {"dialogue_hash_key": "short"},
+        {"backend_demo_enabled": True},
+        {"mis_token": ""},
+    ],
+)
+def test_external_dialogue_rejects_incomplete_or_emulated_configuration(changes):
+    with pytest.raises(ValidationError):
+        live_settings(**changes)
+
+
+def test_external_dialogue_is_explicit_and_keeps_demo_off():
+    settings = live_settings()
+    assert settings.dialogue_enabled and not settings.backend_demo_enabled
+    with pytest.raises(ValidationError):
+        live_settings(app_mode="offline_test")
