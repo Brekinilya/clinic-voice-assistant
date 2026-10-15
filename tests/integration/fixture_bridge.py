@@ -12,6 +12,7 @@ from app.booking.service import BookingService
 from app.cancellation.memory import MemoryCancellationStore
 from app.cancellation.service import CancellationService
 from app.demo import EmulatorBudget
+from app.dialogue.identity import IdentityDrafts
 from app.dialogue.memory import MemoryDialogueStore
 from app.dialogue.natural import BookingConversation
 from app.dialogue.safety_adapter import RulesSafety
@@ -132,6 +133,7 @@ async def pipeline(setup=None, *, pg_engine=None):
             rooms=FixtureRooms(),
             cancellation=CancellationService(booking.mis, cancellation_store, clock),
             rescheduling=RescheduleService(booking, move_store),
+            identity_drafts=IdentityDrafts(KEY),
         )
         service = DialogueService(
             booking, dialogue_store, KEY, safety=safety, conversation=conversation

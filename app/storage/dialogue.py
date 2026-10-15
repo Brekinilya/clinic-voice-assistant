@@ -138,6 +138,7 @@ class PostgresDialogueStore:
             state = state.model_copy(
                 update={
                     "phase": Phase.ENDED,
+                    "identity_draft": None,
                     "version": state.version + 1,
                     "last_turn_id": row.pending_turn or state.last_turn_id,
                     "pending_turn_id": None,

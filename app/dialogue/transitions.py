@@ -118,6 +118,7 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
     return state.model_copy(
         update={
             "phase": Phase.HANDOFF,
+            "identity_draft": None,
             "version": state.version + 1,
             "last_turn_id": state.pending_turn_id or state.last_turn_id,
             "pending_turn_id": None,

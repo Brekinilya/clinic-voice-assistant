@@ -120,6 +120,7 @@ class DialogueState(BookingModel):
     cancel_reschedule_offered: bool = False
     query_for_self: bool = False
     identity_attempts: int = 0
+    identity_draft: str | None = Field(default=None, repr=False)
     visit_query: VisitQuery = Field(default_factory=VisitQuery)
     visit_items: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     visit_cursor: VisitCursor | None = None

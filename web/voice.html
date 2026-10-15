@@ -34,18 +34,22 @@
 <body>
 <main>
   <h1>Звонок в регистратуру</h1>
-  <div class="muted">Голосовой шлюз: распознавание и синтез на сервере. Лучше говорить в гарнитуру.</div>
+  <div class="muted">Помощник регистратуры. Для звонка используйте гарнитуру.</div>
+  <p>Если речь распознаётся неточно, <a href="/chat">откройте текстовый диалог</a>.
+    В нём работает тот же помощник. Начните новый разговор и назовите нужного специалиста.</p>
+  <p class="muted">Данные для автономной демонстрации с эмулятором МИС:
+    Тестов Александр Примерович, 1 января 1990 года. Настоящие данные пациентов вводить не нужно.</p>
   <div class="bar">
     <button id="call">Позвонить</button>
     <span id="state" class="muted">не на линии</span>
   </div>
   <div id="log"></div>
-  <table>
+  <details><summary>Время ответа</summary><table>
     <thead><tr><th>Реплика</th><th>распознавание, мс</th><th>диалог, мс</th><th>синтез, мс</th>
       <th>до звука, мс</th><th>от конца речи, мс</th></tr></thead>
     <tbody id="timings"></tbody>
     <tfoot id="summary"></tfoot>
-  </table>
+  </table></details>
 </main>
 <script type="module">
   import { VoiceClient } from "./voice-client.js";

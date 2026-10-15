@@ -115,6 +115,7 @@ class DialogueService:
             state = state.model_copy(
                 update={
                     "phase": Phase.INTERRUPTED,
+                    "identity_draft": None,
                     "proposal": None,
                     "cancel_proposal": None,
                     "cancel_target": None,

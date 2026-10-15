@@ -38,6 +38,8 @@ class VoiceSettings(BaseSettings):
     goodbye_hangup_s: float = 3.0
     # Раздел 3.7: ответ дольше 1,5 секунды — «Одну секунду, проверяю расписание»
     wait_phrase_s: float = 1.5
+    # Событие начала речи не должно надолго останавливать приём звука.
+    input_started_timeout_s: float = Field(default=0.3, gt=0, le=2)
 
     def path(self, relative: str) -> Path:
         return self.models_dir / relative
