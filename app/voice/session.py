@@ -157,7 +157,10 @@ class CallSession:
         self.turn_id += 1
         try:
             # До ASR и вне очереди итоговых реплик отзываем прежнее «да».
-            await self.dialogue.input_started(self.call_id, self.turn_id)
+            await asyncio.wait_for(
+                self.dialogue.input_started(self.call_id, self.turn_id),
+                timeout=self.settings.input_started_timeout_s,
+            )
         except Exception:
             log.error("диалог не подтвердил начало новой речи")
             await self._deliver(self.turn_id, None)

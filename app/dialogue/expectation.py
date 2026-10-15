@@ -14,8 +14,7 @@ def expected_answer(state: DialogueState) -> ExpectedAnswer:
     if state.medical_boundary_pending:
         return "yes_no"
     if state.phase == "identifying":
-        # Наш шаг идентификации сейчас просит ФИО вместе с датой рождения.
-        return "full_name"
+        return "birth_date" if state.identity_draft else "full_name"
     if state.phase in {"offered", "cancel_choosing", "move_choosing", "move_offered"}:
         return "choice"
     if state.phase in {

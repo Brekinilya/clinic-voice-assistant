@@ -49,7 +49,7 @@ async def turn(call_id: CallId, body: Turn, service: Service) -> Reply:
         raise HTTPException(503, detail="DIALOGUE_STORAGE_UNAVAILABLE") from None
 
 
-@router.get("/{call_id}", response_model=DialogueState)
+@router.get("/{call_id}", response_model=DialogueState, response_model_exclude={"identity_draft"})
 async def inspect(call_id: CallId, service: Service) -> DialogueState:
     try:
         return await service.store.inspect(call_id)

@@ -56,6 +56,21 @@ async def answered(call):
     await until(lambda: not call.speaking())
 
 
+async def test_slow_input_started_fails_closed_without_waiting_for_backend():
+    class SlowDialogue(Dialogue):
+        async def input_started(self, call_id, turn_id):
+            await asyncio.Event().wait()
+
+    dialogue = SlowDialogue(lambda turn: reply("Не должен прозвучать"))
+    call, channel = session(dialogue, Recognizer({10: "Да"}), input_started_timeout_s=0.03)
+    await call.start()
+    await asyncio.wait_for(call._phrase_started(), timeout=0.5)
+    assert call.closing
+    assert not dialogue.turns
+    assert "Не должен прозвучать" not in channel.said()
+    await call.close()
+
+
 async def until(condition, timeout: float = 3.0):
     deadline = time.monotonic() + timeout
     while not condition():

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.demo import chat_router
 from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
 from app.api.health import router as health_router
@@ -59,6 +60,8 @@ def create_app(
     application.include_router(health_router)
     if selected_settings.backend_demo_enabled or selected_settings.dialogue_enabled:
         application.include_router(dialogue_router)
+        if selected_settings.dialogue_mode == "natural":
+            application.include_router(chat_router)
         if selected_settings.backend_demo_enabled and selected_settings.dialogue_mode == "natural":
             application.include_router(demo_router)
 

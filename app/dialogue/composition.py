@@ -2,6 +2,7 @@
 
 from app.booking.service import BookingService
 from app.cancellation.service import CancellationService
+from app.dialogue.identity import IdentityDrafts
 from app.dialogue.natural import BookingConversation
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
@@ -36,6 +37,7 @@ def assemble_dialogue(
             rooms=schedule if isinstance(schedule, SqliteSchedule) else None,
             cancellation=CancellationService(mis, cancellation_store, clock),
             rescheduling=RescheduleService(booking, move_store),
+            identity_drafts=IdentityDrafts(hash_key),
         )
         if safety is not None
         else None

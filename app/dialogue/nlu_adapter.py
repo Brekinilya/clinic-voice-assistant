@@ -56,7 +56,8 @@ class RulesInput:
             call_id=state.call_id,
             turn_id=turn.turn_id,
             text=turn.text,
-            expect=expect,
+            # При ожидании даты пациент может также исправить ранее названное ФИО.
+            expect="full_name" if expect == "birth_date" else expect,
             today=self.clock.now().astimezone(CLINIC_TIMEZONE).date(),
             options=options,
             context=context,

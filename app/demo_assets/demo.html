@@ -26,7 +26,7 @@
 </head>
 <body>
 <div class="shell">
-  <header><div class="brand"><span class="mark" aria-hidden="true">+</span><span>Помощник регистратуры</span></div><span class="badge">Демонстрация · вымышленные данные</span></header>
+  <header><div class="brand"><span class="mark" aria-hidden="true">+</span><span>Помощник регистратуры</span></div><span class="badge" id="mode">Демонстрация · вымышленные данные</span></header>
   <section class="intro"><h1>Запись к врачу<br>в обычном разговоре</h1><p>Назовите специалиста и удобное время. Помощник найдёт пациента, предложит варианты и уточнит запись перед подтверждением.</p></section>
   <main class="layout">
     <section class="chat" aria-label="Разговор с помощником">
@@ -40,14 +40,19 @@
     <aside class="aside">
       <section class="card"><span class="eyebrow">Путь пациента</span><h2>Четыре простых шага</h2><ol class="steps" id="steps"><li class="current"><span class="number">1</span>Назвать специалиста</li><li><span class="number">2</span>Подтвердить свои данные</li><li><span class="number">3</span>Выбрать время</li><li><span class="number">4</span>Подтвердить запись</li></ol></section>
       <section class="card"><span class="eyebrow">Ваш приём</span><h2 id="card-title">Время ещё не выбрано</h2><div class="appointment" id="appointment">Выбранный вариант появится здесь.</div><div class="status" id="appointment-status"></div></section>
-      <section class="card"><span class="eyebrow">Как попробовать</span><p class="small">Начните с кнопки «Записаться». Для поиска карты используйте кнопку с учебными данными, затем выберите время и ответьте «Да».</p><p class="small">Это текстовый прототип. Голосовой телефонный канал подключается отдельно.</p></section>
+      <section class="card"><span class="eyebrow">Как попробовать</span><p class="small" id="help">Начните с кнопки «Записаться». Для поиска карты используйте кнопку с учебными данными, затем выберите время и ответьте «Да».</p><p class="small" id="voice-help" hidden>Можно <a href="/web/voice.html">поговорить голосом</a>. Если распознавание ошибается, продолжите здесь новым текстовым разговором.</p></section>
     </aside>
   </main>
-  <footer>Данные приёма изменяются только после итогового подтверждения. Демонстрационная МИС работает локально.</footer>
+  <footer id="footnote">Данные приёма изменяются только после итогового подтверждения. Демонстрационная МИС работает локально.</footer>
 </div>
 <script>
   // Реплики хранятся только на открытой странице; браузерное хранилище не используется.
   const byId=id=>document.getElementById(id);
+  const config=__CHAT_CONFIG__;
+  byId('voice-help').hidden=!config.voice;
+  if(config.workbook)byId('mode').textContent=config.demo?'Расписание хакатона · эмулятор МИС':'Стенд организаторов · расписание хакатона';
+  if(!config.demo){byId('mode').textContent='Стенд организаторов';byId('help').textContent='Назовите специалиста, затем введите ФИО и дату рождения пациента из медицинской системы.';byId('footnote').textContent='Изменения в медицинской системе выполняются только после вашего подтверждения.';}
+  byId('text').placeholder='Например: хочу записаться к '+config.specialty;
   let callId, nextTurn, pending=null, busy=false, selected=null;
   const dateFormat=new Intl.DateTimeFormat('ru-RU',{timeZone:'Etc/GMT-4',weekday:'long',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
   function message(role,text){const node=document.createElement('div');node.className='message '+role;const label=document.createElement('span');label.className='label';label.textContent=role==='patient'?'Пациент':'Помощник';node.append(label,document.createTextNode(text));byId('messages').append(node);byId('messages').scrollTop=byId('messages').scrollHeight;}
@@ -56,22 +61,23 @@
   function initial(){callId='demo-'+crypto.randomUUID();nextTurn=1;pending=null;selected=null;byId('messages').replaceChildren();byId('error').replaceChildren();byId('text').value='';render({phase:'ready',expect:'free',options:[]});message('assistant','Здравствуйте! Я виртуальный помощник регистратуры. К какому врачу хотите записаться?');}
   function render(answer){const phase=answer.phase;const step=phase==='identifying'?1:phase==='offered'?2:['held','booked'].includes(phase)?3:0;byId('steps').querySelectorAll('li').forEach((n,i)=>n.classList.toggle('current',i===step));
     if(answer.proposal)selected=answer.proposal;
-    if(phase==='booked'&&selected){byId('card-title').textContent='Запись подтверждена';byId('appointment-status').textContent='Приём создан в демонстрационной МИС';}
+    if(phase==='booked'&&selected){byId('card-title').textContent='Запись подтверждена';byId('appointment-status').textContent=(config.demo?'Приём создан в эмуляторе МИС':'Приём создан в МИС')+(answer.visit_id?' · № '+answer.visit_id:'');}
     else if(phase==='held'&&selected){byId('card-title').textContent='Проверьте выбранное время';byId('appointment-status').textContent='Ожидает вашего подтверждения';}
     else if(phase!=='booked'){selected=null;byId('card-title').textContent=phase==='handoff'?'Нужна помощь сотрудника':'Время ещё не выбрано';byId('appointment-status').textContent=answer.transfer?(answer.transfer.priority==='P1'?'Экстренный приоритет':'Запрос сотруднику подготовлен'):'';}
     byId('appointment').textContent=selected?[selected.slot.specialty,selected.doctor_name||'Выбранный врач',dateFormat.format(new Date(selected.slot.scheduled_at))].join('\n'):'Выбранный вариант появится здесь.';
     if(answer.visits?.length){byId('card-title').textContent=answer.visits.length===1?'Ваш ближайший приём':'Ваши ближайшие приёмы';byId('appointment').textContent=answer.visits.map(v=>[v.specialty,v.doctor_name,dateFormat.format(new Date(v.scheduled_at)),v.room?'Кабинет '+v.room:''].filter(Boolean).join('\n')).join('\n\n');byId('appointment-status').textContent='Данные получены после проверки пациента';}
-    const hints={full_name:'Учебные данные: Тестов Александр Примерович, 01.01.1990',birth_date:'Назовите число, месяц и полный год рождения.',choice:'Выберите вариант или уточните удобный день.',yes_no:'Проверьте предложенные данные и ответьте «Да» или «Нет».',free:'Можно задать следующий вопрос.'};byId('hint').textContent=hints[answer.expect]||hints.free;
+    const hints={full_name:config.demo?'Учебные данные: Тестов Александр Примерович, 01.01.1990':'Введите фамилию, имя и отчество пациента.',birth_date:'Назовите число, месяц и полный год рождения.',choice:'Выберите вариант или уточните удобный день.',yes_no:'Проверьте предложенные данные и ответьте «Да» или «Нет».',free:'Можно задать следующий вопрос.'};byId('hint').textContent=hints[answer.expect]||hints.free;
     if(phase==='visits_shown')byId('hint').textContent='Можно перенести или отменить приём, задать вопрос либо завершить разговор.';
     if(phase==='cancel_offer')byId('hint').textContent='Выберите перенос или подтвердите желание отменить приём.';
     if(['handoff','ended','interrupted'].includes(phase)){buttons([]);return;}
-    if(answer.expect==='full_name'){buttons([['Учебный пациент: Александр','Тестов Александр Примерович, 01.01.1990'],['Учебный пациент: Иван','Тестов Иван Примерович, 02.01.1990']]);}
+    if(answer.expect==='full_name'){buttons(config.demo?[['Учебный пациент: Александр','Тестов Александр Примерович, 01.01.1990'],['Учебный пациент: Иван','Тестов Иван Примерович, 02.01.1990']]:[]);}
+    else if(answer.expect==='birth_date'){buttons(config.demo?[['1 января 1990','1 января 1990 года']]:[]);}
     else if(answer.expect==='choice'&&answer.options?.length){buttons(answer.options.map((s,i)=>[dateFormat.format(new Date(s.scheduled_at)),['Первый','Второй','Третий'][i]]));}
     else if(answer.expect==='choice'&&answer.visits?.length){buttons(answer.visits.map((v,i)=>[v.doctor_name+' · '+dateFormat.format(new Date(v.scheduled_at)),['Первый','Второй','Третий'][i]]));}
     else if(phase==='cancel_offer'){buttons([['Перенести','Хочу перенести запись'],['Отменить','Хочу отменить запись']]);}
     else if(phase==='visits_shown'){buttons([['Перенести','Хочу перенести запись'],['Отменить','Хочу отменить запись'],['Завершить','Нет, спасибо']]);}
     else if(answer.expect==='yes_no'){buttons([['Да','Да'],['Нет','Нет']]);}
-    else{buttons([['Записаться','Хочу записаться к терапевту'],['Мои записи','На когда я записан?'],['Перенести','Хочу перенести запись'],['Отменить','Хочу отменить запись']]);}
+    else{buttons([['Записаться','Хочу записаться к '+config.specialty],['Мои записи','На когда я записан?'],['Перенести','Хочу перенести запись'],['Отменить','Хочу отменить запись']]);}
   }
   async function submit(text){if(busy||pending||!text.trim())return;pending={call:callId,body:{turn_id:nextTurn,text:text.trim(),is_final:true}};message('patient',text.trim());byId('text').value='';await transmit();}
   async function transmit(){if(!pending||busy)return;const request=pending;byId('error').replaceChildren();setBusy(true);try{const response=await fetch('/api/dialog/'+request.call+'/turn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request.body)});if(!response.ok)throw new Error('request');const answer=await response.json();if(request.call!==callId)return;if(answer.kind==='processing'){throw new Error('processing');}pending=null;nextTurn=request.body.turn_id+1;for(const phrase of answer.utterances)message('assistant',phrase);render(answer);}catch{byId('error').textContent='Ответ пока не получен. Можно проверить ту же реплику: ';const retry=document.createElement('button');retry.type='button';retry.className='retry';retry.textContent='Получить ответ';retry.addEventListener('click',transmit);byId('error').append(retry);}finally{setBusy(false);byId('text').focus();}}

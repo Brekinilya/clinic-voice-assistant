@@ -8,6 +8,7 @@ from app.booking.service import BookingService
 from app.cancellation.service import CancellationService
 from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.failures import mis_failure
+from app.dialogue.identity import IdentityDrafts
 from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
 from app.dialogue.nlu_adapter import RulesInput
@@ -38,10 +39,12 @@ class BookingConversation:
         cancellation: CancellationService | None = None,
         rescheduling: RescheduleService | None = None,
         presenter: BookingPresenter | None = None,
+        identity_drafts: IdentityDrafts | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
         self.safety = safety
+        self.identity_drafts = identity_drafts
         self.rooms = rooms
         self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
         self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
@@ -238,6 +241,46 @@ class BookingConversation:
             )
         ):
             return await self.visits.privacy_transfer(state, turn)
+        # Сохраняем только зашифрованное ФИО. Общий шаг работает для записи, справки,
+        # отмены и переноса; окончательная проверка пациента остаётся строгой.
+        if state.phase == Phase.IDENTIFYING and self.identity_drafts is not None:
+            has_name = bool(slots.last_name and slots.first_name)
+            if (slots.last_name or slots.first_name or slots.middle_name) and not has_name:
+                state = state.model_copy(update={"identity_draft": None})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Назовите фамилию, имя и отчество полностью.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            if has_name:
+                state = state.model_copy(
+                    update={
+                        "identity_draft": self.identity_drafts.seal(
+                            state.call_id, slots.last_name, slots.first_name, slots.middle_name
+                        )
+                    }
+                )
+            if slots.birth_date and not result.alternatives and state.identity_draft:
+                names = self.identity_drafts.open(state.call_id, state.identity_draft)
+                state = state.model_copy(update={"identity_draft": None})
+                if names is None:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Назовите фамилию, имя, отчество и дату рождения ещё раз.",
+                        code="IDENTIFICATION_REQUIRED",
+                    )
+                slots = slots.model_copy(update=names)
+                result = result.model_copy(update={"slots": slots})
+            elif has_name and not slots.birth_date:
+                state = state.model_copy(update={"misunderstandings": 0})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Спасибо. Назовите дату рождения: день, месяц и год.",
+                    code="BIRTH_DATE_REQUIRED",
+                )
         if self.rescheduling and (state.purpose == "reschedule" or "I-02" in intents):
             sent = False
             if state.move_proposal:
