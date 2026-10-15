@@ -46,6 +46,7 @@ def approval(action, **updates):
 
 async def test_identification_is_exact_and_no_patient_is_created(booking):
     service, emulator, _ = booking
+    original_clients = dict(emulator.clients["demo"])
     result = await service.identify("Тестов", "Александр", "Примерович", parse_date("01.01.1990"))
     assert result.id == 1
     assert (
@@ -54,7 +55,7 @@ async def test_identification_is_exact_and_no_patient_is_created(booking):
     for last, middle in (("Тесстов", "Примерович"), ("Тестов", "Другое"), ("Тестов", None)):
         with pytest.raises(BookingError, match="IDENTIFICATION_REQUIRED"):
             await service.identify(last, "Александр", middle, parse_date("01.01.1990"))
-    assert len(emulator.clients["demo"]) == 2 and emulator.write_count == 0
+    assert emulator.clients["demo"] == original_clients and emulator.write_count == 0
 
 
 async def test_wrong_search_response_cannot_identify_patient(booking):

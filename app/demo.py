@@ -43,7 +43,7 @@ class DemoSchedule:
         return self._slots
 
     def eligible(self, client_id: int, slot: Slot) -> bool:
-        return client_id in {1, 2} and slot in self._slots
+        return client_id in {1, 2, 3} and slot in self._slots
 
 
 class EmulatorBudget:
@@ -69,6 +69,18 @@ def demo_emulator(clock: DemoClock, *, doctors=None) -> MisEmulator:
         )
         for i, name in ((1, "Александр"), (2, "Иван"))
     ]
+    # Простое ФИО для голосового показа; прежние карточки оставляем для сценариев.
+    clients.append(
+        Client(
+            id=3,
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="Иванович",
+            birth_date=date(1990, 1, 1),
+            comment=None,
+            created_at=clock.now().replace(second=0, microsecond=0),
+        )
+    )
     return MisEmulator(
         clock,
         doctors
