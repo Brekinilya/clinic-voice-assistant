@@ -2,14 +2,15 @@
 
 import re
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import date, time
 
 from app.nlu.dictionaries import specialty_lexicon
 from app.nlu.lexicon import lemmas, normalize, tokenize
-from app.nlu.parsers.dates import MONTHS, RELATIVE_DAYS, WEEKDAYS, lookup
-from app.nlu.parsers.names import parse_doctor
+from app.nlu.parsers.dates import MONTHS, lookup, parse_dates
+from app.nlu.parsers.names import parse_doctor, parse_full_name
 from app.nlu.parsers.numbers import Number, spoken_numbers
 from app.nlu.parsers.times import parse_times
+from app.scheduling.matching import profile_key
 
 LAST = {"последний", "крайний"}
 ANY = {"любой", "разница"}
@@ -48,15 +49,25 @@ def parse_choice(text: str, options: list[Option], today: date) -> tuple[int, st
     if ordinal:
         narrow({ordinal[0]}, ordinal[1])
 
-    for i, token in enumerate(tokens):
-        weekday = lookup(token, WEEKDAYS)
-        if weekday and not (i > 0 and tokens[i - 1] in {"не", "кроме"}):
-            narrow(
-                {k for k, o in enumerate(options) if o.day and o.day.isoweekday() == weekday}, token
+    date_text = re.sub(r"\s+", " ", normalize(text))
+    if ordinal:
+        # «На первый вариант» — номер, а оставшееся «но в пятницу» — ограничение даты.
+        date_text = date_text.replace(ordinal[1], "", 1)
+    dates = parse_dates(date_text, today)
+    if dates:
+
+        def date_matches(option: Option) -> bool:
+            if option.day is None:
+                return False
+            day = option.day.isoformat()
+            return (
+                ("date_from" not in dates or day >= dates["date_from"][0])
+                and ("date_to" not in dates or day <= dates["date_to"][0])
+                and option.day.isoweekday() not in dates.get("exclude_weekdays", ((), ""))[0]
+                and day not in dates.get("exclude_dates", ((), ""))[0]
             )
-        if token in RELATIVE_DAYS:
-            d = today + timedelta(days=RELATIVE_DAYS[token])
-            narrow({k for k, o in enumerate(options) if o.day == d}, token)
+
+        narrow({k for k, option in enumerate(options) if date_matches(option)}, text.strip())
 
     for n in numbers:
         if _is_day_of_month(tokens, n, len(options)):
@@ -82,11 +93,38 @@ def parse_choice(text: str, options: list[Option], today: date) -> tuple[int, st
         narrow(matching, next(phrase for _, phrase in times.values()))
 
     if any(o.specialty for o in options) and (hit := specialty_lexicon().best(text)):
-        narrow({k for k, o in enumerate(options) if o.specialty == hit.key}, hit.phrase)
+        narrow(
+            {
+                k
+                for k, o in enumerate(options)
+                if o.specialty and profile_key(o.specialty) == profile_key(hit.key)
+            },
+            hit.phrase,
+        )
 
-    doctors = [o.doctor for o in options if o.doctor]
+    doctors = [o.doctor.split()[0] for o in options if o.doctor and o.doctor.strip()]
     if doctors and (named := parse_doctor(text, doctors)):
-        narrow({k for k, o in enumerate(options) if o.doctor == named[0]}, named[1])
+        name_parts = parse_full_name(text)
+
+        def doctor_matches(option: Option) -> bool:
+            if not option.doctor:
+                return False
+            parts = option.doctor.split()
+            if normalize(parts[0]) != normalize(named[0]):
+                return False
+            # Имя и отчество врача могут разрешить однофамильцев. Это выбор из
+            # предложенного списка; строгую идентификацию пациента не меняем.
+            return all(
+                field not in name_parts
+                or len(parts) > index
+                and normalize(parts[index]) == normalize(name_parts[field][0])
+                for field, index in (("first_name", 1), ("middle_name", 2))
+            )
+
+        narrow(
+            {k for k, option in enumerate(options) if doctor_matches(option)},
+            named[1],
+        )
 
     if not evidence and ANY & {f for t in tokens for f in lemmas(t)}:
         return 1, text.strip()

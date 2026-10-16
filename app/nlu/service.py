@@ -71,6 +71,8 @@ class RulesNlu:
 
 
 def _typed(name: str, value: object) -> object:
+    if name == "exclude_dates":
+        return tuple(date.fromisoformat(day) for day in value)
     if name in DATE_SLOTS:
         return date.fromisoformat(value)
     if name in TIME_SLOTS:

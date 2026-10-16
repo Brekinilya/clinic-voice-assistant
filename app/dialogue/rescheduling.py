@@ -3,7 +3,7 @@
 import re
 
 from app.booking.models import Approval, BookingError
-from app.booking.preferences import SlotPreferences
+from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.contracts import NluSlots
 from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.failures import mis_failure
@@ -13,15 +13,6 @@ from app.dialogue.visits import query_from_slots
 from app.mis.ports import MisError
 from app.rescheduling.models import MoveState, proposal
 from app.visits.service import VisitService
-
-PREFERENCE_FIELDS = {
-    "date_from",
-    "date_to",
-    "time_from",
-    "time_to",
-    "time_pref",
-    "exclude_weekdays",
-}
 
 
 class RescheduleConversation:

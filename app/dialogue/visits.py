@@ -4,7 +4,7 @@ import re
 from collections.abc import Awaitable, Callable
 
 from app.booking.models import BookingError
-from app.booking.preferences import SlotPreferences
+from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
 from app.contracts import NluResult, NluSlots
 from app.dialogue.failures import mis_failure
@@ -33,11 +33,7 @@ def query_from_slots(slots: NluSlots, previous: VisitQuery | None = None) -> Vis
     previous = previous if previous is not None else VisitQuery()
     preferences = previous.preferences.model_dump()
     preferences.update(
-        {
-            name: getattr(slots, name)
-            for name in ("date_from", "date_to", "time_from", "time_to", "exclude_weekdays")
-            if name in slots.model_fields_set
-        }
+        {name: getattr(slots, name) for name in PREFERENCE_FIELDS if name in slots.model_fields_set}
     )
     specialty = slots.specialty if "specialty" in slots.model_fields_set else previous.specialty
     doctor = slots.doctor if "doctor" in slots.model_fields_set else previous.doctor
@@ -254,6 +250,7 @@ class VisitConversation:
                 "time_from",
                 "time_to",
                 "exclude_weekdays",
+                "exclude_dates",
                 "visit_ref",
             }:
                 state = state.model_copy(

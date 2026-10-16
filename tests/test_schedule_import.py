@@ -612,3 +612,13 @@ async def test_live_backend_rejects_offline_index_before_any_connections(indexed
     with pytest.raises(ScheduleImportError, match="INDEX_SCOPE_MISMATCH"):
         async with open_backend(settings, schedule):
             pytest.fail("Учебный индекс не должен попасть во внешнюю МИС")
+
+
+def test_index_keeps_excluded_calendar_dates(indexed):
+    clock, *_, schedule = indexed
+    excluded = clock.now().date() + timedelta(days=1)
+    preferences = SlotPreferences(exclude_dates=(excluded,))
+    restored = SlotPreferences.model_validate_json(preferences.model_dump_json())
+    assert restored == preferences
+    slots = schedule.find("Хирург", restored, clock.now())
+    assert slots and all(slot.scheduled_at.date() != excluded for slot in slots)

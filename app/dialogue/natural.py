@@ -3,7 +3,7 @@
 from typing import Literal
 
 from app.booking.models import ActionState, Approval, BookingError
-from app.booking.preferences import SlotPreferences
+from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
 from app.cancellation.service import CancellationService
 from app.dialogue.cancellation import CancellationConversation
@@ -202,14 +202,7 @@ class BookingConversation:
             )
         slots, intents = result.slots, set(result.intents)
         if state.medical_boundary_pending:
-            refinements = {
-                "date_from",
-                "date_to",
-                "time_from",
-                "time_to",
-                "time_pref",
-                "exclude_weekdays",
-            } & slots.model_fields_set
+            refinements = PREFERENCE_FIELDS & slots.model_fields_set
             if "repeat" in intents:
                 return self.medical.prompt(state, turn)
             if "no" in intents and not ("I-01" in intents or slots.specialty):
@@ -500,14 +493,7 @@ class BookingConversation:
             return state, reply(
                 state, turn.turn_id, "Пациент найден. К какому специалисту хотите записаться?"
             )
-        preference_fields = {
-            "date_from",
-            "date_to",
-            "time_from",
-            "time_to",
-            "time_pref",
-            "exclude_weekdays",
-        } & slots.model_fields_set
+        preference_fields = PREFERENCE_FIELDS & slots.model_fields_set
         if (
             slots.specialty is not None
             or slots.doctor is not None

@@ -66,6 +66,7 @@ class PublicSlots(Message):
     time_to: Time | None = None
     time_pref: Literal["early", "late"] | None = None
     exclude_weekdays: tuple[Annotated[int, Field(strict=True, ge=1, le=7)], ...] = ()
+    exclude_dates: tuple[Date, ...] = Field(default=(), max_length=366)
     choice_index: Annotated[int, Field(strict=True, ge=1)] | None = None
     visit_ref: VisitReference | None = None
     on_behalf: Literal["self", "child", "other"] | None = None

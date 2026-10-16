@@ -279,6 +279,8 @@ class CancellationConversation:
                 "date_to",
                 "time_from",
                 "time_to",
+                "exclude_weekdays",
+                "exclude_dates",
                 "visit_ref",
             } & slots.model_fields_set
             if refinements or "I-02" in intents:

@@ -117,16 +117,20 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
     weeks: list[tuple[date, date, str]] = []
     weekdays: list[tuple[int, list[str], str]] = []
     excluded: list[tuple[int, str]] = []
+    excluded_dates: list[tuple[date, str]] = []
 
     for i, token in enumerate(tokens):
         if (shift := RELATIVE_DAYS.get(token)) is not None:
             d = today + timedelta(days=shift)
-            days.append((d, d, token))
+            if _negated(tokens, i):
+                excluded_dates.append((d, " ".join(tokens[max(0, i - 3) : i + 1])))
+            else:
+                days.append((d, d, token))
 
         weekday = lookup(token, WEEKDAYS)
         if weekday:
             before = tokens[max(0, i - 2) : i]
-            if NEGATIONS & set(before):
+            if _negated(tokens, i):
                 excluded.append((weekday, " ".join(before + [token])))
             else:
                 weekdays.append((weekday, before, " ".join(before[-1:] + [token])))
@@ -161,7 +165,9 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
 
     calendar = _calendar_dates(tokens, numbers, today)
     days += [(d, d, e) for kind, d, e in calendar if kind == "day"]
-    days += _digit_dates(text, today)
+    digital = _digit_dates(text, today)
+    days += [(d, d, e) for kind, d, e in digital if kind == "day"]
+    excluded_dates += [(d, e) for kind, d, e in calendar + digital if kind == "exclude"]
     lower = [(d, e) for kind, d, e in calendar if kind == "from"]
     upper = [(d, e) for kind, d, e in calendar if kind == "to"]
 
@@ -183,7 +189,32 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
             sorted({w for w, _ in excluded}),
             ", ".join(e for _, e in excluded),
         )
+    if len(weekdays) > 1 and not {"по", "до"} & set(tokens) and date_from and date_to:
+        # Перечень дней не превращаем в сплошной интервал: между понедельником и средой
+        # вторник запрещён. «С понедельника по среду» остаётся интервалом.
+        mentioned = {w for w, _, _ in weekdays}
+        span = {
+            (date_from + timedelta(days=offset)).isoweekday()
+            for offset in range(min((date_to - date_from).days + 1, 7))
+        }
+        gaps = span - mentioned
+        if gaps:
+            found["exclude_weekdays"] = (sorted(gaps | {w for w, _ in excluded}), evidence)
+    if excluded_dates:
+        found["exclude_dates"] = (
+            sorted({d.isoformat() for d, _ in excluded_dates}),
+            ", ".join(e for _, e in excluded_dates),
+        )
     return found
+
+
+def _negated(tokens: list[str], index: int) -> bool:
+    before = tokens[max(0, index - 3) : index]
+    # В «не завтра, а послезавтра» отрицание относится только к первой части.
+    for position, token in enumerate(before):
+        if token in {"а", "но", "или", "и", "зато"}:
+            before = before[position + 1 :]
+    return bool(NEGATIONS & set(before))
 
 
 def _weekday_date(today: date, weekday: int, before: list[str]) -> date:
@@ -230,6 +261,11 @@ def _calendar_dates(
         month = lookup(tokens[n.end], MONTHS) if n.end < len(tokens) else None
         if month:
             d, end = _future(today, month, n.value), n.end + 1
+            year = next((item for item in numbers if item.start == end), None)
+            if year and (year.value >= 1000 or 0 <= year.value <= 99):
+                # Явный год не заменяем ближайшим будущим годом.
+                explicit_year = year.value if year.value >= 1000 else 2000 + year.value
+                d, end = _safe_date(explicit_year, month, n.value), year.end
         elif n.ordinal and (before == "на" or before in BOUNDS or _next_is(tokens, n.end, "число")):
             d, end = _future(today, today.month, n.value, roll_month=True), n.end
         else:
@@ -237,6 +273,8 @@ def _calendar_dates(
         if not d:
             continue
         kind = BOUNDS.get(before, "day")
+        if _negated(tokens, n.start):
+            kind = "exclude"
         if kind == "after":
             kind, d = "from", d + timedelta(days=1)
         start = n.start - 1 if before in BOUNDS or before == "на" else n.start
@@ -258,10 +296,18 @@ def _future(today: date, month: int, day: int, roll_month: bool = False) -> date
     return _safe_date(today.year + 1, month, day)
 
 
-def _digit_dates(text: str, today: date) -> list[tuple[date, date, str]]:
+def _digit_dates(text: str, today: date) -> list[tuple[str, date, str]]:
     found = []
     for m in DIGIT_DATE.finditer(text):
         day, month = int(m.group(1)), int(m.group(2))
-        if 1 <= month <= 12 and (d := _future(today, month, day)):
-            found.append((d, d, m.group(0)))
+        explicit_year = m.group(3)
+        if explicit_year:
+            year = int(explicit_year)
+            d = _safe_date(2000 + year if len(explicit_year) == 2 else year, month, day)
+        else:
+            d = _future(today, month, day) if 1 <= month <= 12 else None
+        if d:
+            before = tokenize(text[: m.start()])
+            kind = "exclude" if _negated(before, len(before)) else "day"
+            found.append((kind, d, m.group(0)))
     return found
