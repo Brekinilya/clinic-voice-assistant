@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from app.nlu.dictionaries import SYNONYMS_PATH, day_part_lexicon, read_yaml
 from app.nlu.lexicon import lemmas, tokenize
-from app.nlu.parsers.dates import MONTHS, lookup
+from app.nlu.parsers.dates import DIGIT_DATE, MONTHS, lookup
 from app.nlu.parsers.numbers import Number, numeral, spoken_numbers
 
 FROM_WORDS = {"после", "позже", "позднее"}
@@ -36,7 +36,17 @@ def parse_times(text: str, bare: bool = False) -> dict[str, tuple[object, str]]:
 
     bare — понимать и время без предлога («десять тридцать»), например при выборе из вариантов.
     """
-    tokens = tokenize(text)
+    # Разделитель токенов убирает точки: иначе 16.10.2026 превращается во время
+    # 16:10 и незаметно добавляет ложное ограничение к уже разобранной дате.
+    without_dates = DIGIT_DATE.sub(
+        lambda match: (
+            " "
+            if 1 <= int(match.group(1)) <= 31 and 1 <= int(match.group(2)) <= 12
+            else match.group(0)
+        ),
+        text,
+    )
+    tokens = tokenize(without_dates)
     numbers = spoken_numbers(tokens)
     found: dict[str, tuple[object, str]] = {}
 

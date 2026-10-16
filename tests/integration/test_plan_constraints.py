@@ -42,6 +42,25 @@ async def test_explicit_year_outside_the_horizon_does_not_offer_this_year():
         assert emulator.write_count == emulator.patch_count == 0
 
 
+@pytest.mark.parametrize("ending", ["", " в десять тридцать"])
+async def test_numeric_date_inside_the_horizon_can_be_booked(ending):
+    async with pipeline() as (client, service, emulator, *_):
+        await turn(client, 1, "Запишите к терапевту на 02.10.2026" + ending)
+        offered = await turn(client, 2, IDENTITY)
+        assert offered["phase"] == "offered", offered
+        state = await service.store.inspect("scenario")
+        assert state.options and all(
+            s.scheduled_at.date() == date(2026, 10, 2) for s in state.options
+        )
+        await turn(client, 3, "Первый")
+        booked = await turn(client, 4, "Да")
+        assert booked["code"] == "BOOKED" and emulator.write_count == 1
+        visit = emulator.records["demo"][booked["visit_id"]]
+        assert visit.scheduled_at.date() == date(2026, 10, 2)
+        if ending:
+            assert (visit.scheduled_at.hour, visit.scheduled_at.minute) == (10, 30)
+
+
 async def test_negative_date_after_yes_releases_the_previous_booking():
     async with pipeline() as (client, service, emulator, *_):
         await turn(client, 1, "Запишите к терапевту")

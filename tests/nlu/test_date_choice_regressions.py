@@ -5,7 +5,7 @@ from datetime import date, time
 import pytest
 
 from app.contracts import DialogOption, NluRequest
-from app.nlu.parsers import Option, parse_choice, parse_dates
+from app.nlu.parsers import Option, parse_choice, parse_dates, parse_times
 from app.nlu.service import RulesNlu
 
 TODAY = date(2026, 10, 15)
@@ -96,6 +96,24 @@ def test_option_number_does_not_override_a_conflicting_day():
     options = [Option(day=date(2026, 10, 16)), Option(day=date(2026, 10, 17))]
     assert parse_choice("первый, но в субботу", options, TODAY) is None
     assert parse_choice("на первый вариант", options, TODAY)[0] == 1
+
+
+def test_numeric_date_is_not_also_a_clock_time():
+    assert parse_times("на 16.10.2026", bare=True) == {}
+    found = parse_times("на 16.10.2026 в десять тридцать")
+    assert found["time_from"][0] == found["time_to"][0] == "10:30"
+
+
+def test_dot_separated_time_with_an_impossible_month_still_works():
+    assert parse_times("в 10.30")["time_from"][0] == "10:30"
+
+
+def test_choice_matches_the_full_numeric_date_including_its_year():
+    options = [
+        Option(day=date(2026, 10, 16), at=time(10)),
+        Option(day=date(2027, 10, 16), at=time(10)),
+    ]
+    assert parse_choice("на 16.10.2027", options, TODAY)[0] == 2
 
 
 def test_excluded_dates_survive_the_typed_nlu_contract():
