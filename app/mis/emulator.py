@@ -2,7 +2,9 @@
 
 import asyncio
 import json
-from datetime import date
+import math
+from collections import deque
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
 import httpx
@@ -23,9 +25,23 @@ from app.ports import Clock
 
 class MisEmulator:
     def __init__(
-        self, clock: Clock, doctors: list[Doctor], clients: dict[str, list[Client]]
+        self,
+        clock: Clock,
+        doctors: list[Doctor],
+        clients: dict[str, list[Client]],
+        *,
+        rate_limit: int | None = None,
+        rate_window_s: float = 60,
     ) -> None:
         self.clock = clock
+        # Эмулятор ограничений: как стенд по T00, не больше rate_limit запросов в минуту
+        # на токен, сверх — 429 с Retry-After. None — без ограничения.
+        self.rate_limit = rate_limit
+        self.rate_window_s = rate_window_s
+        self.limited = 0
+        self._hits: dict[str, deque[datetime]] = {}
+        # Журнал принятых запросов без тел: метод, путь и смещение страницы.
+        self.log: list[tuple[datetime, str, str, int]] = []
         self.doctors = {item.id: item for item in doctors}
         self.clients = {
             token: {item.id: item for item in items} for token, items in clients.items()
@@ -62,6 +78,11 @@ class MisEmulator:
                     request.url.query.decode(), keep_blank_values=True
                 ).items()
             }
+            limited = self._limit(token)
+            if limited is not None:
+                return limited
+            offset = int(query["offset"]) if query.get("offset", "").isdigit() else 0
+            self.log.append((self.clock.now(), request.method, "/".join(path), offset))
             try:
                 if len(path) == 1 and request.method == "GET":
                     return self._list(path[0], token, query)
@@ -159,6 +180,24 @@ class MisEmulator:
             except (ValidationError, ValueError, TypeError, AttributeError):
                 return self.error(400)
             return self.error(404)
+
+    def _limit(self, token: str) -> httpx.Response | None:
+        if self.rate_limit is None:
+            return None
+        now = self.clock.now()
+        hits = self._hits.setdefault(token, deque())
+        while hits and hits[0] <= now - timedelta(seconds=self.rate_window_s):
+            hits.popleft()
+        if len(hits) >= self.rate_limit:
+            self.limited += 1
+            retry = max(1, math.ceil(self.rate_window_s - (now - hits[0]).total_seconds()))
+            return httpx.Response(
+                429,
+                headers={"Retry-After": str(retry)},
+                json={"code": "СЛИШКОМ_МНОГО_ЗАПРОСОВ", "message": "Отказ эмулятора"},
+            )
+        hits.append(now)
+        return None
 
     def _list(self, resource: str, token: str, query: dict[str, str]) -> httpx.Response:
         limit, offset = int(query.get("limit", "50")), int(query.get("offset", "0"))

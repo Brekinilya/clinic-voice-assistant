@@ -1,15 +1,24 @@
 """С-03: POST новой записи, свежая проверка, PATCH прежней и сверка обеих."""
 
+from datetime import timedelta
+
 from app.booking.models import Approval, BookingError, Slot
 from app.booking.preferences import SlotPreferences
-from app.booking.service import BookingService
+from app.booking.service import BookingService, upcoming_days
 from app.cancellation.models import same_visit, summary
+from app.mis.budget import Priority, demand
 from app.mis.models import VisitChange, VisitCreate, VisitStatus
 from app.mis.ports import BudgetExhausted, MisError, MisOutcomeUnknown
 from app.rescheduling.models import MoveState, check_approval, matches_new
 from app.scheduling.matching import profile_key
 from app.scheduling.query import IndexedSource, candidates, doctor_matches, remember
 from app.visits.models import VisitSummary
+
+# Создание: прежняя запись, врачи, день врача, записи профиля и POST; карточка пациента —
+# ещё один запрос для индекса расписания, если её нет в кэше.
+CREATE_COST = 5
+# Отмена прежней: новая и прежняя записи, записи профиля, PATCH и сверка обеих записей.
+CANCEL_COST = 6
 
 
 class RescheduleService:
@@ -95,20 +104,24 @@ class RescheduleService:
             )
         )
         busy, checked, result = set(), set(), []
-        for slot in slots:
-            if slot.doctor_id not in checked:
-                dates = [s.scheduled_at.date() for s in slots if s.doctor_id == slot.doctor_id]
+        for index, slot in enumerate(slots):
+            if (slot.doctor_id, slot.scheduled_at.date()) not in checked:
+                # Как при записи: занятость только за дни ближайших нужных вариантов.
+                days = upcoming_days(slots[index:], slot.doctor_id, 3)
                 busy.update(
                     (v.doctor.id, v.scheduled_at)
                     for v in await self.mis.visits(
                         doctor_id=slot.doctor_id,
                         status=VisitStatus.PLANNED,
-                        date_from=min(dates),
-                        date_to=max(dates),
+                        date_from=min(days),
+                        date_to=max(days),
                         call_id=call_id,
                     )
                 )
-                checked.add(slot.doctor_id)
+                checked.update(
+                    (slot.doctor_id, min(days) + timedelta(days=offset))
+                    for offset in range((max(days) - min(days)).days + 1)
+                )
             if (
                 slot.doctor_id,
                 slot.scheduled_at,
@@ -167,45 +180,62 @@ class RescheduleService:
             raise BookingError("DIALOGUE_GUARD_REQUIRED")
         action = await self.store.get(approval.action_id)
         check_approval(action, approval)
-        if action.state == MoveState.HELD:
-            await self._source(action.before)
-            await self._preflight(action.before, action.slot, action.call_id, fresh=True)
-            action, claimed = await self.store.claim(approval, self.clock.now())
-            if not claimed:
-                return action
-            try:
-                visit = await self.mis.create_visit(
-                    VisitCreate(
-                        client_id=action.before.client_id,
-                        doctor_id=action.slot.doctor_id,
-                        scheduled_at=action.slot.scheduled_at,
-                    )
+        # Каждый шаг — свежая проверка и запись по заранее занятым местам окна.
+        with demand(Priority.COMMIT):
+            if action.state == MoveState.HELD:
+                cost = CREATE_COST + (
+                    isinstance(self.booking.schedule, IndexedSource)
+                    and not self.mis.has_client(action.before.client_id)
                 )
-            except BudgetExhausted:
-                await self.store.restore_unsent(action.action_id, approval.turn_id)
-                raise
-            except MisOutcomeUnknown:
-                return await self.store.mark(action.action_id, MoveState.CREATE_UNKNOWN)
-            except MisError:
-                return await self.store.mark(action.action_id, MoveState.REJECTED)
-            if not matches_new(action, visit):
-                return await self.store.mark(action.action_id, MoveState.CREATE_UNKNOWN)
-            action = await self.store.created(action.action_id, visit)
-        if action.state != MoveState.NEW_CREATED:
-            return action
+                async with self.mis.prepaid(cost, keep_for_write=1):
+                    action, proceed = await self._create(action, approval)
+                if not proceed:
+                    return action
+            if action.state != MoveState.NEW_CREATED:
+                return action
+            async with self.mis.prepaid(CANCEL_COST, keep_for_write=1):
+                action, sent = await self._cancel_old(action, approval)
+                return await self.reconcile(action.action_id, action.call_id) if sent else action
+
+    async def _create(self, action, approval: Approval):
+        await self._source(action.before)
+        await self._preflight(action.before, action.slot, action.call_id, fresh=True)
+        action, claimed = await self.store.claim(approval, self.clock.now())
+        if not claimed:
+            return action, False
+        try:
+            visit = await self.mis.create_visit(
+                VisitCreate(
+                    client_id=action.before.client_id,
+                    doctor_id=action.slot.doctor_id,
+                    scheduled_at=action.slot.scheduled_at,
+                )
+            )
+        except BudgetExhausted:
+            await self.store.restore_unsent(action.action_id, approval.turn_id)
+            raise
+        except MisOutcomeUnknown:
+            return await self.store.mark(action.action_id, MoveState.CREATE_UNKNOWN), False
+        except MisError:
+            return await self.store.mark(action.action_id, MoveState.REJECTED), False
+        if not matches_new(action, visit):
+            return await self.store.mark(action.action_id, MoveState.CREATE_UNKNOWN), False
+        return await self.store.created(action.action_id, visit), True
+
+    async def _cancel_old(self, action, approval: Approval):
         new = await self.mis.visit(action.new_visit.id)
         if not same_visit(action.new_visit, new) or not matches_new(action, new):
-            return await self.store.mark(action.action_id, MoveState.MANUAL)
+            return await self.store.mark(action.action_id, MoveState.MANUAL), False
         try:
             old = await self._source(action.before, permit_cancelled=True)
         except BookingError:
-            return await self.store.mark(action.action_id, MoveState.MANUAL)
+            return await self.store.mark(action.action_id, MoveState.MANUAL), False
         others = await self._others(action.before, fresh=True)
         if len(others) != 1 or others[0].id != new.id:
-            return await self.store.mark(action.action_id, MoveState.MANUAL)
+            return await self.store.mark(action.action_id, MoveState.MANUAL), False
         action, claimed = await self.store.claim(approval, self.clock.now(), cancelling=True)
         if not claimed:
-            return action
+            return action, False
         if old.status != VisitStatus.CANCELLED:
             try:
                 result = await self.mis.change_visit(
@@ -215,12 +245,12 @@ class RescheduleService:
                 await self.store.restore_unsent(action.action_id, approval.turn_id, cancelling=True)
                 raise
             except MisOutcomeUnknown:
-                return await self.store.mark(action.action_id, MoveState.CANCEL_UNKNOWN)
+                return await self.store.mark(action.action_id, MoveState.CANCEL_UNKNOWN), False
             except MisError:
-                return await self.store.mark(action.action_id, MoveState.MANUAL)
+                return await self.store.mark(action.action_id, MoveState.MANUAL), False
             if not same_visit(action.before, result) or result.status != VisitStatus.CANCELLED:
-                return await self.store.mark(action.action_id, MoveState.CANCEL_UNKNOWN)
-        return await self.reconcile(action.action_id, action.call_id)
+                return await self.store.mark(action.action_id, MoveState.CANCEL_UNKNOWN), False
+        return action, True
 
     async def reconcile(self, action_id: str, call_id: str):
         action = await self.store.get(action_id)
@@ -228,6 +258,11 @@ class RescheduleService:
             raise BookingError("CONFIRMATION_REQUIRED")
         if action.state == MoveState.RESCHEDULED:
             return action
+        with demand(Priority.RECONCILE):
+            return await self._reconcile(action)
+
+    async def _reconcile(self, action):
+        action_id = action.action_id
         try:
             if action.state in {MoveState.CREATING, MoveState.CREATE_UNKNOWN}:
                 visits = await self.mis.visits(

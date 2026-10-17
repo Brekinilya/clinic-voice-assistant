@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     mis_base_url: HttpUrl = HttpUrl("https://crm-med-mock.dbi-testing.ru/api/v1")
     mis_token: SecretStr = SecretStr("")
     mis_rate_limit_per_min: int = Field(default=8, ge=1, le=8)
+    # Сколько один ход разговора ждёт окна МИС (шлюз ждёт ответа 15 с)
+    # и сколько звонок ждёт МИС в сумме, прежде чем передать регистратору.
+    mis_turn_wait_s: float = Field(default=8.0, ge=0, le=12)
+    mis_wait_limit_s: int = Field(default=120, ge=10, le=600)
     # Время записей задаёт стенд; часовой пояс компьютера участника на него не влияет.
     clinic_utc_offset: Literal["+04:00"] = "+04:00"
 

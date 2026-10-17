@@ -1,7 +1,15 @@
-"""HTTP-адаптер: ни GET, ни POST/PATCH автоматически не повторяются."""
+"""HTTP-адаптер: POST/PATCH никогда не повторяются, GET — только после 429 и в пределах срока.
+
+Каждый запрос проходит общий бюджет. Постраничное чтение, прерванное лимитом,
+тот же владелец продолжает с прерванной страницы, пока прочитанное актуально.
+"""
 
 import hashlib
+import math
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import date
 from time import monotonic
 from typing import TypeVar
@@ -9,6 +17,7 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.mis.budget import current_demand, immediate
 from app.mis.models import (
     Client,
     Doctor,
@@ -19,10 +28,56 @@ from app.mis.models import (
     format_date,
     name_key,
 )
-from app.mis.ports import MisError, MisOutcomeUnknown, MisUnavailable, RequestBudget
+from app.mis.ports import (
+    BudgetExhausted,
+    MisError,
+    MisOutcomeUnknown,
+    MisUnavailable,
+    RequestBudget,
+)
 from app.settings import AppMode, Settings
 
 T = TypeVar("T", bound=BaseModel)
+
+# T00: страница стенда — не больше 50 объектов.
+PAGE = 50
+# Ограничение защищает от бесконечной пагинации при повреждённом ответе.
+MAX_PAGES = 200
+# Сколько секунд прочитанное считается актуальным, по типу данных.
+FRESHNESS_S = {
+    # Справочник меняется редко; активность врача перед записью читается заново.
+    "doctors": 600,
+    "clients": 300,
+    # Занятость и записи — только в пределах звонка; перед записью читаются заново.
+    "visits": 90,
+}
+RETRY_AFTER_MAX_S = 600
+
+
+@dataclass
+class _Prepaid:
+    ids: list
+    keep_for_write: int
+
+    def take(self, write: bool) -> tuple[bool, object]:
+        if not self.ids or (not write and len(self.ids) <= self.keep_for_write):
+            return False, None
+        if write:
+            # Запись ушла: оставшиеся места — для сверки её результата.
+            self.keep_for_write = 0
+        return True, self.ids.pop(0)
+
+
+@dataclass
+class _Partial:
+    items: list
+    seen: dict[int, BaseModel]
+    offset: int
+    started: float
+    resumed: bool = field(default=False)
+
+
+_prepaid: ContextVar[_Prepaid | None] = ContextVar("mis_prepaid", default=None)
 
 
 class HttpMedicalSystem:
@@ -38,11 +93,13 @@ class HttpMedicalSystem:
         self._budget = budget
         self._elapsed = elapsed
         self._doctor_cache: dict[tuple[str, str | None], tuple[float, tuple[Doctor, ...]]] = {}
+        self._directory: dict[str, tuple[Doctor, ...]] = {}
         self._client_cache: dict[tuple[str, int], tuple[float, Client]] = {}
         self._visit_cache: dict[
             tuple[str, str, int | None, int | None, VisitStatus | None, date | None, date | None],
             tuple[float, tuple[Visit, ...]],
         ] = {}
+        self._partial: dict[tuple, _Partial] = {}
 
     def _scope(self) -> str:
         return hashlib.sha256(self._client.headers.get("Authorization", "").encode()).hexdigest()
@@ -51,12 +108,18 @@ class HttpMedicalSystem:
         for key in list(self._visit_cache):
             if key[1] == call_id:
                 del self._visit_cache[key]
+        for key in list(self._partial):
+            if key[1] == call_id:
+                del self._partial[key]
 
     def _invalidate_visits(self) -> None:
         scope = self._scope()
         for key in list(self._visit_cache):
             if key[0] == scope:
                 del self._visit_cache[key]
+        for key in list(self._partial):
+            if key[0] == scope and key[2] == "visits":
+                del self._partial[key]
 
     def _cache(self, cache: dict, key: tuple, value: object, ttl: int) -> None:
         now = self._elapsed()
@@ -79,20 +142,65 @@ class HttpMedicalSystem:
             trust_env=False,
         )
 
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        await self._budget.reserve()
-        write = method != "GET"
+    @asynccontextmanager
+    async def prepaid(self, cost: int, *, keep_for_write: int = 0):
+        """Места для свежей проверки и записи занимаются сразу: между ними нет ожидания.
+
+        Чтения берут предоплату, пока остаётся keep_for_write мест для записи; после записи
+        остаток идёт на сверку. Неиспользованные места возвращаются: HTTP по ним не было.
+        """
+        granted = await self._budget.reserve(cost)
+        lease = _Prepaid(list(granted) if granted is not None else [None] * cost, keep_for_write)
+        token = _prepaid.set(lease)
         try:
-            response = await self._client.request(method, path, **kwargs)
-        except httpx.TransportError:
-            error = MisOutcomeUnknown if write else MisUnavailable
-            raise error("TRANSPORT_FAILURE") from None
-        if response.status_code == 429:
+            yield
+        finally:
+            _prepaid.reset(token)
+            unused = [i for i in lease.ids if i is not None]
+            if unused:
+                try:
+                    await self._budget.release(unused)
+                except Exception:
+                    # Не вернули место — окно просто будет считать его занятым до истечения.
+                    pass
+
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        write = method != "GET"
+        retried = False
+        while True:
+            lease = _prepaid.get()
+            taken, place = (False, None) if lease is None else lease.take(write)
+            if taken and place is not None:
+                # Окно считает момент отправки, а не бронирования места: иначе пачка
+                # предоплаченных запросов могла бы превысить внешний лимит стенда.
+                # Пауза после 429 действует и на предоплату: такой запрос не уходит.
+                paused = await self._budget.touch(place)
+                if paused:
+                    raise BudgetExhausted("RATE_LIMIT", retry_after=max(1, math.ceil(paused)))
+            if not taken:
+                if write:
+                    # Запись без предоплаты не ждёт окна: журнал уже зафиксировал согласие.
+                    with immediate():
+                        await self._budget.reserve()
+                else:
+                    await self._budget.reserve()
+            try:
+                response = await self._client.request(method, path, **kwargs)
+            except httpx.TransportError:
+                error = MisOutcomeUnknown if write else MisUnavailable
+                raise error("TRANSPORT_FAILURE") from None
+            if response.status_code != 429:
+                break
             raw = response.headers.get("Retry-After", "60")
             delay = int(raw) if raw.isascii() and raw.isdigit() else 60
-            delay = max(1, delay)
+            delay = min(RETRY_AFTER_MAX_S, max(1, delay))
+            # Стенд отказал до обработки; окно закрываем для всех процессов команды.
             await self._budget.defer(delay)
-            raise MisError("RATE_LIMIT", retry_after=delay)
+            until = current_demand().until
+            if write or retried or until is None:
+                raise MisError("RATE_LIMIT", retry_after=delay)
+            # Чтение повторяем один раз: бюджет сам дождётся конца паузы или откажет по сроку.
+            retried = True
         if response.status_code >= 500 or 300 <= response.status_code < 400:
             error = MisOutcomeUnknown if write else MisUnavailable
             raise error("SERVER_FAILURE")
@@ -111,29 +219,63 @@ class HttpMedicalSystem:
             error = MisOutcomeUnknown if write else MisUnavailable
             raise error("INVALID_RESPONSE") from None
 
-    async def _list(self, path: str, model: type[T], params: dict) -> list[T]:
-        items: list[T] = []
-        seen: set[int] = set()
-        # Ограничение защищает от бесконечной пагинации при повреждённом ответе.
-        for offset in range(0, 10000, 50):
-            response = await self._request(
-                "GET", path, params={**params, "limit": 50, "offset": offset}
-            )
+    def _resume(self, key: tuple, ttl: int) -> _Partial | None:
+        now = self._elapsed()
+        for stale in [k for k, p in self._partial.items() if p.started + FRESHNESS_S[k[2]] <= now]:
+            del self._partial[stale]
+        partial = self._partial.pop(key, None)
+        if partial is None or partial.started + ttl <= now:
+            return None
+        partial.resumed = True
+        return partial
+
+    async def _list(self, path: str, model: type[T], params: dict, *, resume=True) -> list[T]:
+        owner = current_demand().owner
+        key = (self._scope(), owner, path, tuple(sorted(params.items())))
+        partial = self._resume(key, FRESHNESS_S[path]) if resume and owner is not None else None
+        if partial is None:
+            partial = _Partial(items=[], seen={}, offset=0, started=self._elapsed())
+        while partial.offset < PAGE * MAX_PAGES:
+            try:
+                response = await self._request(
+                    "GET", path, params={**params, "limit": PAGE, "offset": partial.offset}
+                )
+            except MisError:
+                # Прочитанные страницы не выбрасываем: следующая попытка продолжит отсюда.
+                if partial.offset and owner is not None and resume:
+                    while len(self._partial) >= 16:
+                        del self._partial[next(iter(self._partial))]
+                    partial.resumed = False
+                    self._partial[key] = partial
+                raise
             try:
                 payload = response.json()
-                if not isinstance(payload, list) or len(payload) > 50:
+                if not isinstance(payload, list) or len(payload) > PAGE:
                     raise ValueError("некорректная страница")
                 page = [model.model_validate(item) for item in payload]
+                fresh = []
                 for item in page:
-                    if item.id in seen:
+                    known = partial.seen.get(item.id)
+                    if known is None:
+                        partial.seen[item.id] = item
+                        fresh.append(item)
+                    # После паузы новая запись перед смещением сдвигает страницу на ту же
+                    # карточку. Неизменный повтор пропускаем, иначе ответ некорректен.
+                    elif not partial.resumed or known != item:
                         raise ValueError("повтор карточки между страницами")
-                    seen.add(item.id)
             except (ValidationError, ValueError):
                 raise MisUnavailable("INVALID_RESPONSE") from None
-            items.extend(page)
-            if len(page) < 50:
-                return items
+            partial.resumed = False
+            partial.items.extend(fresh)
+            partial.offset += PAGE
+            if len(page) < PAGE:
+                return partial.items
         raise MisUnavailable("PAGINATION_LIMIT")
+
+    def known_doctors(self) -> list[Doctor] | None:
+        """Последний прочитанный справочник без обращения к сети: для понимания, не для записи."""
+        known = self._directory.get(self._scope())
+        return None if known is None else list(known)
 
     async def doctors(self, specialty: str | None = None, *, fresh: bool = False) -> list[Doctor]:
         key = (self._scope(), specialty)
@@ -144,9 +286,14 @@ class HttpMedicalSystem:
         if not fresh and all_doctors is not None and all_doctors[0] > self._elapsed():
             return [d for d in all_doctors[1] if specialty is None or d.specialty == specialty]
         result = await self._list(
-            "doctors", Doctor, {} if specialty is None else {"specialty": specialty}
+            "doctors",
+            Doctor,
+            {} if specialty is None else {"specialty": specialty},
+            resume=not fresh,
         )
-        self._cache(self._doctor_cache, key, tuple(result), 30)
+        self._cache(self._doctor_cache, key, tuple(result), FRESHNESS_S["doctors"])
+        if specialty is None:
+            self._directory[key[0]] = tuple(result)
         return result
 
     async def clients(self, last_name: str, first_name: str, birth_date: date) -> list[Client]:
@@ -166,8 +313,13 @@ class HttpMedicalSystem:
             and name_key(c.first_name) == expected_first
         ]
         for item in result:
-            self._cache(self._client_cache, (self._scope(), item.id), item, 300)
+            self._cache(self._client_cache, (self._scope(), item.id), item, FRESHNESS_S["clients"])
         return result
+
+    def has_client(self, client_id: int) -> bool:
+        """Карточка уже прочитана и актуальна: свежая проверка обойдётся без её запроса."""
+        cached = self._client_cache.get((self._scope(), client_id))
+        return cached is not None and cached[0] > self._elapsed()
 
     async def client(self, client_id: int) -> Client:
         self._id(client_id)
@@ -178,7 +330,7 @@ class HttpMedicalSystem:
         result = self._decode(await self._request("GET", f"clients/{client_id}"), Client)
         if result.id != client_id:
             raise MisUnavailable("INVALID_RESPONSE")
-        self._cache(self._client_cache, key, result, 300)
+        self._cache(self._client_cache, key, result, FRESHNESS_S["clients"])
         return result
 
     async def visit(self, visit_id: int) -> Visit:
@@ -231,10 +383,12 @@ class HttpMedicalSystem:
                     if (date_from is None or v.scheduled_at.date() >= date_from)
                     and (date_to is None or v.scheduled_at.date() <= date_to)
                 ]
-        result = await self._list("visits", Visit, params)
+        # Свежая проверка занятости не продолжает старое чтение: пропуск отменённой
+        # между страницами записи сдвинул бы смещение и скрыл занятый слот.
+        result = await self._list("visits", Visit, params, resume=not fresh)
         # Большие ответы остаются свежими; объём памяти ограничен 128 снимками по 200 строк.
         if cacheable and len(result) <= 200:
-            self._cache(self._visit_cache, cache_key, tuple(result), 90)
+            self._cache(self._visit_cache, cache_key, tuple(result), FRESHNESS_S["visits"])
         return result
 
     async def create_visit(self, request: VisitCreate) -> Visit:

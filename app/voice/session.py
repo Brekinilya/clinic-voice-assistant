@@ -12,7 +12,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from types import SimpleNamespace
 from typing import Protocol
@@ -89,6 +89,7 @@ class CallSession:
         renderer: Renderer | None = None,
         now: Callable[[], float] = time.monotonic,
         runtime: SpeechRuntime | None = None,
+        wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.call_id = call_id
         self.channel = channel
@@ -100,6 +101,9 @@ class CallSession:
         self.settings = settings or VoiceSettings()
         self.renderer = renderer or default_renderer()
         self.now = now
+        self.wall = wall
+        # Диалог попросил подождать МИС: до этого момента тишина звонящего ожидаема.
+        self._resume_at: float | None = None
         self._owns_runtime = runtime is None
         self.runtime = runtime or SpeechRuntime(
             self.settings.inference_queue_capacity, self.settings.dialogue_job_capacity
@@ -213,6 +217,7 @@ class CallSession:
         self._cancel(self._watch)
         self._cancel(self._partial)
         self._cancel(self._speech_deadline)
+        self._resume_at = None
         self.turn_id += 1
         try:
             # До ASR и вне очереди итоговых реплик отзываем прежнее «да».
@@ -439,6 +444,7 @@ class CallSession:
                 utterances = [self.renderer.render("reask.offer_operator", self.today()).text]
         elif code != "ASR_NOT_UNDERSTOOD":
             self._misunderstandings = 0
+        self._resume_at = self._mis_resume(reply) if code == "WAIT_MIS" else None
         await self.channel.send_json(
             {
                 "type": "reply",
@@ -605,7 +611,26 @@ class CallSession:
         self._cancel(self._watch)
         self._watch = asyncio.create_task(self._silence())
 
+    def _mis_resume(self, reply: object) -> float | None:
+        retry_at = getattr(reply, "retry_at", None)
+        if isinstance(retry_at, str):
+            retry_at = datetime.fromisoformat(retry_at)
+        if not isinstance(retry_at, datetime):
+            return None
+        # Дольше двух минут диалог ждать не просит: дальше он сам передаёт регистратору.
+        delay = min(120.0, max(0.0, (retry_at - self.wall()).total_seconds()))
+        return self.now() + delay
+
     async def _silence(self) -> None:
+        resume, self._resume_at = self._resume_at, None
+        if resume is not None:
+            # Звонящего попросили подождать: не торопим его «Вы меня слышите?».
+            await self._sleep_until(max(resume, self._playback_end))
+            if self.endpointer.in_phrase or self.ended:
+                return
+            text = self.renderer.render("wait.mis_ready", self.today()).text
+            if not await self._say(self.turn_id, [text]):
+                return
         for template in ("silence.first", "silence.final"):
             await self._sleep_until(self._playback_end + self.settings.silence_prompt_s)
             if self.endpointer.in_phrase or self.ended:

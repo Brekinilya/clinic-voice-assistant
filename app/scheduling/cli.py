@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -12,6 +13,7 @@ from sqlalchemy import select
 from app.backend import backend_engine
 from app.booking.preferences import SlotPreferences
 from app.clock import ClinicClock
+from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.mis.ports import MisError
 from app.scheduling.bootstrap import load_index, read_document, token_scope
@@ -72,7 +74,10 @@ async def fetch_catalog(settings: Settings, destination: Path, *, replace=False)
                     engine, settings.mis_token.get_secret_value(), settings.mis_rate_limit_per_min
                 ),
             )
-            catalog = await capture_catalog(mis, settings, ClinicClock())
+            clock = ClinicClock()
+            # Фоновая задача: ждёт окна за разговорами, но не дольше двух минут.
+            with demand(Priority.BACKGROUND, until=clock.now() + timedelta(seconds=120)):
+                catalog = await capture_catalog(mis, settings, clock)
         publish_catalog(destination, catalog, replace=replace)
         return {"mode": catalog.mode, "doctors": len(catalog.doctors)}
     finally:

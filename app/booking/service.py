@@ -13,11 +13,22 @@ from app.booking.models import (
 from app.booking.ports import BookingStore, Schedule
 from app.booking.preferences import SlotPreferences
 from app.clock import CLINIC_TIMEZONE
+from app.mis.budget import Priority, demand
 from app.mis.models import Client, Visit, VisitCreate, VisitStatus, name_key
 from app.mis.ports import BudgetExhausted, MedicalSystem, MisError, MisOutcomeUnknown
 from app.ports import Clock
 from app.scheduling.matching import profile_key
 from app.scheduling.query import available_doctors, candidates, contains, doctor_matches, remember
+
+
+def upcoming_days(slots, doctor_id: int, count: int) -> list[date]:
+    """Дни следующих count вариантов врача в порядке подбора."""
+    return [s.scheduled_at.date() for s in slots if s.doctor_id == doctor_id][:count]
+
+
+# Свежая проверка перед записью: врачи профиля, день врача, записи пациента и POST;
+# карточка пациента — ещё один запрос, если её нет в кэше.
+CONFIRM_COST = 4
 
 
 class BookingService:
@@ -127,19 +138,24 @@ class BookingService:
                 continue
             eligible.append(slot)
         busy: set[tuple[int, datetime]] = set()
-        checked: set[int] = set()
-        for slot in eligible:
-            if slot.doctor_id not in checked:
-                dates = [s.scheduled_at.date() for s in eligible if s.doctor_id == slot.doctor_id]
+        checked: set[tuple[int, date]] = set()
+        for index, slot in enumerate(eligible):
+            if (slot.doctor_id, slot.scheduled_at.date()) not in checked:
+                # Занятость читаем только за дни ближайших нужных вариантов этого врача:
+                # две недели загруженного врача — много страниц из бюджета на 8 запросов.
+                days = upcoming_days(eligible[index:], slot.doctor_id, limit)
                 visits = await self.mis.visits(
                     doctor_id=slot.doctor_id,
                     status=VisitStatus.PLANNED,
-                    date_from=min(dates),
-                    date_to=max(dates),
+                    date_from=min(days),
+                    date_to=max(days),
                     call_id=call_id,
                 )
                 busy.update((v.doctor.id, v.scheduled_at) for v in visits)
-                checked.add(slot.doctor_id)
+                checked.update(
+                    (slot.doctor_id, min(days) + timedelta(days=offset))
+                    for offset in range((max(days) - min(days)).days + 1)
+                )
             if (slot.doctor_id, slot.scheduled_at) not in busy and await self.store.available(
                 slot, self.clock.now()
             ):
@@ -191,6 +207,14 @@ class BookingService:
             action, _ = await self.store.claim(approval, self.clock.now())
             return action
         self._check_slot(action.client_id, action.slot)
+        # Свежее состояние и запись — одна операция: места заняты заранее, поэтому между
+        # проверкой и POST нет ожидания окна. Если окна нет, бронь и согласие не тронуты.
+        with demand(Priority.COMMIT):
+            cost = CONFIRM_COST + (not self.mis.has_client(action.client_id))
+            async with self.mis.prepaid(cost, keep_for_write=1):
+                return await self._commit(action, approval)
+
+    async def _commit(self, action: BookingAction, approval: Approval) -> BookingAction:
         try:
             await self._preflight(action.client_id, action.slot, call_id=action.call_id, fresh=True)
         except (MisError, BookingError):
@@ -250,12 +274,13 @@ class BookingService:
             raise BookingError("RECONCILIATION_NOT_REQUIRED")
         # Сверку COMMITTING запускает оператор только после остановки прежнего worker.
         # Пустой результат не доказывает отсутствие записи: POST мог ещё выполняться.
-        visits = await self.mis.visits(
-            client_id=action.client_id,
-            doctor_id=action.slot.doctor_id,
-            date_from=action.slot.scheduled_at.date(),
-            date_to=action.slot.scheduled_at.date(),
-        )
+        with demand(Priority.RECONCILE):
+            visits = await self.mis.visits(
+                client_id=action.client_id,
+                doctor_id=action.slot.doctor_id,
+                date_from=action.slot.scheduled_at.date(),
+                date_to=action.slot.scheduled_at.date(),
+            )
         matches = [v for v in visits if self._matches(action, v)]
         if action.state == ActionState.BOOKED:
             if len(matches) == 1 and matches[0].id == action.visit_id:

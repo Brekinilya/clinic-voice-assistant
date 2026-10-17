@@ -1,11 +1,13 @@
 """Долговечные бронь, журнал и бюджет. HTTP выполняется вне транзакций БД."""
 
+import asyncio
 import hashlib
-import math
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import (
+    and_,
     delete,
     func,
     insert,
@@ -27,7 +29,9 @@ from app.booking.models import (
     Slot,
     check_approval,
 )
-from app.mis.ports import BudgetExhausted
+from app.clock import ClinicClock
+from app.mis.budget import HOLD, WINDOW_S, Priority, Row, admit, decide
+from app.ports import Clock
 from app.storage.journal import journal_transaction
 from app.storage.schema import (
     SCHEMA_VERSION,
@@ -44,36 +48,46 @@ from app.storage.schema import (
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграции 1/2/3/4 → 5 сохраняют прежние журналы и добавляют перенос."""
+    """Миграции 1–5 → 6 сохраняют прежние журналы, добавляют перенос и талоны бюджета."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [2], [3], [4], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [3], [4], [5], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
-        elif versions in ([1], [2], [3], [4]):
-            checks = await connection.run_sync(
-                lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
-            )
-            kinds = [
-                c
-                for c in checks
-                if "cancellation_sms" in c["sqltext"] and "slot_released" in c["sqltext"]
-            ]
-            if len(kinds) != 1:
-                raise RuntimeError("неизвестное ограничение видов событий")
-            if "reschedule_sms" not in kinds[0]["sqltext"]:
-                name = connection.dialect.identifier_preparer.quote(kinds[0]["name"])
-                await connection.execute(
-                    text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
+        elif versions != [SCHEMA_VERSION]:
+            if versions in ([1], [2], [3], [4]):
+                checks = await connection.run_sync(
+                    lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
                 )
-                await connection.execute(
-                    text(
-                        "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+                kinds = [
+                    c
+                    for c in checks
+                    if "cancellation_sms" in c["sqltext"] and "slot_released" in c["sqltext"]
+                ]
+                if len(kinds) != 1:
+                    raise RuntimeError("неизвестное ограничение видов событий")
+                if "reschedule_sms" not in kinds[0]["sqltext"]:
+                    name = connection.dialect.identifier_preparer.quote(kinds[0]["name"])
+                    await connection.execute(
+                        text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
                     )
+                    await connection.execute(
+                        text(
+                            "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+                        )
+                    )
+            # Версия 6: талоны бюджета МИС в прежней таблице окна.
+            await connection.execute(
+                text("ALTER TABLE mis_budget_requests ADD COLUMN IF NOT EXISTS owner VARCHAR(128)")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE mis_budget_requests ADD COLUMN IF NOT EXISTS hold_until TIMESTAMP WITH TIME ZONE"
                 )
+            )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
@@ -315,12 +329,27 @@ class PostgresBookingStore:
 
 
 class PostgresBudget:
-    def __init__(self, engine: AsyncEngine, token: str, limit: int = 8) -> None:
+    """Общий для всех процессов команды: окно и пауза после 429 хранятся в PostgreSQL."""
+
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        token: str,
+        limit: int = 8,
+        *,
+        window_s: float = WINDOW_S,
+        clock: Clock | None = None,
+        sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+    ) -> None:
         if not token.strip() or not 1 <= limit <= 8:
             raise ValueError("нужны токен и бюджет от 1 до 8")
         self.engine = engine
         self.scope = hashlib.sha256(token.encode()).hexdigest()
         self.limit = limit
+        self.window_s = window_s
+        # Окно считается по часам PostgreSQL; срок ожидания вызывающего — по часам приложения.
+        self.clock = clock if clock is not None else ClinicClock()
+        self.sleep = sleep
 
     async def _locked(self, connection) -> datetime:
         now = (await connection.execute(select(func.clock_timestamp()))).scalar_one()
@@ -334,13 +363,22 @@ class PostgresBudget:
         )
         return (await connection.execute(select(func.clock_timestamp()))).scalar_one()
 
-    async def reserve(self) -> None:
+    async def _attempt(
+        self, priority: Priority, cost: int, owner: str | None, book: bool
+    ) -> tuple[list | None, float]:
         async with self.engine.begin() as connection:
             now = await self._locked(connection)
             await connection.execute(
                 delete(budget_requests).where(
                     budget_requests.c.scope == self.scope,
-                    budget_requests.c.requested_at <= now - timedelta(seconds=60),
+                    or_(
+                        and_(
+                            budget_requests.c.owner.is_(None),
+                            budget_requests.c.requested_at
+                            <= now - timedelta(seconds=self.window_s),
+                        ),
+                        budget_requests.c.hold_until <= now,
+                    ),
                 )
             )
             blocked = (
@@ -348,23 +386,87 @@ class PostgresBudget:
                     select(budget_blocks.c.blocked_until).where(budget_blocks.c.scope == self.scope)
                 )
             ).scalar_one()
-            requests = list(
-                (
+            rows = [
+                Row(r.id, r.requested_at, r.owner, r.hold_until)
+                for r in (
                     await connection.execute(
-                        select(budget_requests.c.requested_at)
-                        .where(budget_requests.c.scope == self.scope)
-                        .order_by(budget_requests.c.requested_at)
+                        select(
+                            budget_requests.c.id,
+                            budget_requests.c.requested_at,
+                            budget_requests.c.owner,
+                            budget_requests.c.hold_until,
+                        ).where(budget_requests.c.scope == self.scope)
                     )
-                ).scalars()
+                ).all()
+            ]
+            decision = decide(
+                now,
+                rows,
+                blocked,
+                limit=self.limit,
+                priority=priority,
+                cost=cost,
+                owner=owner,
+                book=book,
+                window_s=self.window_s,
             )
-            delay = (blocked - now).total_seconds()
-            if len(requests) >= self.limit:
-                delay = max(delay, 60 - (now - requests[0]).total_seconds())
-            if delay > 0:
-                raise BudgetExhausted("LOCAL_RATE_LIMIT", retry_after=max(1, math.ceil(delay)))
+            if decision.wait > 0:
+                if decision.book_at is not None:
+                    hold = {
+                        "scope": self.scope,
+                        "requested_at": decision.book_at,
+                        "owner": owner,
+                        "hold_until": decision.book_at + HOLD,
+                    }
+                    await connection.execute(insert(budget_requests).values([hold] * cost))
+                return None, decision.wait
+            if decision.take:
+                await connection.execute(
+                    update(budget_requests)
+                    .where(budget_requests.c.id.in_(decision.take))
+                    .values(requested_at=now, owner=None, hold_until=None)
+                )
+            ids = []
+            if decision.need:
+                fresh = [{"scope": self.scope, "requested_at": now}] * decision.need
+                ids = list(
+                    (
+                        await connection.execute(
+                            insert(budget_requests).values(fresh).returning(budget_requests.c.id)
+                        )
+                    ).scalars()
+                )
+            return [*decision.take, *ids], 0.0
+
+    async def reserve(self, cost: int = 1) -> list:
+        return await admit(self._attempt, cost, self.clock, self.sleep)
+
+    async def release(self, ids: list) -> None:
+        # Неиспользованная предоплата: HTTP не отправлялся, место возвращается окну.
+        async with self.engine.begin() as connection:
             await connection.execute(
-                insert(budget_requests).values(scope=self.scope, requested_at=now)
+                delete(budget_requests).where(
+                    budget_requests.c.scope == self.scope, budget_requests.c.id.in_(ids)
+                )
             )
+
+    async def touch(self, place: int) -> float:
+        """Предоплаченное место отмечается моментом отправки; во время паузы 429 — нет."""
+        async with self.engine.begin() as connection:
+            now = (await connection.execute(select(func.clock_timestamp()))).scalar_one()
+            blocked = (
+                await connection.execute(
+                    select(budget_blocks.c.blocked_until).where(budget_blocks.c.scope == self.scope)
+                )
+            ).scalar_one_or_none()
+            if blocked is not None and blocked > now:
+                return (blocked - now).total_seconds()
+            await connection.execute(
+                update(budget_requests)
+                .where(budget_requests.c.scope == self.scope, budget_requests.c.id == place)
+                .values(requested_at=now)
+            )
+            return 0.0
 
     async def defer(self, seconds: int) -> None:
         async with self.engine.begin() as connection:

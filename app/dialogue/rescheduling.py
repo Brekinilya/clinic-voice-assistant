@@ -6,6 +6,7 @@ from app.booking.models import Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.contracts import NluSlots
 from app.dialogue.cancellation import CancellationConversation
+from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
 from app.dialogue.models import Phase, reply
 from app.dialogue.visit_text import room_text
@@ -19,6 +20,12 @@ class RescheduleConversation:
     def __init__(self, service, store, transfer, rooms=None):
         self.service, self.store, self.transfer, self.rooms = service, store, transfer, rooms
         self.visits = VisitService(service.mis, service.clock, rooms)
+        self.doctors = DoctorNames(service.mis, service.booking.schedule)
+
+    async def names(self, specialty: str):
+        # Как фильтр specialty у стенда: без учёта регистра.
+        wanted = specialty.casefold()
+        return [d for d in await self.doctors.speaking() if d.specialty.casefold() == wanted]
 
     async def start(self, state, turn, result):
         if state.phase in {
@@ -146,7 +153,7 @@ class RescheduleConversation:
         if slots.doctor is not None:
             doctors = [
                 d
-                for d in await self.service.mis.doctors(state.move_target.specialty)
+                for d in await self.names(state.move_target.specialty)
                 if d.full_name.split()[0].casefold().replace("ё", "е")
                 == slots.doctor.casefold().replace("ё", "е")
             ]
@@ -181,9 +188,7 @@ class RescheduleConversation:
                 "Уточните предпочтения или попросите сотрудника.",
                 code="NO_SLOTS",
             )
-        doctors = {
-            d.id: d.full_name for d in await self.service.mis.doctors(state.move_target.specialty)
-        }
+        doctors = {d.id: d.full_name for d in await self.names(state.move_target.specialty)}
         phrases = tuple(
             f"{i}. {self.slot_phrase(s, doctors.get(s.doctor_id))}"
             for i, s in enumerate(options, 1)
