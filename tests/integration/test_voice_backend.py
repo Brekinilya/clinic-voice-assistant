@@ -35,7 +35,7 @@ async def reserve(client):
         (Phase.MOVE_OFFERED, "choice"),
         (Phase.CANCEL_CONFIRM, "yes_no"),
         (Phase.MOVE_FINISH_CONFIRM, "yes_no"),
-        (Phase.BOOKED, "free"),
+        (Phase.BOOKED, "yes_no"),
         (Phase.HANDOFF, "free"),
         (Phase.ENDED, "free"),
     ],

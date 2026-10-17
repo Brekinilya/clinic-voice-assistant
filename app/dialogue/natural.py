@@ -27,6 +27,8 @@ from app.scheduling.matching import profile_key
 from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
 
+FOLLOW_UP_QUESTION = "Могу ещё чем-то помочь?"
+
 
 class BookingConversation:
     def __init__(
@@ -439,7 +441,9 @@ class BookingConversation:
                             "options": (),
                         }
                     )
-                    return state, reply(state, turn.turn_id, confirmed, code="BOOKED")
+                    return state, reply(
+                        state, turn.turn_id, confirmed, FOLLOW_UP_QUESTION, code="BOOKED"
+                    )
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
                 return state, reply(
                     state,
@@ -458,6 +462,23 @@ class BookingConversation:
                 "Результат ещё уточняется. Для сверки спросите: на когда я записана?",
                 code="RECONCILING",
             )
+        if state.phase == Phase.BOOKED and not slots.model_fields_set:
+            if intents == {"yes"}:
+                state = self.visits.booking_state(state)
+                return state, reply(
+                    state, turn.turn_id, "Чем ещё могу помочь?", code="MORE_HELP_REQUIRED"
+                )
+            if intents == {"no"}:
+                state = await self.store.end(state.call_id)
+                return state, reply(state, turn.turn_id, "Всего доброго.", code="CALL_ENDED")
+            if intents == {"repeat"}:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Запись уже подтверждена.",
+                    FOLLOW_UP_QUESTION,
+                    code="MORE_HELP_OFFERED",
+                )
         if intents & {
             "I-02",
             "I-03",
@@ -607,6 +628,7 @@ class BookingConversation:
                     state,
                     turn.turn_id,
                     confirmed,
+                    FOLLOW_UP_QUESTION,
                     code="BOOKED",
                 )
             if action.state in {ActionState.COMMITTING, ActionState.RECONCILING}:
