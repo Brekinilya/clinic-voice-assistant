@@ -35,5 +35,22 @@ services:
         condition: service_healthy
     init: true
     restart: unless-stopped
+  recovery:
+    build:
+      context: ../..
+    env_file: ../../.env
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      TELEPHONY_ENABLED: "false"
+    command: ["python", "-m", "app.recovery", "watch"]
+    # У исполнителя нет HTTP-сервера; его очередь проверяется через recovery status.
+    healthcheck:
+      disable: true
+    depends_on:
+      database:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
 volumes:
   postgres-data:

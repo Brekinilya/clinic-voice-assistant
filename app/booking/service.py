@@ -9,6 +9,7 @@ from app.booking.models import (
     BookingError,
     Slot,
     check_approval,
+    matches_visit,
 )
 from app.booking.ports import BookingStore, Schedule
 from app.booking.preferences import SlotPreferences
@@ -18,6 +19,7 @@ from app.mis.budget import Priority, demand
 from app.mis.models import Client, Visit, VisitCreate, VisitStatus, name_key
 from app.mis.ports import BudgetExhausted, MedicalSystem, MisError, MisOutcomeUnknown
 from app.ports import Clock
+from app.recovery.coordinator import coordinate
 from app.scheduling.matching import profile_key
 from app.scheduling.query import available_doctors, candidates, contains, doctor_matches, remember
 
@@ -41,12 +43,14 @@ class BookingService:
         clock: Clock,
         *,
         require_dialogue_guard: bool = False,
+        operations=None,
     ) -> None:
         self.mis = mis
         self.store = store
         self.schedule = schedule
         self.clock = clock
         self.require_dialogue_guard = require_dialogue_guard
+        self.operations = operations
 
     async def identify(
         self, last_name: str, first_name: str, middle_name: str | None, birth_date: date
@@ -206,6 +210,11 @@ class BookingService:
         await self._check_specialty(client_id, slot.specialty, call_id, fresh=fresh)
 
     async def confirm(self, approval: Approval) -> BookingAction:
+        return await coordinate(
+            self.operations, "booking", approval.action_id, lambda: self._confirm(approval)
+        )
+
+    async def _confirm(self, approval: Approval) -> BookingAction:
         if self.require_dialogue_guard and approval.guard_version is None:
             raise BookingError("DIALOGUE_GUARD_REQUIRED")
         action = await self.store.get(approval.action_id)
@@ -262,15 +271,14 @@ class BookingService:
 
     @staticmethod
     def _matches(action: BookingAction, visit: Visit) -> bool:
-        return (
-            visit.client_id == action.client_id
-            and visit.doctor.id == action.slot.doctor_id
-            and visit.doctor.specialty == action.slot.specialty
-            and visit.scheduled_at == action.slot.scheduled_at
-            and visit.status == VisitStatus.PLANNED
-        )
+        return matches_visit(action, visit)
 
     async def reconcile(self, action_id: str) -> BookingAction:
+        return await coordinate(
+            self.operations, "booking", action_id, lambda: self._reconcile(action_id)
+        )
+
+    async def _reconcile(self, action_id: str) -> BookingAction:
         action = await self.store.get(action_id)
         if action.state == ActionState.ARCHIVED:
             return action
@@ -288,6 +296,7 @@ class BookingService:
                 doctor_id=action.slot.doctor_id,
                 date_from=action.slot.scheduled_at.date(),
                 date_to=action.slot.scheduled_at.date(),
+                fresh=True,
             )
         matches = [v for v in visits if self._matches(action, v)]
         if action.state == ActionState.BOOKED:

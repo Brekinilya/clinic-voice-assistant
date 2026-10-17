@@ -5,7 +5,7 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1] / "app"
 # Настоящая МИС: только с общим бюджетом PostgreSQL.
-LIVE = {"backend.py", "dialogue/live.py", "scheduling/cli.py"}
+LIVE = {"backend.py", "dialogue/live.py", "scheduling/cli.py", "recovery/__main__.py"}
 # Эмулятор через MockTransport: бюджет стенда не расходуется.
 EMULATED = {"demo.py", "dialogue/bootstrap.py"}
 # Прочие HTTP-клиенты приложения не ходят в МИС.

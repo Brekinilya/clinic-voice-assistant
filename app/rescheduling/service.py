@@ -9,6 +9,7 @@ from app.cancellation.models import same_visit, summary
 from app.mis.budget import Priority, demand
 from app.mis.models import VisitChange, VisitCreate, VisitStatus
 from app.mis.ports import BudgetExhausted, MisError, MisOutcomeUnknown
+from app.recovery.coordinator import coordinate
 from app.rescheduling.models import MoveState, check_approval, matches_new
 from app.scheduling.matching import profile_key
 from app.scheduling.query import IndexedSource, candidates, doctor_matches, remember
@@ -25,6 +26,7 @@ class RescheduleService:
     def __init__(self, booking: BookingService, store):
         self.booking, self.store = booking, store
         self.mis, self.clock = booking.mis, booking.clock
+        self.operations = booking.operations
 
     async def _source(self, before, *, permit_cancelled=False):
         current = await self.mis.visit(before.id)
@@ -176,6 +178,11 @@ class RescheduleService:
         )
 
     async def confirm(self, approval: Approval):
+        return await coordinate(
+            self.operations, "move", approval.action_id, lambda: self._confirm(approval)
+        )
+
+    async def _confirm(self, approval: Approval):
         if approval.guard_version is None or approval.input_epoch is None:
             raise BookingError("DIALOGUE_GUARD_REQUIRED")
         action = await self.store.get(approval.action_id)
@@ -253,6 +260,11 @@ class RescheduleService:
         return action, True
 
     async def reconcile(self, action_id: str, call_id: str):
+        return await coordinate(
+            self.operations, "move", action_id, lambda: self._owned_reconcile(action_id, call_id)
+        )
+
+    async def _owned_reconcile(self, action_id: str, call_id: str):
         action = await self.store.get(action_id)
         if action.call_id != call_id:
             raise BookingError("CONFIRMATION_REQUIRED")
