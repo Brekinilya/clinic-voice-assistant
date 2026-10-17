@@ -1,0 +1,33 @@
+# Вымышленные данные для сценариев. Имена и даты — из примеров регламента, совпадения случайны.
+# Поля врачей, пациентов и записей — как в API стенда (даты ДД.ММ.ГГГГ, время GMT+4 без смещения).
+# Кабинетов и расписания на стенде нет: room и slots — наше синтетическое расписание.
+# Сценарий ссылается на ключи (kuznetsova, smirnova_ov) и в setup добавляет свои записи и слоты.
+
+doctors:
+  kuznetsova: {full_name: Кузнецова Анна Сергеевна, specialty: терапевт, is_active: true, room: 214}
+  sergeev: {full_name: Сергеев Павел Ильич, specialty: терапевт, is_active: true, room: 216}
+  orlova: {full_name: Орлова Елена Павловна, specialty: кардиолог, is_active: true, room: 305}
+  zakharov: {full_name: Захаров Дмитрий Олегович, specialty: невролог, is_active: true, room: 310}
+  belova: {full_name: Белова Ирина Олеговна, specialty: лор, is_active: true, room: 221}
+  lebedev: {full_name: Лебедев Сергей Игоревич, specialty: офтальмолог, is_active: true, room: 118}
+  volkov: {full_name: Волков Артём Сергеевич, specialty: хирург, is_active: true, room: 112}
+  nikitina: {full_name: Никитина Ирина Владимировна, specialty: хирург, is_active: true, room: 112}
+  morozova: {full_name: Морозова Светлана Петровна, specialty: педиатр, is_active: true, room: 104}
+  egorov: {full_name: Егоров Максим Андреевич, specialty: офтальмолог, is_active: false, room: 120}
+
+clients:
+  smirnova_ov: {last_name: Смирнова, first_name: Ольга, middle_name: Викторовна, birth_date: 12.03.1978}
+  ivanov_sp: {last_name: Иванов, first_name: Сергей, middle_name: Петрович, birth_date: 03.01.1990}
+  petrov_in: {last_name: Петров, first_name: Игорь, middle_name: Николаевич, birth_date: 05.05.1962}
+  kuzmina_na: {last_name: Кузьмина, first_name: Нина, middle_name: Андреевна, birth_date: 20.07.1955}
+  sokolov_av: {last_name: Соколов, first_name: Андрей, middle_name: Викторович, birth_date: 09.02.1985}
+  orlova_mi: {last_name: Орлова, first_name: Мария, middle_name: Ивановна, birth_date: 14.11.1988}
+  smirnova_ad: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: 07.04.2019}
+
+# Свободное время по умолчанию; сценарий может заменить его своим списком.
+slots:
+  kuznetsova: ["01.10.2026 08:45", "02.10.2026 10:30", "02.10.2026 15:15", "05.10.2026 09:15", "05.10.2026 16:00", "06.10.2026 12:00", "07.10.2026 16:30"]
+  orlova: ["06.10.2026 11:20", "08.10.2026 14:40"]
+  belova: ["02.10.2026 10:40", "02.10.2026 14:20", "05.10.2026 10:00", "05.10.2026 13:40", "06.10.2026 15:00", "07.10.2026 12:20"]
+  lebedev: ["05.10.2026 13:20", "06.10.2026 09:00"]
+  morozova: ["01.10.2026 09:00", "02.10.2026 11:40"]

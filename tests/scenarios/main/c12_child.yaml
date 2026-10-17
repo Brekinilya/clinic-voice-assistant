@@ -1,0 +1,36 @@
+id: M-12
+title: Запись ребёнка — эталонный диалог
+source: раздел 5, С-12
+blocking: false
+expected: Мама записывает дочь к педиатру; данные ребёнка, напоминание о документах
+covers: [С-12, С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне нужно записать дочку к педиатру.
+    intent: I-01
+    general: {on_behalf: child}
+    parse: {expect: free, slots: {specialty: педиатр}}
+    say: ident.ask_child
+  - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого.
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+    say: ident.relation
+  - patient: Мама.
+    say: booking.offer_nearest
+    options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+  - patient: Давайте завтра.
+    parse: {expect: choice, options: ["01.10.2026 09:00", "02.10.2026 11:40"], choice_index: 1}
+    say: booking.confirm
+  - patient: Да.
+    say: booking.done_child
+
+result:
+  code: BOOKED
+  stand:
+    created: [{client: smirnova_ad, doctor: morozova, at: "01.10.2026 09:00"}]

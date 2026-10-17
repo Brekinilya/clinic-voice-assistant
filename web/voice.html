@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Звонок в регистратуру</title>
+  <style>
+    :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6ea;
+            --patient: #e8f0fe; --assistant: #eef8ee; --accent: #1a73e8; --danger: #c5221f; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #15181d; --card: #1e2229; --text: #e6e8eb; --muted: #9aa1ab; --line: #2d333b;
+              --patient: #1f2b40; --assistant: #1f3324; --accent: #8ab4f8; --danger: #f28b82; }
+    }
+    body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 760px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 20px; margin: 8px 0 4px; }
+    .muted { color: var(--muted); }
+    .bar { display: flex; gap: 12px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+    button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 0; cursor: pointer;
+             background: var(--accent); color: #fff; }
+    button.hangup { background: var(--danger); }
+    #log { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px;
+           min-height: 240px; }
+    .line { padding: 6px 10px; margin: 4px 0; border-radius: 8px; }
+    .patient { background: var(--patient); }
+    .assistant { background: var(--assistant); }
+    .partial { opacity: .6; font-style: italic; }
+    .note { color: var(--muted); font-size: 13px; padding: 2px 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 13px; }
+    td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Звонок в регистратуру</h1>
+  <div class="muted">Помощник регистратуры. Для звонка используйте гарнитуру.</div>
+  <p>Если речь распознаётся неточно, <a href="/chat">откройте текстовый диалог</a>.
+    В нём работает тот же помощник. Начните новый разговор и назовите нужного специалиста.</p>
+  <p class="muted">Данные для автономной демонстрации с эмулятором МИС:
+    Иванов Иван Иванович, 1 января 1990 года. Настоящие данные пациентов вводить не нужно.</p>
+  <div class="bar">
+    <button id="call">Позвонить</button>
+    <span id="state" class="muted">не на линии</span>
+  </div>
+  <div id="log"></div>
+  <details><summary>Время ответа</summary><table>
+    <thead><tr><th>Реплика</th><th>распознавание, мс</th><th>диалог, мс</th><th>синтез, мс</th>
+      <th>до звука, мс</th><th>от конца речи, мс</th></tr></thead>
+    <tbody id="timings"></tbody>
+    <tfoot id="summary"></tfoot>
+  </table></details>
+</main>
+<script type="module">
+  import { VoiceClient } from "./voice-client.js";
+
+  const button = document.getElementById("call");
+  const state = document.getElementById("state");
+  const log = document.getElementById("log");
+  const timings = document.getElementById("timings");
+  const summary = document.getElementById("summary");
+  const STATES = { connecting: "соединение…", connected: "на линии", ended: "звонок завершён" };
+  let client = null;
+  let partial = null;
+  const totals = [];
+
+  function line(text, kind) {
+    const div = document.createElement("div");
+    div.className = "line " + kind;
+    div.textContent = text;
+    log.appendChild(div);
+    div.scrollIntoView({ block: "end" });
+    return div;
+  }
+
+  function percentile(values, p) {
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)];
+  }
+
+  function onEvent(event) {
+    if (event.type === "transcript") {
+      if (!event.text) return;
+      if (!partial) partial = line("", "patient partial");
+      partial.textContent = "Пациент: " + event.text;
+      if (event.final) { partial.classList.remove("partial"); partial = null; }
+    } else if (event.type === "speak") {
+      line("Ассистент: " + event.text, "assistant");
+    } else if (event.type === "stop") {
+      line("пациент перебил — ответ остановлен", "note");
+    } else if (event.type === "timing") {
+      totals.push(event.since_speech_ms);
+      const row = document.createElement("tr");
+      for (const value of [event.turn_id, event.asr_ms, event.dialog_ms, event.tts_ms, event.total_ms, event.since_speech_ms]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.appendChild(cell);
+      }
+      timings.appendChild(row);
+      summary.innerHTML = `<tr><td>от конца речи до звука</td><td colspan="5">p50 ${percentile(totals, 0.5)} мс, p95 ${percentile(totals, 0.95)} мс</td></tr>`;
+    } else if (event.type === "end") {
+      const reasons = { transfer: "перевод на регистратора " + (event.route || ""), ended: "разговор завершён", silence: "тишина на линии" };
+      line(reasons[event.reason] || event.reason, "note");
+    }
+  }
+
+  button.addEventListener("click", async () => {
+    if (client) { client.hangup(); return; }
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const id = "web-" + Date.now();
+    client = new VoiceClient({
+      url: `${scheme}://${location.host}/api/voice/${id}`,
+      onEvent,
+      onState(value) {
+        state.textContent = STATES[value] || value;
+        if (value === "ended") { client = null; button.textContent = "Позвонить"; button.classList.remove("hangup"); }
+      },
+    });
+    button.textContent = "Положить трубку";
+    button.classList.add("hangup");
+    try { await client.start(); } catch (error) { state.textContent = "нет доступа к микрофону"; client = null; }
+  });
+</script>
+</body>
+</html>

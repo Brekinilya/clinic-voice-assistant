@@ -1,0 +1,73 @@
+id: M-10
+title: Исходящее напоминание — эталонный диалог
+source: раздел 5, С-10
+blocking: false
+expected: Пациент не сможет прийти — запись перенесена прямо в звонке
+covers: [С-10]
+
+setup:
+  now: "30.09.2026 11:00"
+  channel: outbound
+  call: {purpose: reminder, client: smirnova_ov}
+  visits:
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+  slots:
+    kuznetsova: ["02.10.2026 10:30", "05.10.2026 09:15", "06.10.2026 12:00"]
+
+dialogs:
+  - name: перенос
+    steps:
+      - say: remind.greeting
+      - patient: Да.
+        parse: {expect: yes_no, intent: "yes"}
+        say: remind.details
+      - patient: Ой, нет, завтра не получится.
+        parse: {expect: yes_no, intent: "no"}
+        say: remind.offer_reschedule
+        options: ["02.10.2026 10:30", "05.10.2026 09:15"]
+      - patient: Понедельник подойдёт.
+        parse: {expect: choice, options: ["02.10.2026 10:30", "05.10.2026 09:15"], choice_index: 2}
+        say: reschedule.confirm
+      - patient: Да.
+        say: remind.done_moved
+        end: true
+    result:
+      code: RESCHEDULED
+      stand:
+        rescheduled: [{client: smirnova_ov, doctor: kuznetsova, from: "01.10.2026 08:45", to: "05.10.2026 09:15"}]
+
+  - name: подтверждение
+    steps:
+      - say: remind.greeting
+      - patient: Да, это я.
+        parse: {expect: yes_no, intent: "yes"}
+        say: remind.details
+      - patient: Да, приду.
+        parse: {expect: yes_no, intent: "yes"}
+        say: remind.confirmed
+        end: true
+    result:
+      code: CONFIRMED
+      stand: unchanged
+
+  - name: не знает
+    steps:
+      - say: remind.greeting
+      - patient: Да.
+        say: remind.details
+      - patient: Пока не знаю, может быть.
+        parse: {expect: yes_no, intent: maybe}
+        say: remind.maybe
+        end: true
+    result:
+      stand: unchanged
+
+  - name: отказ от звонков
+    steps:
+      - say: remind.greeting
+      - patient: Не звоните мне больше.
+        parse: {expect: yes_no, intent: opt_out}
+        say: remind.opt_out
+    result:
+      code: OPT_OUT
+      stand: unchanged

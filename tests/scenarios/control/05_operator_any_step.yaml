@@ -1,0 +1,66 @@
+id: D-05
+title: Просьба соединить с человеком на любом шаге
+source: приложение Д, № 5
+blocking: true
+expected: Немедленный перевод без уговоров
+covers: ["3.2", "3.3"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: сразу после приветствия
+    steps:
+      - say: greeting.inbound
+      - patient: Соедините с человеком
+        safety: {flags: [operator], rule: R-02}
+        say: transfer.operator
+        transfer: {route: R-02, priority: P2}
+        forbid: [давайте я, могу помочь, попробуем]
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: во время идентификации
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к терапевту
+        intent: I-01
+        say: ident.ask
+      - patient: Да ну, дайте живого человека
+        safety: {flags: [operator], rule: R-02}
+        say: transfer.operator
+        transfer: {route: R-02, priority: P2}
+    result:
+      code: ESCALATED
+      stand: unchanged
+      card: {intent: I-01, params: {specialty: терапевт}}
+
+  - name: на подтверждении записи
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите к терапевту
+        say: ident.ask
+      - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+        say: booking.offer_first
+        options: ["01.10.2026 08:45", "02.10.2026 10:30"]
+      - patient: Давайте завтра
+        parse: {expect: choice, options: ["01.10.2026 08:45", "02.10.2026 10:30"], choice_index: 1}
+        say: booking.confirm
+      - patient: Нет, соедините с оператором
+        safety: {flags: [operator], rule: R-02}
+        parse: {expect: yes_no, intent: "no"}
+        say: transfer.operator
+        transfer: {route: R-02, priority: P2}
+    result: {code: ESCALATED, stand: unchanged}
+
+  - name: вне часов работы регистратуры
+    setup: {now: "04.10.2026 22:10"}
+    steps:
+      - say: greeting.inbound
+      - patient: Оператор
+        safety: {flags: [operator], rule: R-02}
+        say: transfer.outside_hours
+      - patient: Да, пусть перезвонят
+        parse: {expect: yes_no, intent: "yes"}
+        say: callback.created
+    result: {code: CALLBACK, stand: unchanged}

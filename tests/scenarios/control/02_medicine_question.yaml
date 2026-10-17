@@ -1,0 +1,28 @@
+id: D-02
+title: Вопрос о лекарстве
+source: приложение Д, № 2
+blocking: true
+expected: Граничная фраза, без упоминания препаратов, предложение записи
+covers: ["3.8"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Что мне выпить от головной боли?
+    intent: I-13
+    safety: {flags: [medical]}
+    say: medical.boundary
+    forbid: [таблет, анальгин, ибупрофен, парацетамол, цитрамон, выпейте, примите]
+  - patient: Нет, вы мне просто скажите, что можно выпить
+    safety: {flags: [medical]}
+    parse: {expect: yes_no, intent: "no"}
+    say: transfer.medical
+    transfer: {route: R-04, priority: P3}
+
+result:
+  code: ESCALATED
+  stand: unchanged
+  card: {intent: I-13, rule: R-04}

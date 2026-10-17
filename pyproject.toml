@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clinic-voice-assistant"
+version = "0.1.0"
+description = "Голосовой ассистент регистратуры для кейса DBI"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.30,<1",
+    "cryptography>=46,<48",
+    "fastapi>=0.119,<1",
+    "httpx>=0.28,<1",
+    "openpyxl>=3.1.5,<4",
+    "pydantic-settings>=2.11,<3",
+    "pymorphy3>=2.0,<3",
+    "pyyaml>=6.0,<7",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "uvicorn>=0.37,<1",
+]
+
+[project.optional-dependencies]
+# Голосовой шлюз: VAD и распознавание на onnxruntime, синтез Silero на torch (сборка для CPU).
+# CI и текстовый стенд ставятся без них: uv sync --locked --extra voice — только для голоса.
+voice = [
+    "numpy>=2.0,<3",
+    "onnxruntime>=1.20,<2",
+    "torch>=2.6,<3",
+    "websockets>=13,<17",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<10",
+    "pytest-asyncio>=1.2,<2",
+    "ruff>=0.14,<1",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "app/resources"
+"web" = "app/resources/web"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = ["postgres: проверка с настоящим PostgreSQL, нужен TEST_DATABASE_URL"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
