@@ -19,6 +19,7 @@ def expected_answer(state: DialogueState) -> ExpectedAnswer:
         return "choice"
     if state.phase in {
         "held",
+        "booked",
         "verifying_owner",
         "visits_shown",
         "cancel_confirm",

@@ -19,6 +19,7 @@ from typing import Protocol
 
 from app.dialogue.models import Turn
 from app.nlu.parsers.answers import parse_answer
+from app.voice.audibility import audibility_answer
 from app.voice.endpoint import FRAME_BYTES, Endpointer, EndpointSettings
 from app.voice.fallback import load_fallback
 from app.voice.render import Renderer, default_renderer
@@ -144,6 +145,7 @@ class CallSession:
         self._end_request: asyncio.Task | None = None
         self._misunderstandings = 0
         self._operator_offered = False
+        self._audibility_pending = False
         self._question_before_operator: list[str] = []
         self._pending_transfer: dict | None = None
         self._fallback_used = False
@@ -301,22 +303,59 @@ class CallSession:
         if result.status == RecognitionStatus.SILENCE:
             await self._unheard(turn)
             return
-        if self._operator_offered:
-            # Последний вопрос был о сотруднике. Такое «да» нельзя передать в старое
-            # подтверждение записи; экстренный маршрут всё равно проверяется первым.
+        # Проверка промежуточного текста этой же фразы должна закончиться до
+        # итогового согласия. Иначе поздний partial меняет input_epoch уже после
+        # authorize и прерывает запись. Части новой фразы по-прежнему идут сразу.
+        partial = self._partial
+        if partial is not None and not partial.done():
+            done, _ = await asyncio.wait(
+                {partial},
+                timeout=self.settings.asr_timeout_s + self.settings.dialogue_timeout_s,
+            )
+            if not done:
+                await self._deliver(turn, None)
+                return
+        if turn != self.turn_id or self.ended or self.closing or turn in self._answered:
+            return
+        if self._audibility_pending or self._operator_offered:
+            # Ответ на вопрос шлюза не подтверждает старую запись.
+            # Экстренный маршрут всё равно проверяется первым.
             safety = await self._handle(turn, text, final=False)
+            if turn != self.turn_id or self.ended or self.closing or turn in self._answered:
+                return
             if safety is None:
                 await self._deliver(turn, None)
                 return
             if safety is not None and getattr(safety, "kind", "reply") != "partial":
                 await self._deliver(turn, safety)
                 return
+        if self._audibility_pending:
+            self._audibility_pending = False
+            answer = audibility_answer(text)
+            if answer is not None:
+                # Ответили на вопрос шлюза, а не подтвердили прежнюю бронь.
+                # Реплику нельзя склеивать со следующим ответом во время синтеза.
+                self._asked_turn = turn
+                self._answered.add(turn)
+                self._misunderstandings = 0
+                phrases = list(self._last_reply)
+                if answer == "no":
+                    phrases.insert(0, "Попробую повторить.")
+                if await self._say(
+                    turn,
+                    phrases or [self.renderer.render("ask.how_can_help", self.today()).text],
+                ):
+                    self._watch_silence()
+                return
+        if self._operator_offered:
             answer = parse_answer(text)
             self._operator_offered = False
             if answer == "yes":
                 await self._recognition_transfer(turn)
                 return
             if answer == "no":
+                self._asked_turn = turn
+                self._answered.add(turn)
                 self._misunderstandings = 0
                 await self._say(
                     turn,
@@ -430,6 +469,7 @@ class CallSession:
             self._spawn(self._finish("transfer", {"route": "R-06", "priority": "P3"}))
             return
         utterances = list(getattr(reply, "utterances", ()))
+        self._audibility_pending = False
         transfer = getattr(reply, "transfer", None)
         phase = str(getattr(reply, "phase", "") or "")
         code = getattr(reply, "code", None)
@@ -636,6 +676,8 @@ class CallSession:
             if self.endpointer.in_phrase or self.ended:
                 return
             text = self.renderer.render(template, self.today()).text
+            if template == "silence.first":
+                self._audibility_pending = True
             if not await self._say(self.turn_id, [text]):
                 return
         self.closing = True
