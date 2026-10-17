@@ -1,0 +1,426 @@
+"""Выполняем YAML через HTTP API; ожидания не подставляются в NLU или ответы."""
+
+import re
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import timedelta
+
+from app.dialogue.models import Reply
+from app.mis.models import VisitStatus
+from tests.scenarios.runtime import ScenarioRuntime, moment
+
+PHASES = {
+    "ident.ask": {"identifying"},
+    "ident.ask_name": {"identifying"},
+    "ident.ask_birth_date": {"identifying"},
+    "ident.ask_patient": {"identifying"},
+    "booking.offer_first": {"offered"},
+    "booking.offer_period": {"offered"},
+    "booking.offer_nearest": {"offered"},
+    "booking.confirm": {"held"},
+    "booking.done": {"booked"},
+    "booking.done_child": {"booked"},
+    "cancel.which": {"cancel_choosing"},
+    "cancel.offer_reschedule": {"cancel_offer"},
+    "cancel.confirm": {"cancel_confirm"},
+    "cancel.done": {"cancelled"},
+    "reschedule.found_one": {"move_source"},
+    "reschedule.offer": {"move_offered"},
+    "reschedule.confirm": {"move_confirm"},
+    "reschedule.done": {"rescheduled"},
+    "my_visits.one": {"visits_shown"},
+    "my_visits.third_party": {"verifying_owner"},
+    "closing.goodbye": {"ended"},
+    "closing.goodbye_short": {"ended"},
+}
+CODE_EXPECTATIONS = {
+    "medical.boundary": {"MEDICAL_BOUNDARY"},
+    "robot.answer": {"ROBOT_DISCLOSED"},
+    "recording.off": {"RECORDING_OPT_OUT"},
+    "emergency.call_103": {"EMERGENCY"},
+    "emergency.self_harm": {"EMERGENCY"},
+    "reask.first": {"NOT_UNDERSTOOD"},
+    "ident.not_found": {"IDENTIFICATION_REQUIRED"},
+    "emergency.insist": {"EMERGENCY"},
+    "emergency.ambulance_called": {"EMERGENCY"},
+}
+GAPS = {
+    "labs.": "labs_status_source_T09",
+    "home_visit.": "home_visit_T09",
+    "callback.": "callback_T08",
+    "waitlist.": "waitlist_T08",
+    "remind.": "outbound_T11",
+    "attach.": "faq_T09",
+    "schedule.": "schedule_faq_T09",
+    "silence.": "voice_event_channel_T03",
+    "complaint.callback": "callback_T08",
+    "transfer.outside_hours": "callback_T08",
+    "my_visits.sms_sent": "sms_delivery_T20",
+    "ident.relation": "guardian_T10",
+    "ident.ask_child": "guardian_T10",
+    "referral.": "referral_conversation_T09",
+    "paid.price": "legacy_paid_catalog_outside_scope",
+    "transfer.ministry": "faq_T09",
+    "transfer.insurer": "faq_T09",
+    "wait.schedule": "intermediate_wait_prompt_T03_T05",
+}
+
+TEXT_REQUIREMENTS = {
+    "ident.ask_policy": r"полис",
+    "reask.offer_operator": r"оператор|сотрудник|регистратор",
+}
+
+
+@dataclass
+class Finding:
+    code: str
+    detail: str
+    kind: str = "fail"
+    step: int | None = None
+
+
+@dataclass
+class DialogResult:
+    scenario_id: str
+    label: str
+    blocking: bool
+    status: str = "pass"
+    steps: list[dict] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    requests: dict = field(
+        default_factory=lambda: {"total": 0, "by_method_resource": {}, "requests": []}
+    )
+    mutations: dict = field(
+        default_factory=lambda: {
+            "visits_created": 0,
+            "visits_patched": 0,
+            "clients_patched": 0,
+            "escalations_created": 0,
+        }
+    )
+    elapsed_ms: float = 0
+    simulated_seconds: float = 0
+    budget_profile: str = "functional_unlimited_emulator"
+
+    def add(self, code, detail, kind="fail", step=None):
+        finding = Finding(code, detail, kind, step)
+        if finding not in self.findings:
+            self.findings.append(finding)
+
+    def finish(self):
+        kinds = {f.kind for f in self.findings}
+        self.status = (
+            "fail"
+            if kinds & {"fail", "critical", "error"}
+            else ("unsupported" if "unsupported" in kinds else "pass")
+        )
+        return self
+
+    def serializable(self):
+        return asdict(self)
+
+
+def templates(step):
+    value = step.get("say", [])
+    return [value] if isinstance(value, str) else value
+
+
+def verify_step(result, number, step, response):
+    text = " ".join(response.utterances).casefold().replace("ё", "е")
+    public_data = response.model_dump_json().casefold().replace("ё", "е")
+    for forbidden in step.get("forbid", ()):
+        if forbidden.casefold().replace("ё", "е") in public_data:
+            result.add(
+                "forbidden_disclosure",
+                "В ответ попал запрещённый фрагмент фикстуры",
+                "critical",
+                number,
+            )
+    if "my_visits.third_party" in templates(step) and any(
+        (
+            response.options,
+            response.visits,
+            response.proposal,
+            response.visit_id,
+            response.cancel_proposal,
+            response.move_proposal,
+        )
+    ):
+        result.add(
+            "structured_disclosure",
+            "Раскрыты данные визита до проверки владельца",
+            "critical",
+            number,
+        )
+    if "transfer" in step:
+        wanted = step["transfer"]
+        if response.transfer is None or any(
+            getattr(response.transfer, key) != value for key, value in wanted.items()
+        ):
+            result.add("transfer", f"Ожидается {wanted['route']}/{wanted['priority']}", step=number)
+    if "options" in step:
+        expected = [
+            moment(item if isinstance(item, str) else item["at"]) for item in step["options"]
+        ]
+        actual = [
+            slot.scheduled_at for slot in (response.visits if response.visits else response.options)
+        ]
+        if actual != expected:
+            result.add("options", "Предложенные даты/время не совпадают с YAML", step=number)
+    if step.get("slot_weekdays") and any(
+        slot.scheduled_at.isoweekday() not in step["slot_weekdays"] for slot in response.options
+    ):
+        result.add("slot_weekdays", "Предложен запрещённый день недели", step=number)
+    for name in templates(step):
+        gap = next((value for prefix, value in GAPS.items() if name.startswith(prefix)), None)
+        if gap:
+            result.add(gap, "Не подключено требование: " + name, "unsupported", number)
+            continue
+        if name in PHASES:
+            if response.phase not in PHASES[name]:
+                result.add("phase:" + name, f"Получено состояние {response.phase}", step=number)
+            if name.startswith("booking.offer") and response.code in {
+                "WAIT_MIS",
+                "BOOKING_REJECTED",
+                "MIS_UNAVAILABLE",
+                "NO_SLOTS",
+            }:
+                result.add(
+                    "offer_unavailable", f"Вместо вариантов получен {response.code}", step=number
+                )
+        elif name in TEXT_REQUIREMENTS:
+            if re.search(TEXT_REQUIREMENTS[name], text) is None:
+                result.add("text:" + name, "Не прозвучало обязательное уточнение", step=number)
+        elif name in CODE_EXPECTATIONS:
+            if response.code not in CODE_EXPECTATIONS[name]:
+                result.add("code:" + name, f"Получен код {response.code}", step=number)
+        elif name.startswith("transfer.") or name == "complaint.ack":
+            if response.transfer is None:
+                result.add("handoff:" + name, "В ответе отсутствует запрос перевода", step=number)
+        elif name not in {"ask.how_can_help", "closing.anything_else"}:
+            result.add(
+                "unmapped:" + name,
+                "Для шаблона ещё не задана проверка поведения",
+                "unsupported",
+                number,
+            )
+    if len(response.options) > 3:
+        result.add("too_many_options", "Больше трёх вариантов", "critical", number)
+
+
+def verify_records(result, runtime, expectation):
+    actual = runtime.snapshot()
+    initial = runtime.initial_records
+    if expectation == "unchanged":
+        if actual != initial:
+            result.add("stand_changed", "МИС изменилась в сценарии без изменений", "critical")
+        return
+    if not isinstance(expectation, dict):
+        return
+    if set(initial) - set(actual):
+        result.add("visit_deleted", "Исходная запись пропала из стенда", "critical")
+    expected_created = list(expectation.get("created", ()))
+    expected_created += [dict(item, at=item["to"]) for item in expectation.get("rescheduled", ())]
+    created = {key: value for key, value in actual.items() if key not in initial}
+    if created and not any(key in expectation for key in ("created", "rescheduled", "at_most_one")):
+        result.add("unexpected_create", "В сценарии появилась лишняя новая запись", "critical")
+    if "created" in expectation or "rescheduled" in expectation:
+        if len(created) != len(expected_created):
+            result.add(
+                "created_count", f"Ожидается {len(expected_created)}, получено {len(created)}"
+            )
+        for reference in expected_created:
+            matches = [
+                v
+                for v in created.values()
+                if runtime.matches_visit(v, reference) and v["status"] == VisitStatus.PLANNED
+            ]
+            if len(matches) != 1:
+                result.add("created_visit", "Нет единственного ожидаемого нового визита")
+    cancelled = list(expectation.get("cancelled", ()))
+    cancelled += [dict(item, at=item["from"]) for item in expectation.get("rescheduled", ())]
+    expected_changed = set()
+    for reference in cancelled:
+        matches = [key for key, v in initial.items() if runtime.matches_visit(v, reference)]
+        if len(matches) != 1 or actual.get(matches[0], {}).get("status") != VisitStatus.CANCELLED:
+            result.add("cancelled_visit", "Исходная запись не отменена ожидаемым образом")
+        if len(matches) == 1 and matches[0] in actual:
+            key = matches[0]
+            if any(
+                actual[key][field] != initial[key][field]
+                for field in ("id", "client_id", "doctor", "scheduled_at", "created_at")
+            ):
+                result.add(
+                    "cancelled_visit_fields", "При отмене изменены другие поля визита", "critical"
+                )
+        expected_changed.update(matches)
+    for identifier, before in initial.items():
+        if identifier not in expected_changed and actual.get(identifier) != before:
+            result.add(
+                "unrelated_visit_changed", "Изменена посторонняя исходная запись", "critical"
+            )
+    for reference in expectation.get("unchanged", ()):
+        if not any(
+            runtime.matches_visit(v, reference) and actual.get(key) == v
+            for key, v in initial.items()
+        ):
+            result.add("expected_unchanged_visit", "Посторонняя запись не сохранена", "critical")
+    if "at_most_one" in expectation:
+        count = sum(runtime.matches_visit(v, expectation["at_most_one"]) for v in actual.values())
+        if count > 1:
+            result.add("duplicate_visit", "После отказа создано больше одного визита", "critical")
+
+
+async def run_dialog(dialog, *, blocking=False, runtime=None):
+    runtime = runtime if runtime is not None else ScenarioRuntime(dialog)
+    result = DialogResult(dialog.scenario, dialog.label, blocking)
+    result.budget_profile = runtime.budget_profile
+    started = time.perf_counter()
+    beginning = runtime.clock.now()
+    responses = []
+    if dialog.setup["channel"] == "outbound":
+        result.add(
+            "outbound_T11",
+            "Прогон реплик не проверяет originate и исходящий контекст",
+            "unsupported",
+        )
+    try:
+        async with runtime.application() as client:
+            for number, step in enumerate(dialog.steps, 1):
+                if "patient" not in step:
+                    if "event" in step:
+                        result.add(
+                            "event:" + step["event"],
+                            "Событие отсутствует в текстовом API",
+                            "unsupported",
+                            number,
+                        )
+                    # Приветствие браузера не подменяем вымышленным ответом сервера.
+                    continue
+                if step.get("advance_s"):
+                    runtime.clock.value += timedelta(seconds=step["advance_s"])
+                turn = len(responses) + 1
+                mutations_before = (
+                    runtime.emulator.write_count,
+                    runtime.emulator.patch_count,
+                    runtime.emulator.client_patch_count,
+                    runtime.emulator.escalation_count,
+                )
+                requests_before = len(runtime.emulator.requests)
+                body = {
+                    "turn_id": turn,
+                    "text": step["patient"],
+                    "is_final": step.get("is_final", True),
+                }
+                response = await client.post(f"/api/dialog/{runtime.call_id}/turn", json=body)
+                if response.status_code != 200:
+                    result.add("http", f"HTTP {response.status_code}", "error", number)
+                    continue
+                reply = Reply.model_validate(response.json())
+                responses.append(reply)
+                state_response = await client.get(f"/api/dialog/{runtime.call_id}")
+                state_response.raise_for_status()
+                state = state_response.json()
+                if state["phase"] != reply.phase or state["version"] != reply.version:
+                    result.add(
+                        "state_reply_mismatch",
+                        "Ответ не соответствует сохранённому состоянию",
+                        "critical",
+                        number,
+                    )
+                if reply.call_id != runtime.call_id or reply.turn_id != turn:
+                    result.add(
+                        "reply_identity",
+                        "Ответ относится к другому звонку/ходу",
+                        "critical",
+                        number,
+                    )
+                result.steps.append(
+                    {
+                        "step": number,
+                        "turn": turn,
+                        "phase": reply.phase,
+                        "code": reply.code,
+                        "options": len(reply.options),
+                        "http_requests": len(runtime.emulator.requests) - requests_before,
+                        "identified": state["client_id"] is not None,
+                    }
+                )
+                mutations_after = (
+                    runtime.emulator.write_count,
+                    runtime.emulator.patch_count,
+                    runtime.emulator.client_patch_count,
+                    runtime.emulator.escalation_count,
+                )
+                if mutations_after != mutations_before:
+                    count_before_replay = len(runtime.emulator.requests)
+                    replay = await client.post(f"/api/dialog/{runtime.call_id}/turn", json=body)
+                    if (
+                        replay.status_code != 200
+                        or replay.json() != response.json()
+                        or len(runtime.emulator.requests) != count_before_replay
+                    ):
+                        result.add(
+                            "mutation_replay", "Повтор хода не идемпотентен", "critical", number
+                        )
+                consent = bool(
+                    re.match(r"^\s*(да|подтверждаю|верно)(?:\W|$)", step["patient"], re.IGNORECASE)
+                )
+                previous_phase = responses[-2].phase if len(responses) > 1 else "ready"
+                if mutations_after[:3] != mutations_before[:3] and (
+                    not consent
+                    or not body["is_final"]
+                    or step.get("safety", {}).get("flags")
+                    or previous_phase
+                    not in {"held", "cancel_confirm", "move_confirm", "move_finish_confirm"}
+                ):
+                    result.add(
+                        "mutation_without_consent",
+                        "Изменение без явного финального согласия",
+                        "critical",
+                        number,
+                    )
+                verify_step(result, number, step, reply)
+            verify_records(result, runtime, dialog.result.get("stand"))
+            expected_code = dialog.result.get("code")
+            if expected_code == "ESCALATED" and any(r.transfer is not None for r in responses):
+                result.add(
+                    "handoff_completion_T08_T04",
+                    "Запрос перевода не доказывает состоявшееся соединение",
+                    "unsupported",
+                )
+            elif expected_code and expected_code not in {r.code for r in responses}:
+                result.add("result_code", f"Не получен итоговый код {expected_code}")
+            for key, feature in {
+                "card": "operator_card_T08",
+                "sms": "sms_delivery_T20",
+                "callback": "callback_T08",
+                "home_visit": "home_visit_T09",
+                "waitlist": "waitlist_T08",
+                "recording": "recording_engine_T13",
+            }.items():
+                if key in dialog.result:
+                    result.add(
+                        feature, "Нельзя подтвердить обязательный результат " + key, "unsupported"
+                    )
+            # Наличие флага opt-out не доказывает физическое прекращение записи аудио.
+            if dialog.result.get("recording") is False:
+                state = await runtime.dialogue_store.inspect(runtime.call_id)
+                if not state.recording_opt_out:
+                    result.add("recording_consent_not_saved", "Пожелание не сохранено", "critical")
+            end = await client.post(f"/api/dialog/{runtime.call_id}/end")
+            if end.status_code != 200 or end.json()["phase"] != "ended":
+                result.add("end", "Разговор не завершён", "critical")
+    except Exception as error:
+        # Диагностика не включает текст driver exceptions и исходные данные запроса.
+        result.add("runtime_error", type(error).__name__, "error")
+    result.elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+    result.simulated_seconds = (runtime.clock.now() - beginning).total_seconds()
+    result.requests = runtime.emulator.request_summary()
+    result.mutations = {
+        "visits_created": runtime.emulator.write_count,
+        "visits_patched": runtime.emulator.patch_count,
+        "clients_patched": runtime.emulator.client_patch_count,
+        "escalations_created": runtime.emulator.escalation_count,
+    }
+    return result.finish()

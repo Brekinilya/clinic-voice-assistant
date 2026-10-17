@@ -10,6 +10,9 @@ setup:
   channel: inbound
   visits:
     - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+  # Явные свободные слоты именно этого примера: общая фикстура содержит ещё 05.10 16:00.
+  slots:
+    kuznetsova: ["01.10.2026 08:45", "05.10.2026 09:15", "06.10.2026 12:00", "07.10.2026 16:30"]
 
 steps:
   - say: greeting.inbound

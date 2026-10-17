@@ -116,15 +116,22 @@ async def test_tts_exception_plays_prepared_audio_without_retrying_the_model():
         await call.close()
 
 
+async def offer_operator_after_empty_recognition(call, channel):
+    """Ждём обработки, а не только transcript: он публикуется до ответа и синтеза."""
+    await answered(call)
+    for count in (1, 2):
+        await call.feed(phrase(10))
+        await until(lambda: len(channel.of("transcript")) >= count)
+        # Иначе следующая фраза попадёт в ещё работающий responder и склеится с прежней.
+        await until(lambda: call._responder is not None and call._responder.done())
+        await until(lambda: not call.speaking())
+
+
 async def test_yes_to_the_operator_offer_is_never_a_booking_confirmation():
     dialogue = Dialogue(lambda turn: reply("Вы записаны"))
     call, channel = session(dialogue, Recognizer({9: "Да"}), partial_ms=5000)
     try:
-        await answered(call)
-        for count in (1, 2):
-            await call.feed(phrase(10))
-            await until(lambda: len(channel.of("transcript")) >= count)
-            await until(lambda: not call.speaking())
+        await offer_operator_after_empty_recognition(call, channel)
         assert call._operator_offered
         await call.feed(phrase(9))
         await until(lambda: channel.of("end"))
@@ -144,11 +151,7 @@ async def test_emergency_preempts_the_local_operator_offer():
         Dialogue(answer, urgent=True), Recognizer({9: "Да, давит в груди"}), partial_ms=5000
     )
     try:
-        await answered(call)
-        for count in (1, 2):
-            await call.feed(phrase(10))
-            await until(lambda: len(channel.of("transcript")) >= count)
-            await until(lambda: not call.speaking())
+        await offer_operator_after_empty_recognition(call, channel)
         await call.feed(phrase(9))
         await until(lambda: channel.of("end"))
         assert channel.of("end")[-1]["route"] == "R-01"
@@ -264,11 +267,7 @@ async def test_declining_operator_does_not_confirm_the_old_action():
     dialogue = Dialogue(lambda turn: reply("Вы записаны"))
     call, channel = session(dialogue, Recognizer({9: "Нет"}), partial_ms=5000)
     try:
-        await answered(call)
-        for count in (1, 2):
-            await call.feed(phrase(10))
-            await until(lambda: len(channel.of("transcript")) >= count)
-            await until(lambda: not call.speaking())
+        await offer_operator_after_empty_recognition(call, channel)
         await call.feed(phrase(9))
         await until(lambda: not call._operator_offered)
         await until(lambda: call._watch is not None and not call._watch.done())
