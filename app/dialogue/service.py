@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+from datetime import timedelta
 
 from app.booking.models import ActionState, BookingError
 from app.booking.service import BookingService
@@ -20,6 +21,7 @@ from app.dialogue.models import (
 from app.dialogue.ports import Conversation, DialogueStore, SafetyChecker
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
+from app.mis.budget import Priority, demand
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
 
@@ -34,6 +36,8 @@ class DialogueService:
         interpreter: InputInterpreter | None = None,
         safety: SafetyChecker | None = None,
         conversation: Conversation | None = None,
+        mis_turn_wait_s: float = 8.0,
+        mis_wait_limit_s: int = 120,
     ) -> None:
         if len(hash_key) < 32:
             raise ValueError("ключ квитанций должен содержать хотя бы 32 байта")
@@ -43,6 +47,8 @@ class DialogueService:
         self.interpreter = interpreter if interpreter is not None else CommandInterpreter()
         self.safety = safety
         self.conversation = conversation
+        self.mis_turn_wait_s = mis_turn_wait_s
+        self.mis_wait_limit_s = mis_wait_limit_s
 
     def _digest(self, call_id: str, turn: Turn) -> str:
         # ФИО и дата рождения не сохраняются в журнале команд даже в виде обычного SHA256.
@@ -107,7 +113,10 @@ class DialogueService:
             )
         state = claim.state
         try:
-            state, result = await self._process(state, turn)
+            granted = []
+            with self._mis_demand(call_id, state, granted.append):
+                state, result = await self._process(state, turn)
+            state, result = await self._settle_wait(state, turn, result, progressed=bool(granted))
         except Exception:
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
             await self._release_call(call_id)
@@ -153,6 +162,49 @@ class DialogueService:
         if state.phase in {Phase.ENDED, Phase.HANDOFF}:
             self.booking.clear_call_cache(call_id)
         return result
+
+    def _mis_demand(self, call_id: str, state: DialogueState, granted):
+        """Ход разговора ждёт окна МИС не дольше срока; новая речь или отбой отменяют ожидание."""
+        epoch = state.input_epoch
+
+        async def superseded() -> bool:
+            current = await self.store.inspect(call_id)
+            return current.input_epoch != epoch or current.phase in {Phase.ENDED, Phase.HANDOFF}
+
+        return demand(
+            Priority.DIALOGUE,
+            until=self.booking.clock.now() + timedelta(seconds=self.mis_turn_wait_s),
+            cancelled=superseded,
+            owner=call_id,
+            granted=granted,
+        )
+
+    async def _settle_wait(
+        self, state: DialogueState, turn: Turn, result: Reply, *, progressed: bool
+    ) -> tuple[DialogueState, Reply]:
+        """Ожидание МИС без движения ограничено: дальше не «подождите», а регистратор.
+
+        Ход, в котором МИС выдала хотя бы одно место (например, перенос создал новую
+        запись и ждёт окна для отмены прежней), начинает отсчёт заново.
+        """
+        if result.code != "WAIT_MIS":
+            if state.mis_wait_since is not None or state.retry_at is not None:
+                state = state.model_copy(update={"mis_wait_since": None, "retry_at": None})
+                result = result.model_copy(update={"retry_at": None})
+            return state, result
+        now = self.booking.clock.now()
+        if state.mis_wait_since is None or progressed:
+            state = state.model_copy(update={"mis_wait_since": now})
+        deadline = state.mis_wait_since + timedelta(seconds=self.mis_wait_limit_s)
+        if self.conversation is not None and (state.retry_at or now) > deadline:
+            state = await self.store.preempt(
+                state.call_id,
+                turn.turn_id,
+                TransferRequest(route="R-06", priority="P3", reason="mis_wait"),
+            )
+            await self._release_call(state.call_id)
+            return state, handoff_reply(state, turn.turn_id)
+        return state, result.model_copy(update={"wait_deadline": deadline})
 
     async def input_started(self, call_id: str, turn_id: int) -> Reply:
         event = InputStart(turn_id=turn_id)
@@ -214,10 +266,13 @@ class DialogueService:
             shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:
                 return shortcut
-        if state.retry_at is not None:
-            if state.retry_at > now and (
-                command is None or command.operation not in {Operation.STATUS, Operation.HELP}
-            ):
+        # В разговоре реплика понимается и во время паузы: «нет», «оператора» и новые
+        # предпочтения не требуют МИС, а запросы к ней сами упрутся в общий бюджет.
+        if self.conversation is None and state.retry_at is not None:
+            if state.retry_at > now and command.operation not in {
+                Operation.STATUS,
+                Operation.HELP,
+            }:
                 return state, reply(
                     state,
                     turn.turn_id,

@@ -1,4 +1,4 @@
-"""Единая схема backend; версия 5 добавляет журнал переноса и SMS переноса."""
+"""Единая схема backend; версия 6 добавляет талоны общего бюджета МИС."""
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,7 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 actions = Table(
     "backend_booking_actions",
@@ -64,6 +64,9 @@ budget_requests = Table(
     Column("id", Integer, primary_key=True),
     Column("scope", String(64), nullable=False),
     Column("requested_at", DateTime(timezone=True), nullable=False),
+    # Талон: место окна, закреплённое за ждущим звонком до hold_until.
+    Column("owner", String(128)),
+    Column("hold_until", DateTime(timezone=True)),
 )
 Index("mis_budget_window", budget_requests.c.scope, budget_requests.c.requested_at)
 dialogue_sessions = Table(

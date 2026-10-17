@@ -1,5 +1,6 @@
 """Подменяемые границы транспорта и общего бюджета запросов."""
 
+from contextlib import AbstractAsyncContextManager
 from datetime import date
 from typing import Protocol
 
@@ -19,6 +20,10 @@ class BudgetExhausted(MisError):
     """Локальный бюджет отказал до отправки HTTP; внешняя операция не начиналась."""
 
 
+class BudgetCancelled(BudgetExhausted):
+    """Ожидание бюджета отменено новой речью или отбоем; HTTP не отправлялся."""
+
+
 class MisUnavailable(MisError):
     pass
 
@@ -28,12 +33,19 @@ class MisOutcomeUnknown(MisError):
 
 
 class RequestBudget(Protocol):
-    async def reserve(self) -> None: ...
+    """Приоритет, срок ожидания и отмену берёт из app.mis.budget.demand."""
+
+    async def reserve(self, cost: int = 1) -> list | None: ...
+    async def release(self, ids: list) -> None: ...
+    async def touch(self, place: object) -> float: ...
     async def defer(self, seconds: int) -> None: ...
 
 
 class MedicalSystem(Protocol):
     def clear_call_cache(self, call_id: str) -> None: ...
+    def prepaid(self, cost: int, *, keep_for_write: int = 0) -> AbstractAsyncContextManager: ...
+    def known_doctors(self) -> list[Doctor] | None: ...
+    def has_client(self, client_id: int) -> bool: ...
     async def doctors(
         self, specialty: str | None = None, *, fresh: bool = False
     ) -> list[Doctor]: ...

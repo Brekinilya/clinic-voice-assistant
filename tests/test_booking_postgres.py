@@ -13,6 +13,7 @@ from app.booking.memory import MemoryBookingStore
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.service import BookingService
 from app.demo import DemoClock, DemoSchedule, EmulatorBudget, demo_emulator
+from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.mis.ports import MisError
 from app.storage.booking import (
@@ -195,10 +196,11 @@ async def test_restart_recovery_with_emulator_after_lost_response(pg_engine):
 @pytest.mark.postgres
 async def test_real_budget_is_shared_and_survives_new_objects(pg_engine):
     budgets = [PostgresBudget(pg_engine, "fictional-team-token") for _ in range(12)]
-    results = await asyncio.gather(
-        *(budget.reserve() for budget in budgets), return_exceptions=True
-    )
-    assert sum(r is None for r in results) == 8
+    with demand(Priority.COMMIT):
+        results = await asyncio.gather(
+            *(budget.reserve() for budget in budgets), return_exceptions=True
+        )
+    assert sum(isinstance(r, list) for r in results) == 8
     assert all(
         isinstance(r, MisError) and r.retry_after >= 1 for r in results if isinstance(r, Exception)
     )

@@ -1,11 +1,13 @@
 """Разговор со стендом: токен команды, проверенное расписание и устойчивые журналы."""
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from sqlalchemy import select
 
 from app.backend import backend_engine
 from app.dialogue.composition import assemble_dialogue
+from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.scheduling.bootstrap import configured_schedule
 from app.scheduling.index import SqliteSchedule
@@ -39,7 +41,9 @@ async def open_live_backend(settings: Settings, clock):
                 ),
             )
             # Проверяем привязку Excel к актуальному справочнику до первого звонка.
-            current = {doctor.id: doctor for doctor in await mis.doctors(fresh=True)}
+            # Сразу после импорта окно может быть занято: ждём его, а не падаем.
+            with demand(Priority.BACKGROUND, until=clock.now() + timedelta(seconds=90)):
+                current = {doctor.id: doctor for doctor in await mis.doctors(fresh=True)}
             if any(
                 doctor.id not in current or not schedule.matches_doctor(current[doctor.id])
                 for doctor in schedule.doctors

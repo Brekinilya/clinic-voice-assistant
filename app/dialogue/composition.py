@@ -48,4 +48,6 @@ def assemble_dialogue(
         hash_key,
         safety=safety,
         conversation=conversation,
+        mis_turn_wait_s=settings.mis_turn_wait_s,
+        mis_wait_limit_s=settings.mis_wait_limit_s,
     )

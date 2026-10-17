@@ -247,9 +247,18 @@ async def test_quota_before_patch_requires_new_yes_without_extending_deadline(ca
 
 async def test_readback_quota_keeps_pending_and_does_not_repeat_patch(cancel_engine):
     async with pipeline(SETUP, pg_engine=cancel_engine) as (client, service, emulator, clock, *_):
-        service.booking.mis._budget = MemoryBudget(clock, limit=6)
+        budget = MemoryBudget(clock)
+        service.booking.mis._budget = budget
         await prepare(client)
+
+        async def pause_after_patch(response):
+            # Стенд объявил паузу сразу после PATCH: сверка ждёт, PATCH не повторяется.
+            if response.request.method == "PATCH":
+                await budget.defer(60)
+
+        service.booking.mis._client.event_hooks["response"].append(pause_after_patch)
         assert (await turn(client, 4, "Да"))["code"] == "CANCEL_RECONCILING"
+        service.booking.mis._client.event_hooks["response"].remove(pause_after_patch)
         assert emulator.patch_count == 1
         clock.value += timedelta(seconds=60)
         assert (await turn(client, 5, "Хорошо"))["code"] == "CANCELLED"

@@ -163,6 +163,10 @@ templates:
     text: Одну секунду, проверяю.
     src: "3.7"
 
+  wait.mis_ready:
+    text: Система записи освободилась, можно продолжать.
+    src: "3.7"
+
   dates.confirm:
     text: На {date:accs}, верно?
     expect: yes_no

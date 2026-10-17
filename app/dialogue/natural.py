@@ -7,6 +7,7 @@ from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
 from app.cancellation.service import CancellationService
 from app.dialogue.cancellation import CancellationConversation
+from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
 from app.dialogue.identity import IdentityDrafts
 from app.dialogue.medical import MedicalConversation
@@ -47,7 +48,10 @@ class BookingConversation:
         self.identity_drafts = identity_drafts
         self.rooms = rooms
         self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
-        self.input = nlu if nlu is not None else RulesInput(booking.mis, booking.clock)
+        self.input = (
+            nlu if nlu is not None else RulesInput(booking.mis, booking.clock, booking.schedule)
+        )
+        self.names = DoctorNames(booking.mis, booking.schedule)
         self.visits = VisitConversation(
             booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
         )
@@ -126,7 +130,7 @@ class BookingConversation:
         route: str,
         priority: Literal["P1", "P2", "P3"] = "P3",
         *,
-        reason: Literal["move_create_rejected", "move_manual"] | None = None,
+        reason: Literal["move_create_rejected", "move_manual", "mis_wait"] | None = None,
     ) -> tuple[DialogueState, Reply]:
         state = await self.store.preempt(
             state.call_id,
@@ -150,7 +154,7 @@ class BookingConversation:
             options = await self.booking.options(
                 state.client_id, state.specialty, state.preferences, limit=2, call_id=state.call_id
             )
-            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+            doctors = {d.id: d for d in await self.names.speaking()}
         except MisError as error:
             # Отменённая старая бронь и новые предпочтения должны сохраниться даже при ожидании.
             return mis_failure(state, turn, self.booking.clock.now(), error)
@@ -504,7 +508,7 @@ class BookingConversation:
             if slots.doctor is not None:
                 doctors = [
                     d
-                    for d in await self.booking.mis.doctors()
+                    for d in await self.names.speaking()
                     if d.full_name.split()[0].casefold() == slots.doctor.casefold()
                 ]
                 if not doctors:
@@ -545,7 +549,7 @@ class BookingConversation:
             index = slots.choice_index
             if index is None or not 1 <= index <= len(state.options):
                 raise BookingError("INVALID_CHOICE")
-            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+            doctors = {d.id: d for d in await self.names.speaking()}
             action = await self.booking.propose(
                 state.call_id, state.client_id, state.options[index - 1]
             )
@@ -660,7 +664,7 @@ class BookingConversation:
         slot = state.proposal.slot
         doctor_name = state.proposal.doctor_name
         if doctor_name is None:
-            doctors = {d.id: d for d in await self.booking.mis.doctors()}
+            doctors = {d.id: d for d in await self.names.speaking()}
             doctor_name = doctors[slot.doctor_id].full_name
         return reply(
             state,

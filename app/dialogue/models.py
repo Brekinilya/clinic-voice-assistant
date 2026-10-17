@@ -87,7 +87,7 @@ class TransferRequest(BookingModel):
     priority: Literal["P1", "P2", "P3"]
     status: Literal["requested"] = "requested"
     action_id: str | None = None
-    reason: Literal["move_create_rejected", "move_manual"] | None = None
+    reason: Literal["move_create_rejected", "move_manual", "mis_wait"] | None = None
 
 
 class DialogueState(BookingModel):
@@ -100,6 +100,8 @@ class DialogueState(BookingModel):
     options: tuple[Slot, ...] = Field(default=(), max_length=3)
     proposal: Proposal | None = None
     retry_at: AwareDatetime | None = None
+    # Начало непрерывного ожидания МИС в этом звонке; срок ожидания отсчитывается от него.
+    mis_wait_since: AwareDatetime | None = None
     input_epoch: int = 0
     observed_turn_id: int = 0
     started_turn_id: int = 0
@@ -139,6 +141,8 @@ class Reply(BookingModel):
     proposal: Proposal | None = None
     code: str | None = None
     retry_at: AwareDatetime | None = None
+    # После этого момента звонок не ждёт МИС, а передаётся регистратору.
+    wait_deadline: AwareDatetime | None = None
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     visits: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
