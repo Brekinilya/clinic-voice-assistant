@@ -33,7 +33,25 @@ WEEKDAYS = {
     "воскресенье": 7,
 }
 RELATIVE_DAYS = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
-NEGATIONS = {"не", "кроме", "без"}
+NEGATIONS = {"не", "ни", "кроме", "без"}
+# «Исключите четверг и пятницу»: глагол относится ко всему перечню через «и».
+EXCLUDING = {"исключить", "убрать", "кроме"}
+# Отрицание относится только к своей части фразы: «не завтра, а послезавтра».
+CLAUSE_BREAKS = {"а", "но", "или", "зато", "лучше", "давайте", "если"}
+# «В четверг не могу», «сегодня уже поздно» — отказ после дня.
+REFUSING = {
+    "мочь",
+    "смочь",
+    "получиться",
+    "подходить",
+    "подойти",
+    "устраивать",
+    "успевать",
+    "успеть",
+}
+REFUSED = {"неудобно", "поздно", "занят", "занята", "нельзя"}
+# «Лучше двадцать второго», «а двадцать второго» — число месяца без названия месяца.
+DAY_BEFORE = {"а", "лучше"}
 BOUNDS = {"после": "after", "с": "from", "со": "from", "от": "from", "до": "to", "по": "to"}
 DIGIT_DATE = re.compile(r"(?<![\d:])(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?![\d:])")
 
@@ -209,12 +227,30 @@ def parse_dates(text: str, today: date) -> dict[str, tuple[object, str]]:
 
 
 def _negated(tokens: list[str], index: int) -> bool:
-    before = tokens[max(0, index - 3) : index]
-    # В «не завтра, а послезавтра» отрицание относится только к первой части.
-    for position, token in enumerate(before):
-        if token in {"а", "но", "или", "и", "зато"}:
-            before = before[position + 1 :]
-    return bool(NEGATIONS & set(before))
+    window = tokens[max(0, index - 3) : index]
+    cut = 0
+    for position, token in enumerate(window):
+        # «и» продолжает перечень после «исключите», иначе отрицание кончается на своей части.
+        if token in CLAUSE_BREAKS or (token == "и" and not _excluding(window[:position])):
+            cut = position + 1
+    scope = window[cut:]
+    return bool(NEGATIONS & set(scope)) or _excluding(scope) or _refused_after(tokens, index)
+
+
+def _excluding(tokens: list[str]) -> bool:
+    return any(EXCLUDING & lemmas(token) for token in tokens)
+
+
+def _refused_after(tokens: list[str], index: int) -> bool:
+    after = tokens[index + 1 : index + 4]
+    for position, token in enumerate(after):
+        if token in CLAUSE_BREAKS:
+            return False
+        if token in REFUSED:
+            return True
+        if token == "не" and position + 1 < len(after) and REFUSING & lemmas(after[position + 1]):
+            return True
+    return False
 
 
 def _weekday_date(today: date, weekday: int, before: list[str]) -> date:
@@ -266,7 +302,13 @@ def _calendar_dates(
                 # Явный год не заменяем ближайшим будущим годом.
                 explicit_year = year.value if year.value >= 1000 else 2000 + year.value
                 d, end = _safe_date(explicit_year, month, n.value), year.end
-        elif n.ordinal and (before == "на" or before in BOUNDS or _next_is(tokens, n.end, "число")):
+        elif n.ordinal and (
+            before == "на"
+            or before in BOUNDS
+            or _next_is(tokens, n.end, "число")
+            or (before in DAY_BEFORE | NEGATIONS or _negated(tokens, n.start))
+            and tokens[n.end - 1].endswith(("ого", "его"))
+        ):
             d, end = _future(today, today.month, n.value, roll_month=True), n.end
         else:
             continue
