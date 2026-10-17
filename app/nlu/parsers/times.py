@@ -78,7 +78,13 @@ def parse_times(text: str, bare: bool = False) -> dict[str, tuple[object, str]]:
                 found["time_to"] = (clock.text(), _span(tokens, i, clock.end))
             else:
                 found["time_from"] = (clock.text(), _span(tokens, i - 1, clock.end))
-        elif token in AT_WORDS and not found and (clock := read_clock(tokens, numbers, i + 1)):
+        elif (
+            token in AT_WORDS
+            and not found
+            # «Не в шесть, а в восемь» — отвергнутое время не берём, ищем следующее.
+            and not _negated(tokens, i)
+            and (clock := read_clock(tokens, numbers, i + 1))
+        ):
             evidence = _span(tokens, i, clock.end)
             found["time_from"] = (clock.text(), evidence)
             found["time_to"] = (clock.text(), evidence)
@@ -91,6 +97,12 @@ def parse_times(text: str, bare: bool = False) -> dict[str, tuple[object, str]]:
             found["time_to"] = (clock.text(), evidence)
 
     normalized = " ".join(tokens)
+    if _evening(tokens, normalized):
+        # «После работы, часов в семь», «в семь вечером» — это 19:00, а не 7:00.
+        for name, (value, phrase) in list(found.items()):
+            hour, minute = map(int, value.split(":"))
+            if 7 <= hour < 12:
+                found[name] = (f"{hour + 12:02d}:{minute:02d}", phrase)
     if "до обеда" in normalized and "time_to" not in found:
         found["time_to"] = ("12:00", "до обеда")
 
@@ -184,6 +196,12 @@ def _bare_clock(tokens: list[str], numbers: list[Number]) -> Clock | None:
 
 def _followed_by_date_word(tokens: list[str], i: int) -> bool:
     return i < len(tokens) and bool(lookup(tokens[i], MONTHS))
+
+
+def _evening(tokens: list[str], normalized: str) -> bool:
+    if "утр" in normalized:
+        return False
+    return "после работы" in normalized or any("вечер" in lemmas(t) for t in tokens)
 
 
 def _negated(tokens: list[str], i: int) -> bool:
