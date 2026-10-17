@@ -40,7 +40,9 @@ def environment(mode: str, source: Mapping[str, str]) -> dict[str, str]:
         "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
         "DIALOGUE_HASH_KEY": secrets.token_urlsafe(48),
         "DIALOGUE_MODE": "natural",
-        "DIALOGUE_STORAGE": "postgres",
+        # Эмулятор МИС теряет записи при перезапуске: диалог и удержания живут столько же.
+        # Для внешней МИС операции и подтверждения обязательно долговечны.
+        "DIALOGUE_STORAGE": "postgres" if mode == "hackathon" else "memory",
         "BACKEND_DEMO_ENABLED": "true" if mode == "offline_test" else "false",
         "DIALOGUE_ENABLED": "true" if mode == "hackathon" else "false",
         "TELEPHONY_ENABLED": "false",

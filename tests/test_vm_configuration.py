@@ -49,7 +49,7 @@ def test_created_dotenv_is_accepted_by_application(tmp_path, mode):
     assert settings.app_mode == mode
     assert settings.backend_demo_enabled == (mode == "offline_test")
     assert settings.dialogue_enabled == (mode == "hackathon")
-    assert settings.dialogue_storage == "postgres"
+    assert settings.dialogue_storage == ("postgres" if mode == "hackathon" else "memory")
     assert len(settings.dialogue_hash_key.get_secret_value()) >= 32
     if mode == "hackathon":
         assert settings.mis_token.get_secret_value() == "fictional-$token#'value"
