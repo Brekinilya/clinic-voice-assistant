@@ -46,6 +46,9 @@ def environment(mode: str, source: Mapping[str, str]) -> dict[str, str]:
         "BACKEND_DEMO_ENABLED": "true" if mode == "offline_test" else "false",
         "DIALOGUE_ENABLED": "true" if mode == "hackathon" else "false",
         "TELEPHONY_ENABLED": "false",
+        "WEB_ACCESS_ENABLED": "true",
+        "WEB_ACCESS_USER": "clinic",
+        "WEB_ACCESS_PASSWORD": secrets.token_urlsafe(32),
     }
     if mode == "hackathon":
         token = (source.get("MIS_TOKEN") or source.get("DBI_API_TOKEN") or "").strip()

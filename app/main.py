@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.access import TeamAccess
 from app.api.demo import chat_router
 from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
@@ -58,6 +59,12 @@ def create_app(
         lifespan=lifespan,
     )
     application.include_router(health_router)
+    if selected_settings.web_access_enabled:
+        application.add_middleware(
+            TeamAccess,
+            username=selected_settings.web_access_user,
+            password=selected_settings.web_access_password.get_secret_value(),
+        )
     if selected_settings.backend_demo_enabled or selected_settings.dialogue_enabled:
         application.include_router(dialogue_router)
         if selected_settings.dialogue_mode == "natural":

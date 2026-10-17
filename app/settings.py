@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = SecretStr("clinic_dev")
     database_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
+    # Вход команды в публичное демо. Не заменяет идентификацию пациента и роли клиники.
+    web_access_enabled: bool = False
+    web_access_user: str = "clinic"
+    web_access_password: SecretStr = SecretStr("")
+
     # Текстовый HTTP-стенд включается явно и работает только с автономной МИС.
     backend_demo_enabled: bool = False
     # Внешний разговорный backend включается отдельно от учебной страницы.
@@ -50,6 +55,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:
+        if self.web_access_enabled and (
+            not self.web_access_user
+            or len(self.web_access_user) > 64
+            or any(c in self.web_access_user for c in ":\r\n\x00")
+            or len(self.web_access_password.get_secret_value().encode()) < 24
+        ):
+            raise ValueError("для WEB_ACCESS_ENABLED нужны имя и WEB_ACCESS_PASSWORD от 24 байт")
         if self.schedule_path is not None and self.schedule_index_path is not None:
             raise ValueError("выберите один источник: SCHEDULE_PATH или SCHEDULE_INDEX_PATH")
         if self.schedule_access_path is not None and self.schedule_index_path is None:
