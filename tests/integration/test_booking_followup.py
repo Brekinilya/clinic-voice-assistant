@@ -41,11 +41,13 @@ async def test_audibility_yes_needs_a_fresh_booking_confirmation():
             call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
             call._watch_silence()
             await until(lambda: "Вы меня слышите?" in channel.said())
+            # Ускоренный таймер нужен только для первого вопроса. Иначе он
+            # успевает повториться во время ожидания конца воспроизведения.
+            call.settings = call.settings.model_copy(update={"silence_prompt_s": 30})
             await call.feed(phrase(9))
             await until(lambda: call._responder is not None and call._responder.done())
             assert emulator.write_count == 0
             assert (await service.store.inspect("scenario")).phase == Phase.HELD
-            call.settings = call.settings.model_copy(update={"silence_prompt_s": 30})
             await until(lambda: not call.speaking())
             await call.feed(phrase(10))
             await until(lambda: any(r["code"] == "BOOKED" for r in channel.of("reply")))

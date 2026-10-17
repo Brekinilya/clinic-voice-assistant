@@ -10,6 +10,14 @@ from tests.voice.test_session import answered, session, until
 from tests.voice.test_session_failures import offer_operator_after_empty_recognition
 
 
+async def ask_audibility(call, channel):
+    call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
+    call._watch_silence()
+    await until(lambda: "Вы меня слышите?" in channel.said())
+    # После первого вопроса дальше проверяем ответы, а не гоняем таймер 50 мс.
+    call.settings = call.settings.model_copy(update={"silence_prompt_s": 30})
+
+
 @pytest.mark.parametrize(
     "text",
     ["Да", "Да, да", "Да, я вас слышу", "Слышу", "Нет", "Я вас не слышу", "Да, я вас не слышу"],
@@ -21,9 +29,7 @@ async def test_audibility_answer_repeats_question_without_final_backend_turn(tex
     try:
         await answered(call)
         await call._deliver(0, reply(question, phase="held"))
-        call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
-        call._watch_silence()
-        await until(lambda: "Вы меня слышите?" in channel.said())
+        await ask_audibility(call, channel)
         await call.feed(phrase(9))
         await until(lambda: call._responder is not None and call._responder.done())
         assert not dialogue.turns and not channel.of("end")
@@ -39,9 +45,7 @@ async def test_new_request_after_audibility_prompt_reaches_backend():
     call, channel = session(dialogue, Recognizer({9: "Отмените мою запись"}), partial_ms=5000)
     try:
         await answered(call)
-        call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
-        call._watch_silence()
-        await until(lambda: "Вы меня слышите?" in channel.said())
+        await ask_audibility(call, channel)
         await call.feed(phrase(9))
         await until(lambda: dialogue.turns)
         assert dialogue.turns[-1].text == "Отмените мою запись"
@@ -54,13 +58,10 @@ async def test_yes_to_audibility_does_not_accept_the_previous_operator_offer():
     call, channel = session(dialogue, Recognizer({9: "Да, я вас слышу", 8: "Не нужно"}))
     try:
         await offer_operator_after_empty_recognition(call, channel)
-        call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
-        call._watch_silence()
-        await until(lambda: "Вы меня слышите?" in channel.said())
+        await ask_audibility(call, channel)
         await call.feed(phrase(9))
         await until(lambda: call._responder is not None and call._responder.done())
         assert call._operator_offered and not call.closing and not dialogue.turns
-        call.settings = call.settings.model_copy(update={"silence_prompt_s": 30})
         await until(lambda: not call.speaking())
         await call.feed(phrase(8))
         await until(lambda: call._responder is not None and call._responder.done())
@@ -75,9 +76,7 @@ async def test_emergency_preempts_audibility_question():
     call, channel = session(dialogue, Recognizer({9: "Да, давит в груди"}), partial_ms=5000)
     try:
         await answered(call)
-        call.settings = call.settings.model_copy(update={"silence_prompt_s": 0.05})
-        call._watch_silence()
-        await until(lambda: "Вы меня слышите?" in channel.said())
+        await ask_audibility(call, channel)
         await call.feed(phrase(9))
         await until(lambda: channel.of("end"))
         assert channel.of("end")[-1]["route"] == "R-01"
