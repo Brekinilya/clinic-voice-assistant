@@ -164,22 +164,22 @@ class SqliteSchedule:
             and row["specialty"] == slot.specialty
         )
 
-    def eligible(self, client_id: int, slot: Slot):
+    def access_state(self, client_id: int, slot: Slot) -> AccessState:
         row = self._row(slot)
         if not row or not self.contains(slot):
-            return False
-        return (
-            access_state(
-                self._patients.get(client_id),
-                slot.doctor_id,
-                slot.specialty,
-                row["patient_group"],
-                slot.scheduled_at.astimezone(CLINIC_TIMEZONE),
-                client_id,
-                self.facts,
-            )
-            == AccessState.ALLOWED
+            return AccessState.UNKNOWN
+        return access_state(
+            self._patients.get(client_id),
+            slot.doctor_id,
+            slot.specialty,
+            row["patient_group"],
+            slot.scheduled_at.astimezone(CLINIC_TIMEZONE),
+            client_id,
+            self.facts,
         )
+
+    def eligible(self, client_id: int, slot: Slot):
+        return self.access_state(client_id, slot) == AccessState.ALLOWED
 
     def room(self, doctor_id: int, scheduled_at: datetime):
         self._check_current()

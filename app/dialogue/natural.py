@@ -158,7 +158,15 @@ class BookingConversation:
         except MisError as error:
             # Отменённая старая бронь и новые предпочтения должны сохраниться даже при ожидании.
             return mis_failure(state, turn, self.booking.clock.now(), error)
-        except BookingError:
+        except BookingError as error:
+            if str(error) == "ELIGIBILITY_UNKNOWN":
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "В расписании есть время, но я не могу подтвердить условия записи к этому специалисту: прикрепление, направление или другой необходимый допуск.",
+                    "Это нужно уточнить у регистратора. Можно выбрать другого специалиста или попросить оператора.",
+                    code="ELIGIBILITY_UNKNOWN",
+                )
             return state, reply(
                 state,
                 turn.turn_id,

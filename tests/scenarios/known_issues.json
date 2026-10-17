@@ -1097,7 +1097,7 @@
     },
     "REG-T05 неизвестный пациент → исправление → пятница": {
       "status": "fail",
-      "reason": "T05: общий расход квоты и общий текст неуспешной идентификации",
+      "reason": "T05/T07: при 85 однотипных врачах и двух фоновых GET подбор ждёт окно; отдельный дефект текста неуспешной идентификации",
       "findings": [
         {
           "code": "code:ident.not_found",
@@ -1106,8 +1106,20 @@
           "step": 2
         },
         {
-          "code": "slot_weekdays",
-          "detail": "Предложен запрещённый день недели",
+          "code": "phase:booking.offer_first",
+          "detail": "Получено состояние identified",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "offer_unavailable",
+          "detail": "Вместо вариантов получен WAIT_MIS",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "phase:booking.offer_period",
+          "detail": "Получено состояние identified",
           "kind": "fail",
           "step": 4
         },

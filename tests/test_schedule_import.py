@@ -373,6 +373,41 @@ def test_age_and_missing_assignment_referral_sex(birth, group, profile, expected
     assert access_state(birth, 907, profile, group, DemoClock().now(), 1, ()) == expected
 
 
+@pytest.mark.parametrize(
+    "specialty,expected", [("Терапевт", "ELIGIBILITY_UNKNOWN"), ("Хирург", None)]
+)
+async def test_options_distinguish_missing_access_from_available_slots(
+    tmp_path, specialty, expected
+):
+    """Реальный SQLite-индекс: свободное время не подтверждает участок пациента."""
+    from app.mis.emulator import MisEmulator
+
+    clock = DemoClock()
+    source = workbook(tmp_path / "access.xlsx", specialty=specialty)
+    document = catalog(clock, specialty=specialty)
+    path = tmp_path / "access.sqlite"
+    import_workbook(source, document, path, clock.now())
+    schedule = SqliteSchedule(path, clock, mode="offline_test")
+    emulator = MisEmulator(clock, list(document.doctors), {"demo": [patient()]})
+    try:
+        async with httpx.AsyncClient(
+            base_url="https://offline.invalid/api/v1/",
+            headers={"Authorization": "Bearer demo"},
+            transport=emulator.transport(),
+        ) as client:
+            service = BookingService(
+                HttpMedicalSystem(client, EmulatorBudget()), MemoryBookingStore(), schedule, clock
+            )
+            if expected:
+                with pytest.raises(BookingError, match=expected):
+                    await service.options(1, specialty)
+            else:
+                assert await service.options(1, specialty)
+            assert emulator.write_count == 0
+    finally:
+        schedule.close()
+
+
 def fact(clock, state=AccessState.ALLOWED):
     return AccessFact(
         client_id=1,
