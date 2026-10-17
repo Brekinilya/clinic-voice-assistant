@@ -16,6 +16,7 @@ venv/
 # Local data, models, call recordings
 data/
 models/
+/models.zip
 recordings/
 
 # IDE / OS

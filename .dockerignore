@@ -10,6 +10,7 @@
 !.env.example
 data
 models
+models.zip
 recordings
 tests
 docs
