@@ -303,6 +303,20 @@ class CallSession:
         if result.status == RecognitionStatus.SILENCE:
             await self._unheard(turn)
             return
+        # Проверка промежуточного текста этой же фразы должна закончиться до
+        # итогового согласия. Иначе поздний partial меняет input_epoch уже после
+        # authorize и прерывает запись. Части новой фразы по-прежнему идут сразу.
+        partial = self._partial
+        if partial is not None and not partial.done():
+            done, _ = await asyncio.wait(
+                {partial},
+                timeout=self.settings.asr_timeout_s + self.settings.dialogue_timeout_s,
+            )
+            if not done:
+                await self._deliver(turn, None)
+                return
+        if turn != self.turn_id or self.ended or self.closing or turn in self._answered:
+            return
         if self._audibility_pending or self._operator_offered:
             # Ответ на вопрос шлюза не подтверждает старую запись.
             # Экстренный маршрут всё равно проверяется первым.

@@ -1,10 +1,11 @@
 """Ответ о слышимости не подтверждает старую бронь и не запускает цикл непонимания."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from tests.voice.fakes import Dialogue, Recognizer, phrase, reply
+from tests.voice.fakes import QUIET, SPEECH, Dialogue, Recognizer, phrase, reply
 from tests.voice.test_session import answered, session, until
 from tests.voice.test_session_failures import offer_operator_after_empty_recognition
 
@@ -96,4 +97,43 @@ async def test_declining_operator_does_not_reach_old_booking(text):
         assert not dialogue.turns and not call._operator_offered
         assert not call.closing
     finally:
+        await call.close()
+
+
+@pytest.mark.parametrize("emergency", [False, True])
+async def test_partial_safety_finishes_before_final_authorization(emergency):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class SlowPartial(Dialogue):
+        async def handle(self, call_id, turn):
+            if not turn.is_final:
+                entered.set()
+                await release.wait()
+            return await super().handle(call_id, turn)
+
+    def answer(turn):
+        if not turn.is_final:
+            return reply("Звоните сто три.", transfer=SimpleNamespace(route="R-01", priority="P1"))
+        return reply("Запись создана", code="BOOKED")
+
+    dialogue = SlowPartial(answer, urgent=emergency)
+    call, channel = session(dialogue, Recognizer({10: "Да"}), partial_ms=320)
+    try:
+        await answered(call)
+        await call.feed(SPEECH * 10)
+        await asyncio.wait_for(entered.wait(), 1)
+        await call.feed(QUIET * 12)
+        await until(lambda: any(t["final"] for t in channel.of("transcript")))
+        await asyncio.sleep(0.03)
+        assert not dialogue.turns, "Итоговое согласие обогнало проверку промежуточной реплики"
+        release.set()
+        if emergency:
+            await until(lambda: channel.of("end"))
+            assert channel.of("end")[-1]["route"] == "R-01"
+            assert not dialogue.turns
+        else:
+            await until(lambda: any(r["code"] == "BOOKED" for r in channel.of("reply")))
+            assert len(dialogue.turns) == 1
+    finally:
+        release.set()
         await call.close()
