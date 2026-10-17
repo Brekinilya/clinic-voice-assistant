@@ -22,6 +22,7 @@ from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
+from app.nlu.parsers.answers import parse_answer
 
 
 class DialogueService:
@@ -190,6 +191,7 @@ class DialogueService:
             None if self.conversation is not None else await self.interpreter.interpret(state, turn)
         )
         now = self.booking.clock.now()
+        proposal_expired = False
         if state.phase == Phase.INTERRUPTED:
             return state, reply(
                 state,
@@ -205,15 +207,31 @@ class DialogueService:
                 ActionState.BOOKED,
             }:
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
-            elif state.proposal.expires_at <= now:
+            elif state.proposal.expires_at <= now or action.state == ActionState.EXPIRED:
                 await self.booking.store.release_call_holds(state.call_id)
                 state = state.model_copy(
-                    update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
+                    update={
+                        "phase": Phase.IDENTIFIED,
+                        "proposal": None,
+                        "options": (),
+                        "authorization": None,
+                    }
                 )
+                proposal_expired = True
         if self.conversation is not None:
             shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:
                 return shortcut
+        # Позднее согласие относится к старому предложению. Объясняем причину
+        # без МИС; фразу с новой датой/временем передаём обычному сценарию.
+        if proposal_expired and parse_answer(turn.text) == "yes":
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Срок подтверждения выбранного времени истёк.",
+                "Назовите подходящий день или время, и я предложу новые варианты.",
+                code="PROPOSAL_EXPIRED",
+            )
         if state.retry_at is not None:
             if state.retry_at > now and (
                 command is None or command.operation not in {Operation.STATUS, Operation.HELP}
