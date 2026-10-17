@@ -24,6 +24,7 @@ from app.dialogue.transitions import handoff_reply
 from app.mis.budget import Priority, demand
 from app.mis.models import format_datetime
 from app.mis.ports import MisError
+from app.nlu.parsers.answers import parse_answer
 
 
 class DialogueService:
@@ -257,11 +258,26 @@ class DialogueService:
                 ActionState.BOOKED,
             }:
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
-            elif state.proposal.expires_at <= now:
+            elif state.proposal.expires_at <= now or action.state == ActionState.EXPIRED:
                 await self.booking.store.release_call_holds(state.call_id)
                 state = state.model_copy(
-                    update={"phase": Phase.IDENTIFIED, "proposal": None, "options": ()}
+                    update={
+                        "phase": Phase.IDENTIFIED,
+                        "proposal": None,
+                        "options": (),
+                        "authorization": None,
+                    }
                 )
+                # Позднее согласие относится к старому предложению. Объясняем
+                # причину без МИС; новую дату обрабатывает обычный сценарий.
+                if parse_answer(turn.text) == "yes":
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Срок подтверждения выбранного времени истёк.",
+                        "Назовите подходящий день или время, и я предложу новые варианты.",
+                        code="PROPOSAL_EXPIRED",
+                    )
         if self.conversation is not None:
             shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:

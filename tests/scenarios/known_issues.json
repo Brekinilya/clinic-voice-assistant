@@ -1,0 +1,1135 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b29e1cdbe08b9f92fb3a6343d85fbf0e11ac4435",
+  "note": "Это список известных проблем, не пройденных требований.",
+  "dialogs": {
+    "D-01": {
+      "status": "unsupported",
+      "reason": "T08: карточка оператора не подключена; безопасная реакция проверяется отдельно",
+      "findings": [
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-02": {
+      "status": "unsupported",
+      "reason": "T08: карточка и завершение перевода ещё не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-03": {
+      "status": "fail",
+      "reason": "T09: справочный сценарий анализов не завершён",
+      "findings": [
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.values_refused",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "phase:ident.ask",
+          "detail": "Получено состояние ready",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.ready",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.how_to_get",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "D-04": {
+      "status": "fail",
+      "reason": "T20: отсутствует подтверждённая доставка SMS",
+      "findings": [
+        {
+          "code": "sms_delivery_T20",
+          "detail": "Не подключено требование: my_visits.sms_sent",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "sms_delivery_T20",
+          "detail": "Нельзя подтвердить обязательный результат sms",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-05 сразу после приветствия": {
+      "status": "unsupported",
+      "reason": "T04/T08: есть запрос перевода, завершение и callback не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-05 во время идентификации": {
+      "status": "unsupported",
+      "reason": "T04/T08: есть запрос перевода, завершение и callback не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-05 на подтверждении записи": {
+      "status": "unsupported",
+      "reason": "T04/T08: есть запрос перевода, завершение и callback не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-05 вне часов работы регистратуры": {
+      "status": "fail",
+      "reason": "T04/T08: есть запрос перевода, завершение и callback не подтверждены",
+      "findings": [
+        {
+          "code": "callback_T08",
+          "detail": "Не подключено требование: transfer.outside_hours",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "callback_T08",
+          "detail": "Не подключено требование: callback.created",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код CALLBACK",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "D-08": {
+      "status": "fail",
+      "reason": "T09: сценарий отсутствующего направления и предложения терапевта не завершён",
+      "findings": [
+        {
+          "code": "referral_conversation_T09",
+          "detail": "Не подключено требование: referral.missing",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "options",
+          "detail": "Предложенные даты/время не совпадают с YAML",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "phase:booking.offer_first",
+          "detail": "Получено состояние identified",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "phase:booking.confirm",
+          "detail": "Получено состояние identified",
+          "kind": "fail",
+          "step": 5
+        },
+        {
+          "code": "phase:booking.done",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 6
+        },
+        {
+          "code": "created_count",
+          "detail": "Ожидается 1, получено 0",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "created_visit",
+          "detail": "Нет единственного ожидаемого нового визита",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код BOOKED_GP",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "D-09": {
+      "status": "fail",
+      "reason": "T08/T09: заявка на домашний вызов ещё не реализована",
+      "findings": [
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.late",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.safety",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "phase:ident.ask_patient",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.ask_address",
+          "kind": "unsupported",
+          "step": 4
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.ask_reason",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.ask_can_come",
+          "kind": "unsupported",
+          "step": 6
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.accepted",
+          "kind": "unsupported",
+          "step": 7
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Не подключено требование: home_visit.done",
+          "kind": "unsupported",
+          "step": 8
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код HOME_VISIT_REQUESTED",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "home_visit_T09",
+          "detail": "Нельзя подтвердить обязательный результат home_visit",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-10": {
+      "status": "fail",
+      "reason": "T11/T20: исходящий контекст и SMS отсутствуют",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.wrong_person",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код WRONG_PERSON",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "sms_delivery_T20",
+          "detail": "Нельзя подтвердить обязательный результат sms",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-11": {
+      "status": "fail",
+      "reason": "T11: исходящий звонок и событие автоответчика недоступны в текстовом канале",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.voicemail",
+          "kind": "unsupported",
+          "step": 1
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код VOICEMAIL",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "D-12": {
+      "status": "unsupported",
+      "reason": "T04/T08: запрос перевода не является доказательством состоявшегося соединения",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-13 в часы работы регистратуры — перевод": {
+      "status": "fail",
+      "reason": "T05/T06/T08: неизвестный исход не дублируется, но полный маршрут отказа не завершён",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-06/P3",
+          "kind": "fail",
+          "step": 5
+        },
+        {
+          "code": "intermediate_wait_prompt_T03_T05",
+          "detail": "Не подключено требование: wait.schedule",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "handoff:transfer.mis_down",
+          "detail": "В ответе отсутствует запрос перевода",
+          "kind": "fail",
+          "step": 5
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код ESCALATED",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-13 вне часов — обратный звонок": {
+      "status": "fail",
+      "reason": "T05/T06/T08: неизвестный исход не дублируется, но полный маршрут отказа не завершён",
+      "findings": [
+        {
+          "code": "intermediate_wait_prompt_T03_T05",
+          "detail": "Не подключено требование: wait.schedule",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "callback_T08",
+          "detail": "Не подключено требование: callback.mis_down",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код CALLBACK",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "D-15 сразу после приветствия": {
+      "status": "unsupported",
+      "reason": "T13: флаг opt-out сохранён; текстовый канал не доказывает остановку записи аудио",
+      "findings": [
+        {
+          "code": "recording_engine_T13",
+          "detail": "Нельзя подтвердить обязательный результат recording",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-15 посреди идентификации": {
+      "status": "unsupported",
+      "reason": "T13: флаг opt-out сохранён; текстовый канал не доказывает остановку записи аудио",
+      "findings": [
+        {
+          "code": "recording_engine_T13",
+          "detail": "Нельзя подтвердить обязательный результат recording",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-16 в часы работы": {
+      "status": "fail",
+      "reason": "T08: нет законченной карточки жалобы/callback и итогового результата",
+      "findings": [
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код COMPLAINT",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "D-16 вне часов — обратный звонок до 10:00 следующего рабочего дня": {
+      "status": "fail",
+      "reason": "T08: нет законченной карточки жалобы/callback и итогового результата",
+      "findings": [
+        {
+          "code": "callback_T08",
+          "detail": "Не подключено требование: complaint.callback",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код COMPLAINT",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "callback_T08",
+          "detail": "Нельзя подтвердить обязательный результат callback",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "M-02": {
+      "status": "unsupported",
+      "reason": "T09: фикстура направления есть, полный разговорный сценарий не подтверждён",
+      "findings": [
+        {
+          "code": "referral_conversation_T09",
+          "detail": "Не подключено требование: referral.found",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "referral_conversation_T09",
+          "detail": "Не подключено требование: referral.done",
+          "kind": "unsupported",
+          "step": 5
+        }
+      ]
+    },
+    "M-07": {
+      "status": "fail",
+      "reason": "T09: справочный ответ о графике не реализован",
+      "findings": [
+        {
+          "code": "schedule_faq_T09",
+          "detail": "Не подключено требование: schedule.specialty",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "phase:closing.goodbye_short",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-08": {
+      "status": "fail",
+      "reason": "T09: FAQ сроков анализов не завершён; лабораторный API не требуется",
+      "findings": [
+        {
+          "code": "phase:ident.ask",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.ready",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.pending",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.how_to_get",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "labs_status_source_T09",
+          "detail": "Не подключено требование: labs.no_values",
+          "kind": "unsupported",
+          "step": 4
+        },
+        {
+          "code": "phase:closing.goodbye",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 5
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-09 цена из справочника": {
+      "status": "fail",
+      "reason": "T09: платный справочный маршрут не завершён; оплату не разрабатываем",
+      "findings": [
+        {
+          "code": "legacy_paid_catalog_outside_scope",
+          "detail": "Не подключено требование: paid.price",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "phase:closing.goodbye_short",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-09 ДМС": {
+      "status": "fail",
+      "reason": "T09: платный справочный маршрут не завершён; оплату не разрабатываем",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-10/P3",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "M-10 перенос": {
+      "status": "fail",
+      "reason": "T11: исходящий контекст и задания не реализованы",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.details",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "options",
+          "detail": "Предложенные даты/время не совпадают с YAML",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.offer_reschedule",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "phase:reschedule.confirm",
+          "detail": "Получено состояние identifying",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.done_moved",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "created_count",
+          "detail": "Ожидается 1, получено 0",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "created_visit",
+          "detail": "Нет единственного ожидаемого нового визита",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "cancelled_visit",
+          "detail": "Исходная запись не отменена ожидаемым образом",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код RESCHEDULED",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-10 подтверждение": {
+      "status": "fail",
+      "reason": "T11: исходящий контекст и задания не реализованы",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.details",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.confirmed",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код CONFIRMED",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-10 не знает": {
+      "status": "unsupported",
+      "reason": "T11: исходящий контекст и задания не реализованы",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.details",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.maybe",
+          "kind": "unsupported",
+          "step": 3
+        }
+      ]
+    },
+    "M-10 отказ от звонков": {
+      "status": "fail",
+      "reason": "T11: исходящий контекст и задания не реализованы",
+      "findings": [
+        {
+          "code": "outbound_T11",
+          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "outbound_T11",
+          "detail": "Не подключено требование: remind.opt_out",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код OPT_OUT",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-11 времени нет при записи": {
+      "status": "fail",
+      "reason": "T08: реальная заявка листа ожидания отсутствует",
+      "findings": [
+        {
+          "code": "waitlist_T08",
+          "detail": "Не подключено требование: waitlist.offer",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "waitlist_T08",
+          "detail": "Не подключено требование: waitlist.ask_when",
+          "kind": "unsupported",
+          "step": 4
+        },
+        {
+          "code": "waitlist_T08",
+          "detail": "Не подключено требование: waitlist.done",
+          "kind": "unsupported",
+          "step": 5
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код WAITLISTED",
+          "kind": "fail",
+          "step": null
+        },
+        {
+          "code": "waitlist_T08",
+          "detail": "Нельзя подтвердить обязательный результат waitlist",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "M-11 пациент сам просит лист ожидания": {
+      "status": "fail",
+      "reason": "T08: реальная заявка листа ожидания отсутствует",
+      "findings": [
+        {
+          "code": "phase:ident.ask",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "waitlist_T08",
+          "detail": "Не подключено требование: waitlist.ask_when",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "waitlist_T08",
+          "detail": "Не подключено требование: waitlist.done",
+          "kind": "unsupported",
+          "step": 4
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код WAITLISTED",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-12": {
+      "status": "unsupported",
+      "reason": "T10: подтверждение полномочий представителя не подключено",
+      "findings": [
+        {
+          "code": "guardian_T10",
+          "detail": "Не подключено требование: ident.ask_child",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "guardian_T10",
+          "detail": "Не подключено требование: ident.relation",
+          "kind": "unsupported",
+          "step": 3
+        }
+      ]
+    },
+    "M-13": {
+      "status": "fail",
+      "reason": "T09: справка о прикреплении не завершена",
+      "findings": [
+        {
+          "code": "faq_T09",
+          "detail": "Не подключено требование: attach.how",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "faq_T09",
+          "detail": "Не подключено требование: attach.before",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "phase:closing.goodbye",
+          "detail": "Получено состояние handoff",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "M-14 просят прислать врача": {
+      "status": "unsupported",
+      "reason": "T08: карточка экстренной передачи ещё отсутствует",
+      "findings": [
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-07": {
+      "status": "fail",
+      "reason": "T05/T08: идентификация возвращает общий отказ, ветка запроса полиса не завершена",
+      "findings": [
+        {
+          "code": "code:ident.not_found",
+          "detail": "Получен код BOOKING_REJECTED",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "text:ident.ask_policy",
+          "detail": "Не прозвучало обязательное уточнение",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        },
+        {
+          "code": "operator_card_T08",
+          "detail": "Нельзя подтвердить обязательный результат card",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-09-11 зубная боль": {
+      "status": "unsupported",
+      "reason": "T04/T08: безопасный запрос перевода проверен, соединение не подтверждено",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-09-11 температура не сбивается": {
+      "status": "unsupported",
+      "reason": "T04/T08: безопасный запрос перевода проверен, соединение не подтверждено",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-17": {
+      "status": "fail",
+      "reason": "Граница текстового API: голосовое событие тишины через него не передаётся",
+      "findings": [
+        {
+          "code": "event:silence",
+          "detail": "Событие отсутствует в текстовом API",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "event:silence",
+          "detail": "Событие отсутствует в текстовом API",
+          "kind": "unsupported",
+          "step": 3
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код DROPPED",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER вне каталога (R-08)": {
+      "status": "unsupported",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER бумажное направление (R-08)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-08/P3",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "referral_conversation_T09",
+          "detail": "Не подключено требование: referral.paper",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код ESCALATED",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER медкомиссия (R-10)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-10/P3",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER лекарственное обеспечение (R-12)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "faq_T09",
+          "detail": "Не подключено требование: transfer.ministry",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER полис ОМС (R-13)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "faq_T09",
+          "detail": "Не подключено требование: transfer.insurer",
+          "kind": "unsupported",
+          "step": 2
+        },
+        {
+          "code": "result_code",
+          "detail": "Не получен итоговый код INFO_GIVEN",
+          "kind": "fail",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER звонок от организации (R-14)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-14/P3",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER не справляется с разговором (R-15)": {
+      "status": "unsupported",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "R-OTHER персональные данные (R-16)": {
+      "status": "fail",
+      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
+      "findings": [
+        {
+          "code": "transfer",
+          "detail": "Ожидается R-16/P3",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "handoff_completion_T08_T04",
+          "detail": "Запрос перевода не доказывает состоявшееся соединение",
+          "kind": "unsupported",
+          "step": null
+        }
+      ]
+    },
+    "REG-T05 неизвестный пациент → исправление → пятница": {
+      "status": "fail",
+      "reason": "T05/T07: при 85 однотипных врачах и двух фоновых GET подбор ждёт окно; отдельный дефект текста неуспешной идентификации",
+      "findings": [
+        {
+          "code": "code:ident.not_found",
+          "detail": "Получен код BOOKING_REJECTED",
+          "kind": "fail",
+          "step": 2
+        },
+        {
+          "code": "phase:booking.offer_first",
+          "detail": "Получено состояние identified",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "offer_unavailable",
+          "detail": "Вместо вариантов получен WAIT_MIS",
+          "kind": "fail",
+          "step": 3
+        },
+        {
+          "code": "phase:booking.offer_period",
+          "detail": "Получено состояние identified",
+          "kind": "fail",
+          "step": 4
+        },
+        {
+          "code": "offer_unavailable",
+          "detail": "Вместо вариантов получен WAIT_MIS",
+          "kind": "fail",
+          "step": 4
+        }
+      ]
+    }
+  }
+}

@@ -22,6 +22,8 @@ from app.nlu.parsers import parse_expected
 from app.nlu.service import RulesNlu
 from app.policies.safety import check
 from app.voice.phrases import load_phrasebook
+from tests.scenarios.known_issues import checked_known_issue, load_known_issues
+from tests.scenarios.runner import run_dialog
 
 SCENARIOS = load_scenarios()
 DIALOGS = [d for s in SCENARIOS for d in s.dialogs]
@@ -131,8 +133,20 @@ def test_patient_phrase_intent(dialog, step):
 
 
 @pytest.mark.parametrize("dialog", DIALOGS, ids=lambda d: d.label)
-def test_dialog_end_to_end(dialog):
-    pytest.skip("ждёт текстового канала POST /api/dialog/{call_id}/turn и эмулятора стенда")
+async def test_dialog_end_to_end(dialog):
+    result = await run_dialog(
+        dialog, blocking=dialog.scenario in BLOCKING or dialog.scenario == "D-01b"
+    )
+    reason = checked_known_issue(result)
+    if reason is not None:
+        pytest.xfail(reason + "; полная приёмка остаётся незелёной: tests.scenarios.run")
+    assert result.status == "pass"
+
+
+def test_known_issues_do_not_include_unknown_dialogs():
+    assert set(load_known_issues()) <= {d.label for d in DIALOGS} | {
+        "REG-T05 неизвестный пациент → исправление → пятница"
+    }
 
 
 def test_readme_coverage_is_fresh():

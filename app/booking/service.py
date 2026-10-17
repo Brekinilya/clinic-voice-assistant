@@ -12,6 +12,7 @@ from app.booking.models import (
 )
 from app.booking.ports import BookingStore, Schedule
 from app.booking.preferences import SlotPreferences
+from app.booking.schedule import AccessState
 from app.clock import CLINIC_TIMEZONE
 from app.mis.budget import Priority, demand
 from app.mis.models import Client, Visit, VisitCreate, VisitStatus, name_key
@@ -122,6 +123,7 @@ class BookingService:
         result = []
         slots = candidates(self.schedule, specialty, preferences, self.clock.now())
         eligible = []
+        access_unknown = False
         for slot in slots:
             if (
                 profile_key(slot.specialty) != profile_key(specialty)
@@ -135,8 +137,14 @@ class BookingService:
             try:
                 self._check_slot(client_id, slot)
             except BookingError:
+                # Неподтверждённый участок/направление — не отсутствие расписания.
+                access = getattr(self.schedule, "access_state", None)
+                if access is not None and access(client_id, slot) == AccessState.UNKNOWN:
+                    access_unknown = True
                 continue
             eligible.append(slot)
+        if not eligible and access_unknown:
+            raise BookingError("ELIGIBILITY_UNKNOWN")
         busy: set[tuple[int, datetime]] = set()
         checked: set[tuple[int, date]] = set()
         for index, slot in enumerate(eligible):
