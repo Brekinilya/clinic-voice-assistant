@@ -48,6 +48,8 @@ class BookingConversation:
         self.store = store
         self.safety = safety
         self.identity_drafts = identity_drafts
+        if cancellation is not None and cancellation.operations is None:
+            cancellation.operations = booking.operations
         self.rooms = rooms
         self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
         self.input = (

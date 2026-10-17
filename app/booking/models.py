@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from app.mis.models import MisId, parse_datetime
+from app.mis.models import MisId, Visit, VisitStatus, parse_datetime
 
 
 class BookingModel(BaseModel):
@@ -63,6 +63,17 @@ class Approval(BookingModel):
     permitted: StrictBool = False
     guard_version: int | None = Field(default=None, strict=True, ge=1)
     input_epoch: int | None = Field(default=None, strict=True, ge=1)
+
+
+def matches_visit(action: BookingAction, visit: Visit) -> bool:
+    """Одинаковые факты для ответа на POST и любого последующего чтения МИС."""
+    return (
+        visit.client_id == action.client_id
+        and visit.doctor.id == action.slot.doctor_id
+        and visit.doctor.specialty == action.slot.specialty
+        and visit.scheduled_at == action.slot.scheduled_at
+        and visit.status == VisitStatus.PLANNED
+    )
 
 
 class BookingError(Exception):

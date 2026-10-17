@@ -14,11 +14,13 @@ from app.booking.schedule import JsonSchedule, ScheduleError
 from app.booking.service import BookingService
 from app.clock import ClinicClock
 from app.mis.http import HttpMedicalSystem
+from app.recovery.coordinator import OperationCoordinator
 from app.scheduling.bootstrap import token_scope
 from app.scheduling.index import SqliteSchedule
 from app.settings import AppMode, Settings
 from app.storage.booking import PostgresBookingStore, PostgresBudget, migrate, schema_versions
 from app.storage.postgres import connection_url
+from app.storage.recovery import PostgresRecoveryStore
 from app.storage.schema import SCHEMA_VERSION
 
 
@@ -63,6 +65,7 @@ async def open_backend(settings: Settings, schedule: Schedule):
                 schedule,
                 ClinicClock(),
                 require_dialogue_guard=True,
+                operations=OperationCoordinator(PostgresRecoveryStore(engine), ClinicClock()),
             )
     finally:
         await engine.dispose()

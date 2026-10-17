@@ -6,8 +6,12 @@ from app.dialogue.identity import IdentityDrafts
 from app.dialogue.natural import BookingConversation
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
+from app.recovery.coordinator import OperationCoordinator
+from app.recovery.memory import MemoryRecoveryStore
 from app.rescheduling.service import RescheduleService
 from app.scheduling.index import SqliteSchedule
+from app.storage.booking import PostgresBookingStore
+from app.storage.recovery import PostgresRecoveryStore
 
 
 def assemble_dialogue(
@@ -21,12 +25,19 @@ def assemble_dialogue(
     move_store,
     hash_key,
 ):
+    recovery_store = (
+        PostgresRecoveryStore(booking_store.engine)
+        if isinstance(booking_store, PostgresBookingStore)
+        else MemoryRecoveryStore(booking_store.ledger)
+    )
+    operations = OperationCoordinator(recovery_store, clock)
     booking = BookingService(
         mis,
         booking_store,
         schedule,
         clock,
         require_dialogue_guard=settings.dialogue_mode == "natural",
+        operations=operations,
     )
     safety = RulesSafety(clock) if settings.dialogue_mode == "natural" else None
     conversation = (

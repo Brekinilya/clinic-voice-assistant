@@ -48,12 +48,12 @@ from app.storage.schema import (
 
 
 async def migrate(engine: AsyncEngine) -> None:
-    """Миграции 1–5 → 6 сохраняют прежние журналы, добавляют перенос и талоны бюджета."""
+    """Миграции 1–6 → 7 сохраняют журналы; новая таблица создаётся через metadata."""
     async with engine.begin() as connection:
         await connection.execute(text("SELECT pg_advisory_xact_lock(142001)"))
         await connection.run_sync(metadata.create_all)
         versions = list((await connection.execute(select(schema_versions.c.version))).scalars())
-        if versions not in ([], [1], [2], [3], [4], [5], [SCHEMA_VERSION]):
+        if versions not in ([], [1], [2], [3], [4], [5], [6], [SCHEMA_VERSION]):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
@@ -299,6 +299,24 @@ class PostgresBookingStore:
             ).first()
             if row is None:
                 raise BookingError("HOLD_NOT_ACTIVE")
+            return _decode(row)
+
+    async def archive_external(self, action_id: str, visit_id: int) -> BookingAction:
+        """Снять устаревшую местную проекцию; внешняя отмена не создаёт наши SMS-события."""
+        async with self._transaction() as connection:
+            row = (
+                await connection.execute(select(actions).where(actions.c.action_id == action_id))
+            ).one()
+            if row.state not in {"booked", "archived"} or row.visit_id != visit_id:
+                raise BookingError("VISIT_NOT_CONFIRMED")
+            row = (
+                await connection.execute(
+                    update(actions)
+                    .where(actions.c.action_id == action_id)
+                    .values(state="archived")
+                    .returning(actions)
+                )
+            ).one()
             return _decode(row)
 
     async def restore_unsent(self, action_id: str, confirmed_turn: int) -> BookingAction:

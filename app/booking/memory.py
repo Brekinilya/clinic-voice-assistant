@@ -106,6 +106,18 @@ class MemoryBookingStore:
                 raise BookingError("ACTION_NOT_FOUND")
             return self.actions[action_id]
 
+    async def archive_external(self, action_id: str, visit_id: int) -> BookingAction:
+        async with self._lock:
+            action = self.actions[action_id]
+            if (
+                action.state not in {ActionState.BOOKED, ActionState.ARCHIVED}
+                or action.visit_id != visit_id
+            ):
+                raise BookingError("VISIT_NOT_CONFIRMED")
+            action = action.model_copy(update={"state": ActionState.ARCHIVED})
+            self.actions[action_id] = action
+            return action
+
     async def claim(self, approval: Approval, now: datetime) -> tuple[BookingAction, bool]:
         async with self._lock:
             self._expire(now)

@@ -1,4 +1,4 @@
-"""Единая схема backend; версия 6 добавляет талоны общего бюджета МИС."""
+"""Единая схема backend; версия 7 добавляет журнал восстановления операций."""
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,8 +14,20 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
+recovery_operations = Table(
+    "backend_recovery_operations",
+    metadata,
+    Column("kind", String(20), primary_key=True),
+    Column("action_id", String(128), primary_key=True),
+    Column("state", String(20), nullable=False),
+    Column("due_at", DateTime(timezone=True), nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("kind IN ('booking','cancellation','move')"),
+    CheckConstraint("state IN ('pending','running','watching','manual','resolved')"),
+)
+Index("backend_recovery_due", recovery_operations.c.state, recovery_operations.c.due_at)
 actions = Table(
     "backend_booking_actions",
     metadata,

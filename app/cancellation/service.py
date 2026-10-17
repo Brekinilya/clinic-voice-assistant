@@ -14,6 +14,7 @@ from app.mis.budget import Priority, demand
 from app.mis.models import VisitChange, VisitStatus
 from app.mis.ports import BudgetExhausted, MedicalSystem, MisError, MisOutcomeUnknown
 from app.ports import Clock
+from app.recovery.coordinator import coordinate
 from app.visits.models import VisitSummary
 
 # Свежая карточка записи, PATCH отмены и сверка результата.
@@ -28,9 +29,11 @@ class CancellationService:
         clock: Clock,
         *,
         require_dialogue_guard: bool = True,
+        operations=None,
     ) -> None:
         self.mis, self.store, self.clock = mis, store, clock
         self.require_dialogue_guard = require_dialogue_guard
+        self.operations = operations
 
     async def prepare(
         self, call_id: str, client_id: int, selected: VisitSummary, reason: Reason | None = None
@@ -49,6 +52,11 @@ class CancellationService:
         return await self.store.prepare(call_id, current, self.clock.now(), reason)
 
     async def confirm(self, approval: Approval) -> CancelAction:
+        return await coordinate(
+            self.operations, "cancellation", approval.action_id, lambda: self._confirm(approval)
+        )
+
+    async def _confirm(self, approval: Approval) -> CancelAction:
         if self.require_dialogue_guard and (
             approval.guard_version is None or approval.input_epoch is None
         ):
@@ -106,6 +114,11 @@ class CancellationService:
         return action, True
 
     async def reconcile(self, action_id: str, call_id: str) -> CancelAction:
+        return await coordinate(
+            self.operations, "cancellation", action_id, lambda: self._reconcile(action_id, call_id)
+        )
+
+    async def _reconcile(self, action_id: str, call_id: str) -> CancelAction:
         action = await self.store.get(action_id)
         if action.call_id != call_id:
             raise BookingError("CONFIRMATION_REQUIRED")

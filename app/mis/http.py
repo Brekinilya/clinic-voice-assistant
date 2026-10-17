@@ -185,6 +185,12 @@ class HttpMedicalSystem:
                 else:
                     await self._budget.reserve()
             try:
+                if write:
+                    # Проверяем ещё раз после ожидания бюджета, прямо перед отправкой.
+                    # Фоновая сверка вообще не имеет права посылать POST/PATCH.
+                    from app.recovery.ownership import before_mutation
+
+                    await before_mutation()
                 response = await self._client.request(method, path, **kwargs)
             except httpx.TransportError:
                 error = MisOutcomeUnknown if write else MisUnavailable
