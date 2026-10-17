@@ -80,7 +80,12 @@ def authorize_write(
 
 def handoff_reply(state: DialogueState, turn_id: int):
     route = state.transfer.route if state.transfer else "R-08"
-    if route == "R-06" and state.transfer and state.transfer.reason:
+    if route == "R-06" and state.transfer and state.transfer.reason == "mis_wait":
+        phrases = (
+            "Система записи не освободилась. Автоматическая запись остановлена.",
+            "Запрос регистратору подготовлен.",
+        )
+    elif route == "R-06" and state.transfer and state.transfer.reason:
         phrases = (
             "Не удалось создать новую запись. Прежнюю запись не отменял."
             if state.transfer.reason == "move_create_rejected"
@@ -102,6 +107,8 @@ def handoff_reply(state: DialogueState, turn_id: int):
         *phrases,
         code="EMERGENCY"
         if route == "R-01"
+        else "MIS_WAIT_EXPIRED"
+        if route == "R-06" and state.transfer and state.transfer.reason == "mis_wait"
         else "MOVE_NEEDS_OPERATOR"
         if route == "R-06" and state.transfer and state.transfer.reason
         else "TRANSFER_REQUESTED",
@@ -130,6 +137,7 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
             "move_target": None,
             "options": (),
             "retry_at": None,
+            "mis_wait_since": None,
             "transfer": transfer,
             "visit_items": (),
             "visit_cursor": None,

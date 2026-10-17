@@ -2,6 +2,7 @@
 
 from app.clock import CLINIC_TIMEZONE
 from app.contracts import DialogOption, NluContext, NluRequest, NluResult, PublicSlots
+from app.dialogue.doctors import DoctorNames
 from app.dialogue.expectation import expected_answer
 from app.dialogue.models import DialogueState, Phase, Turn
 from app.mis.ports import MedicalSystem
@@ -10,12 +11,14 @@ from app.ports import Clock
 
 
 class RulesInput:
-    def __init__(self, mis: MedicalSystem, clock: Clock) -> None:
+    def __init__(self, mis: MedicalSystem, clock: Clock, schedule: object = None) -> None:
         self.mis = mis
         self.clock = clock
+        self.names = DoctorNames(mis, schedule)
 
     async def parse(self, state: DialogueState, turn: Turn) -> NluResult:
-        doctors = await self.mis.doctors()
+        # Понимание локальное: «да», «оператора» и новая дата не ждут справочника МИС.
+        doctors = await self.names.understanding()
         names = {d.id: d.full_name for d in doctors}
         parser = RulesNlu(names.values())
         expect = expected_answer(state)

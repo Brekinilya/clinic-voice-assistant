@@ -150,6 +150,7 @@ class PostgresDialogueStore:
                     "move_target": None,
                     "options": (),
                     "retry_at": None,
+                    "mis_wait_since": None,
                     "authorization": None,
                     "visit_items": (),
                     "visit_cursor": None,

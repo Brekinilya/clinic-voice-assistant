@@ -128,7 +128,9 @@ async def test_medical_boundary_is_available_while_mis_budget_is_exhausted():
         budget = MemoryBudget(clock, limit=1)
         await budget.reserve()
         service.booking.mis._budget = budget
-        assert (await turn(client, 1, "Запишите к терапевту"))["code"] == "WAIT_MIS"
+        # Понимание локальное: просьба принята и без справочника МИС, дальше нужен пациент.
+        first = await turn(client, 1, "Запишите к терапевту")
+        assert first["phase"] == "identifying" and first["code"] != "WAIT_MIS"
         result = await turn(client, 2, QUESTION)
         assert result["code"] == "MEDICAL_BOUNDARY" and result["transfer"] is None
         insist = await turn(client, 3, "Нет, скажите что мне выпить")

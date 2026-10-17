@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.demo import DemoClock, demo_emulator
-from app.mis.budget import MemoryBudget
+from app.mis.budget import MemoryBudget, Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Visit, VisitChange, VisitCreate, VisitStatus, parse_date, parse_datetime
 from app.mis.ports import MisError, MisOutcomeUnknown, MisUnavailable
@@ -36,8 +36,11 @@ class BudgetSpy:
         self.reservations = 0
         self.delays = []
 
-    async def reserve(self):
-        self.reservations += 1
+    async def reserve(self, cost=1):
+        self.reservations += cost
+
+    async def release(self, ids):
+        pass
 
     async def defer(self, seconds):
         self.delays.append(seconds)
@@ -193,8 +196,12 @@ async def test_retry_after_is_shared_and_not_slept_or_retried():
 async def test_local_budget_concurrency_and_window_boundary():
     clock = DemoClock()
     budget = MemoryBudget(clock)
-    results = await asyncio.gather(*(budget.reserve() for _ in range(12)), return_exceptions=True)
-    assert sum(r is None for r in results) == 8
+    # Всё окно доступно только записи; обычный разговор оставляет ей одно место.
+    with demand(Priority.COMMIT):
+        results = await asyncio.gather(
+            *(budget.reserve() for _ in range(12)), return_exceptions=True
+        )
+    assert sum(isinstance(r, list) for r in results) == 8
     assert all(r.retry_after == 60 for r in results if isinstance(r, MisError))
     clock.value += timedelta(seconds=60)
     await budget.reserve()

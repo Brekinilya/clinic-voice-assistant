@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -293,6 +293,30 @@ async def test_silence_prompts_then_hangs_up():
     assert channel.said()[1:] == ["Вы меня слышите?", "Вас не слышно. Перезвоните, пожалуйста."]
     assert channel.of("end")[0]["reason"] == "silence"
     assert call.finished.is_set()
+    await call.close()
+
+
+async def test_wait_for_mis_holds_silence_prompts_until_retry_time():
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=1.5)
+    waiting = "Подождите около 5 секунд и скажите «ещё раз»."
+    dialogue = Dialogue(
+        lambda turn: reply(
+            "Система записи сейчас занята.", waiting, code="WAIT_MIS", retry_at=retry_at
+        )
+    )
+    call, channel = session(dialogue, Recognizer({10: "Мне к терапевту"}), silence_prompt_s=0.4)
+    await answered(call)
+    await call.feed(phrase(10))
+    await until(lambda: waiting in channel.said())
+    asked = time.monotonic()
+    await until(lambda: "Система записи освободилась, можно продолжать." in channel.said())
+    # Пока звонящий честно ждёт МИС, «Вы меня слышите?» не звучит и звонок не кончается.
+    assert time.monotonic() - asked >= 0.6
+    said = channel.said()
+    assert said[said.index(waiting) + 1] == "Система записи освободилась, можно продолжать."
+    # После паузы — обычная проверка тишины.
+    await until(lambda: channel.of("end"))
+    assert channel.said()[-2:] == ["Вы меня слышите?", "Вас не слышно. Перезвоните, пожалуйста."]
     await call.close()
 
 

@@ -176,7 +176,8 @@ async def test_failure_before_visit_query_does_not_echo_saved_page():
         async def limited(*args, **kwargs):
             raise BudgetExhausted("LOCAL_RATE_LIMIT", retry_after=60)
 
-        service.booking.mis.doctors = limited
+        # Справочник для понимания локальный, поэтому отказ — на первом чтении справки.
+        service.booking.mis.client = limited
         result = await turn(client, 3, "Повторите")
         assert result["code"] == "WAIT_MIS" and result["visits"] == []
         assert "Лебедев" not in " ".join(result["utterances"])

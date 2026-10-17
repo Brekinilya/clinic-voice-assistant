@@ -49,8 +49,14 @@ class DemoSchedule:
 class EmulatorBudget:
     """Запросы к MockTransport не расходуют бюджет настоящего стенда."""
 
-    async def reserve(self) -> None:
+    async def reserve(self, cost: int = 1) -> None:
         pass
+
+    async def release(self, ids: list) -> None:
+        pass
+
+    async def touch(self, place: object) -> float:
+        return 0.0
 
     async def defer(self, seconds: int) -> None:
         pass
