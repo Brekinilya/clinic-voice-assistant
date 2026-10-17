@@ -1,0 +1,20 @@
+{
+  "unavailable": {
+    "file": "unavailable.wav",
+    "text": "Извините, система не отвечает. Соединяю с регистратором.",
+    "template": "transfer.mis_down",
+    "sha256": "9f03ab2f416ca3a0866af523a10467d8a9f802be864ca77990bd486b9b7fcb8f",
+    "source": "Silero v5_5_ru, текущие локальные веса прототипа",
+    "model_sha256": "50081637b602126ee06cb3bc8a744d25651d2da149ee8864b9a379bfdd934437",
+    "speaker": "xenia"
+  },
+  "emergency": {
+    "file": "emergency.wav",
+    "text": "Звоните сто три или сто двенадцать. Сейчас соединяю с сотрудником.",
+    "template": "emergency.weak_caller",
+    "sha256": "0ea31a5ce06318ee86de74e4a277de9c704810b235e39a7c401b15fb6aa956e7",
+    "source": "Silero v5_5_ru, текущие локальные веса прототипа",
+    "model_sha256": "50081637b602126ee06cb3bc8a744d25651d2da149ee8864b9a379bfdd934437",
+    "speaker": "xenia"
+  }
+}

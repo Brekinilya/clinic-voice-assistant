@@ -40,6 +40,13 @@ class VoiceSettings(BaseSettings):
     wait_phrase_s: float = 1.5
     # Событие начала речи не должно надолго останавливать приём звука.
     input_started_timeout_s: float = Field(default=0.3, gt=0, le=2)
+    asr_timeout_s: float = Field(default=5.0, gt=0, le=30)
+    tts_timeout_s: float = Field(default=5.0, gt=0, le=30)
+    dialogue_timeout_s: float = Field(default=15.0, gt=0, le=120)
+    inference_queue_capacity: int = Field(default=2, ge=1, le=16)
+    dialogue_job_capacity: int = Field(default=4, ge=1, le=32)
+    # Не копируем в буфер произвольно большой пакет: при перегрузке требуется новый звонок.
+    max_audio_chunk_bytes: int = Field(default=524288, ge=1024, le=1048576)
 
     def path(self, relative: str) -> Path:
         return self.models_dir / relative

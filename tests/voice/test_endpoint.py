@@ -71,3 +71,12 @@ def test_partial_audio_grows_with_phrase():
     e = Endpointer()
     run(e, [0.9] * 20)
     assert e.phrase_ms == len(e.audio()) // FRAME_BYTES * FRAME_MS > 0
+
+
+def test_uncertain_vad_before_speech_does_not_accumulate_unbounded_audio():
+    e = Endpointer()
+    assert run(e, [0.9] + [0.4] * 3000) == []
+    assert not e.in_phrase
+    assert len(e._pending) * FRAME_MS <= 2 * max(e.settings.preroll_ms, e.settings.min_speech_ms)
+    assert run(e, [0.9] * frames(192)) == ["start"]
+    assert len(e.audio()) <= FRAME_BYTES * (frames(640) + frames(192))

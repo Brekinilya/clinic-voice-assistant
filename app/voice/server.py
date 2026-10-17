@@ -19,8 +19,10 @@ from app.main import create_app
 from app.resource_paths import config_directory
 from app.settings import Settings
 from app.voice.api import open_session, router
+from app.voice.fallback import load_fallback
 from app.voice.settings import VoiceSettings
 from app.voice.telephony import TelephonySettings
+from app.voice.work import SpeechRuntime
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 if not WEB.is_dir():
@@ -89,11 +91,18 @@ def create_voice_app(
         async with inner(app):
             app.state.voice_settings = voice
             app.state.voice = engines or await asyncio.to_thread(load_engines, voice)
-            async with phone_line(app, telephony):
-                try:
+            runtime = SpeechRuntime(voice.inference_queue_capacity, voice.dialogue_job_capacity)
+            app.state.voice_runtime = runtime
+            try:
+                # Если резервные файлы повреждены, readiness не должен обещать рабочий голос.
+                load_fallback()
+                load_fallback(True)
+                async with phone_line(app, telephony):
                     yield
-                finally:
-                    del app.state.voice
+            finally:
+                runtime.close()
+                del app.state.voice_runtime
+                del app.state.voice
 
     application.router.lifespan_context = lifespan
     application.include_router(router)
@@ -119,7 +128,9 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
     async def say(template: str) -> tuple[bytes, int]:
         today = ClinicClock().now().date()
         speech = renderer.speak(renderer.render(template, today).text, today)
-        return await asyncio.to_thread(synthesizer.synthesize, speech)
+        return await app.state.voice_runtime.tts.run(
+            synthesizer.synthesize, speech, timeout=app.state.voice_settings.tts_timeout_s
+        )
 
     ari = Ari(settings)
     line = Telephony(

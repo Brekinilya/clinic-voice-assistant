@@ -48,6 +48,7 @@ def open_session(state, call_id: str, channel) -> CallSession:
         engines.synthesizer,
         today=lambda: clock.now().date(),
         settings=getattr(state, "voice_settings", None),
+        runtime=getattr(state, "voice_runtime", None),
     )
 
 

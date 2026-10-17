@@ -52,6 +52,11 @@ class Endpointer:
 
         if self._pending:
             self._pending.append(frame)
+            if len(self._pending) * FRAME_MS > 2 * max(s.preroll_ms, s.min_speech_ms):
+                # Неопределённый VAD между порогами не должен копить аудио бесконечно.
+                self._preroll.extend(self._pending)
+                self._pending, self._voiced = [], 0
+                return None
             if probability >= s.speech_threshold:
                 self._voiced += 1
             elif probability < s.silence_threshold:
