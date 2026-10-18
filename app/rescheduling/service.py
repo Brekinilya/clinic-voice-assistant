@@ -1,5 +1,6 @@
 """С-03: POST новой записи, свежая проверка, PATCH прежней и сверка обеих."""
 
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 from app.booking.models import Approval, BookingError, Slot
@@ -23,10 +24,17 @@ CANCEL_COST = 6
 
 
 class RescheduleService:
-    def __init__(self, booking: BookingService, store):
+    def __init__(
+        self,
+        booking: BookingService,
+        store,
+        *,
+        permission: Callable[[Approval], Awaitable[None]] | None = None,
+    ):
         self.booking, self.store = booking, store
         self.mis, self.clock = booking.mis, booking.clock
         self.operations = booking.operations
+        self.permission = permission
 
     async def _source(self, before, *, permit_cancelled=False):
         current = await self.mis.visit(before.id)
@@ -207,6 +215,8 @@ class RescheduleService:
     async def _create(self, action, approval: Approval):
         await self._source(action.before)
         await self._preflight(action.before, action.slot, action.call_id, fresh=True)
+        if self.permission is not None:
+            await self.permission(approval)
         action, claimed = await self.store.claim(approval, self.clock.now())
         if not claimed:
             return action, False
@@ -240,6 +250,8 @@ class RescheduleService:
         others = await self._others(action.before, fresh=True)
         if len(others) != 1 or others[0].id != new.id:
             return await self.store.mark(action.action_id, MoveState.MANUAL), False
+        if self.permission is not None:
+            await self.permission(approval)
         action, claimed = await self.store.claim(approval, self.clock.now(), cancelling=True)
         if not claimed:
             return action, False

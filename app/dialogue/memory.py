@@ -16,6 +16,8 @@ from app.dialogue.models import (
     TransferRequest,
     reply,
 )
+from app.dialogue.outbound import MarkOperation, ReminderBinding
+from app.dialogue.reminder_guard import check_reminder_guard
 from app.dialogue.transitions import (
     authorize_write,
     handoff_reply,
@@ -138,13 +140,38 @@ class MemoryDialogueStore:
             self.states[call_id] = state
             return state
 
-    async def authorize(self, call_id: str, version: int, epoch: int, turn_id: int) -> bool:
+    async def authorize(
+        self,
+        call_id: str,
+        version: int,
+        epoch: int,
+        turn_id: int,
+        *,
+        reminder_operation: MarkOperation | None = None,
+    ) -> bool:
         async with self._lock:
-            state = authorize_write(self.states[call_id], version, epoch, turn_id)
+            state = authorize_write(
+                self.states[call_id], version, epoch, turn_id, reminder_operation=reminder_operation
+            )
             if state is None:
                 return False
             self.states[call_id] = state
             return True
+
+    async def check_reminder_guard(
+        self,
+        approval: Approval,
+        binding: ReminderBinding,
+        operation: MarkOperation,
+    ) -> None:
+        async with self._lock:
+            state = self.states.get(approval.call_id)
+            check_reminder_guard(
+                None if state is None else state.model_dump(mode="json"),
+                approval,
+                binding,
+                operation,
+            )
 
     async def check_guard(self, approval: Approval) -> None:
         async with self._lock:

@@ -1,5 +1,7 @@
 """Отмена: свежая карточка, сохранённое подтверждение, PATCH и обязательная сверка."""
 
+from collections.abc import Awaitable, Callable
+
 from app.booking.models import Approval, BookingError
 from app.cancellation.models import (
     CancelAction,
@@ -30,10 +32,12 @@ class CancellationService:
         *,
         require_dialogue_guard: bool = True,
         operations=None,
+        permission: Callable[[Approval], Awaitable[None]] | None = None,
     ) -> None:
         self.mis, self.store, self.clock = mis, store, clock
         self.require_dialogue_guard = require_dialogue_guard
         self.operations = operations
+        self.permission = permission
 
     async def prepare(
         self, call_id: str, client_id: int, selected: VisitSummary, reason: Reason | None = None
@@ -84,6 +88,9 @@ class CancellationService:
             )
         ):
             raise BookingError("VISIT_CHANGED")
+        # Дополнительная область доступа (например, lease исходящего звонка) после ожидания МИС.
+        if self.permission is not None:
+            await self.permission(approval)
         action, claimed = await self.store.claim(approval, self.clock.now())
         if not claimed:
             return action, False

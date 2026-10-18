@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import Field, field_validator, model_validator
@@ -11,6 +12,7 @@ from app.mis.models import MisId
 from app.visits.models import VisitSummary
 
 if TYPE_CHECKING:
+    from app.booking.models import Approval
     from app.dialogue.models import Reply
 
 AttemptId = str
@@ -27,14 +29,19 @@ ReminderOutcome = Literal[
 ]
 
 
-class OutboundContext(BookingModel):
-    """Только из доверенного исполнителя T11, не из текста/публичного HTTP."""
+class ReminderBinding(BookingModel):
+    """Область полномочий попытки; имени пациента в сохраняемом состоянии нет."""
 
     attempt_id: AttemptId = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     fence: int = Field(strict=True, ge=1)
     purpose: Literal["reminder"] = "reminder"
     client_id: MisId = Field(repr=False)
     visit: VisitSummary
+
+
+class OutboundContext(ReminderBinding):
+    """Только из доверенного исполнителя T11, не из текста/публичного HTTP."""
+
     # Только имя и отчество из проверенной карточки; не сериализовать в диагностику.
     addressee: str = Field(min_length=1, max_length=201, repr=False)
 
@@ -44,6 +51,45 @@ class OutboundContext(BookingModel):
         if not value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("нужно имя адресата без управляющих символов")
         return value.strip()
+
+
+class ReminderSession(BookingModel):
+    binding: ReminderBinding
+    context_digest: str = Field(repr=False)
+    verified: bool = False
+    declined: bool = False
+
+
+MarkStatus = Literal["applied", "pending", "manual"]
+MarkOperation = Literal["confirm", "opt_out"]
+
+
+def mark_action_id(binding: ReminderBinding, operation: MarkOperation) -> str:
+    # Длинный attempt_id не превышает лимит Approval.action_id; ключ не содержит ПДн.
+    digest = hashlib.sha256(binding.attempt_id.encode()).hexdigest()
+    return f"reminder:{digest}:{operation}"
+
+
+class ReminderActions(Protocol):
+    """Адаптер Ильи: актуальная lease/fence и долговечный журнал отметок.
+
+    Перед PATCH адаптер повторно проверяет попытку, check_reminder_guard и свежий
+    визит/комментарий. Повтор (attempt_id, operation) читает журнал, не повторяет PATCH.
+    pending/manual возвращаются после сохранения результата; неизвестный исход не
+    превращается в исключение, которое могло бы разрешить повторную отправку.
+    """
+
+    async def check_attempt(self, binding: ReminderBinding) -> None: ...
+    async def stop_calls(self, binding: ReminderBinding) -> None:
+        """Устойчивый запрет звонить на связанный контакт, даже до проверки адресата.
+
+        Только локальная доставка: комментарий пациента без проверки личности не меняется.
+        Повтор идемпотентен; не относится к попыткам изменения визита.
+        """
+        ...
+
+    async def confirm(self, binding: ReminderBinding, approval: Approval) -> MarkStatus: ...
+    async def opt_out(self, binding: ReminderBinding, approval: Approval) -> MarkStatus: ...
 
 
 class OutboundEvent(BookingModel):

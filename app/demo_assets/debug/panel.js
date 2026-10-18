@@ -1,6 +1,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const phases = {
+  remind_verify:"Проверяем адресата напоминания",remind_details:"Обсуждаем посещение",
   ready:"Начало разговора",identifying:"Уточняем пациента",identified:"Пациент найден",offered:"Предложены варианты",held:"Ждём подтверждения записи",booked:"Запись создана",reconciling:"Проверяем результат МИС",handoff:"Передача сотруднику",ended:"Разговор завершён",interrupted:"Обработка прервана",verifying_owner:"Уточняем, чьи записи",visits_shown:"Показаны записи",cancel_choosing:"Выбираем запись для отмены",cancel_offer:"Обсуждаем отмену",cancel_confirm:"Ждём подтверждения отмены",cancel_reconciling:"Проверяем отмену",cancelled:"Запись отменена",move_choosing:"Выбираем запись для переноса",move_source:"Уточняем перенос",move_offered:"Выбираем новое время",move_confirm:"Ждём согласия на перенос",move_finish_confirm:"Подтверждаем завершение переноса",move_pending:"Проверяем перенос",rescheduled:"Запись перенесена",move_empty:"Нового времени пока нет"
 }
 ;
@@ -28,7 +29,8 @@ const questions = {
   visit_next_page:"Следующая страница записей",more_help:"Нужна ли ещё помощь",
   information_details:"Уточнение справочного вопроса",medical_booking:"Предложение терапевта",
   specialty:"Выбор специальности",preferences:"День и время",
-  reminder_addressee:"Проверка адресата напоминания",reminder_attendance:"Подтверждение посещения"
+  reminder_addressee:"Проверка адресата напоминания",reminder_attendance:"Подтверждение посещения",
+  reminder_cancel_or_move:"Перенести или отменить визит"
 };
 const node = (tag, cls, text) => {
   const n=document.createElement(tag);

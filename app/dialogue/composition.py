@@ -24,6 +24,8 @@ def assemble_dialogue(
     cancellation_store,
     move_store,
     hash_key,
+    *,
+    reminder_actions=None,
 ):
     recovery_store = (
         PostgresRecoveryStore(booking_store.engine)
@@ -61,4 +63,5 @@ def assemble_dialogue(
         conversation=conversation,
         mis_turn_wait_s=settings.mis_turn_wait_s,
         mis_wait_limit_s=settings.mis_wait_limit_s,
+        reminder_actions=reminder_actions,
     )
