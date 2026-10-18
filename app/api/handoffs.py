@@ -168,8 +168,7 @@ async def finish_callback(attempt_id: str, body: FinishInput, request: Request, 
     response.headers["Cache-Control"] = "no-store"
     try:
         task = await _service(request).operator_finish_attempt(
-            attempt_id, body.outcome, owner=body.owner,
-            version=body.version, reason=body.reason
+            attempt_id, body.outcome, owner=body.owner, version=body.version, reason=body.reason
         )
     except HandoffConflict as error:
         raise HTTPException(409, "attempt was already finished or is missing") from error

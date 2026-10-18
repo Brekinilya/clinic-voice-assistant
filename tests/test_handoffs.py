@@ -68,14 +68,16 @@ async def test_callback_requires_consent_and_explicit_final_confirmation():
     )
     request = await service.ensure_request("channel-2", "R-08", "P3")
     await service.transfer_started(
-        SimpleNamespace(
-            attempt_id="attempt-2", call_id="channel-2", route="R-08", priority="P3"
-        )
+        SimpleNamespace(attempt_id="attempt-2", call_id="channel-2", route="R-08", priority="P3")
     )
     await service.transfer_result(
         SimpleNamespace(
-            attempt_id="attempt-2", call_id="channel-2", route="R-08", priority="P3",
-            outcome="no_answer", reason="timeout",
+            attempt_id="attempt-2",
+            call_id="channel-2",
+            route="R-08",
+            priority="P3",
+            outcome="no_answer",
+            reason="timeout",
         )
     )
 
@@ -100,7 +102,10 @@ async def test_callback_requires_consent_and_explicit_final_confirmation():
 async def test_declined_callback_leaves_no_task_or_draft():
     store = MemoryHandoffStore()
     service = HandoffService(
-        store, NoMis(), Clock(), b"x" * 32,
+        store,
+        NoMis(),
+        Clock(),
+        b"x" * 32,
         HandoffSettings(enabled=True, callback_enabled=True),
     )
     request = await service.ensure_request("channel-3", "R-08", "P2")

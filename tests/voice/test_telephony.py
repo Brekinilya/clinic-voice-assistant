@@ -266,3 +266,24 @@ async def test_patient_hangup_during_journal_write_prevents_originate(line, monk
     release.set()
     await transfer
     assert not any(c[0] == "originate" for c in line.ari.calls)
+
+
+async def test_journal_timeout_does_not_replace_actual_connected_outcome(line, monkeypatch):
+    """Ошибка локального журнала не означает, что реальный перевод не состоялся."""
+    monkeypatch.setattr(telephony_module, "HANDOFF_JOURNAL_TIMEOUT_S", 0.02)
+    outcomes = []
+
+    async def blocked_start(_):
+        await asyncio.Event().wait()
+
+    async def record(result):
+        outcomes.append(result.outcome)
+
+    line.on_transfer_start = blocked_start
+    line.on_transfer = record
+    await line.handle(start("caller-1", "inbound"))
+    call = line.calls["caller-1"]
+    await line.finish(call, {"reason": "transfer", "route": "R-01", "priority": "P1"})
+    await line.handle(start("operator-1", "operator", "caller-1"))
+    assert call.connected
+    assert outcomes == ["connected"]

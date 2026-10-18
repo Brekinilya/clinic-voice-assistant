@@ -146,7 +146,7 @@ async def test_same_final_consent_racing_twice_creates_one_task(monkeypatch):
     first_reply, second_reply = await asyncio.gather(first, second)
     task = await store.get_callback_task_by_request(request.request_id)
     assert task is not None
-    assert len(await store.list_callback_tasks()) == 1
+    assert len(await store.list_callback_tasks(limit=50, offset=0)) == 1
     assert {first_reply.code, second_reply.code} <= {"CALLBACK_QUEUED", "CALLBACK_STALE"}
 
 

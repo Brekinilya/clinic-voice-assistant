@@ -365,7 +365,11 @@ handoff_requests = Table(
     CheckConstraint("version > 0"),
 )
 Index("handoff_request_queue", handoff_requests.c.transfer_state, handoff_requests.c.created_at)
-Index("handoff_callback_queue", handoff_requests.c.callback_state, handoff_requests.c.callback_deadline)
+Index(
+    "handoff_callback_queue",
+    handoff_requests.c.callback_state,
+    handoff_requests.c.callback_deadline,
+)
 
 handoff_attempts = Table(
     "backend_handoff_attempts",
@@ -384,7 +388,13 @@ handoff_mis_operations = Table(
     "backend_handoff_mis_operations",
     metadata,
     Column("operation_id", String(32), primary_key=True),
-    Column("request_id", String(32), ForeignKey(handoff_requests.c.request_id), nullable=False, unique=True),
+    Column(
+        "request_id",
+        String(32),
+        ForeignKey(handoff_requests.c.request_id),
+        nullable=False,
+        unique=True,
+    ),
     Column("kind", String(20), nullable=False),
     Column("state", String(16), nullable=False),
     Column("next_check_at", DateTime(timezone=True)),
@@ -398,7 +408,13 @@ callback_tasks = Table(
     "backend_callback_tasks",
     metadata,
     Column("task_id", String(32), primary_key=True),
-    Column("request_id", String(32), ForeignKey(handoff_requests.c.request_id), nullable=False, unique=True),
+    Column(
+        "request_id",
+        String(32),
+        ForeignKey(handoff_requests.c.request_id),
+        nullable=False,
+        unique=True,
+    ),
     Column("state", String(16), nullable=False),
     Column("priority", String(2), nullable=False),
     Column("deadline", DateTime(timezone=True), nullable=False),
@@ -407,7 +423,9 @@ callback_tasks = Table(
     Column("lease_until", DateTime(timezone=True)),
     Column("version", Integer, nullable=False),
     Column("data", JSONB, nullable=False),
-    CheckConstraint("state IN ('queued','claimed','in_progress','done','cancelled','exhausted','manual')"),
+    CheckConstraint(
+        "state IN ('queued','claimed','in_progress','done','cancelled','exhausted','manual')"
+    ),
     CheckConstraint("priority IN ('P2','P3')"),
     CheckConstraint("version > 0"),
 )

@@ -1,4 +1,4 @@
-﻿"""Потокобезопасный store для тестов и автономной демонстрации."""
+"""Потокобезопасный store для тестов и автономной демонстрации."""
 
 import asyncio
 
@@ -99,16 +99,17 @@ class MemoryHandoffStore:
                 raise HandoffConflict("карточка звонка не найдена")
             self.attempts[attempt.attempt_id] = attempt
             self.requests[request.request_id] = request.model_copy(
-                update={"attempt_id": attempt.attempt_id,
-                        "transfer_state": TransferState.ATTEMPTING,
-                        "transfer_reason": None,
-                        "version": request.version + 1}
+                update={
+                    "attempt_id": attempt.attempt_id,
+                    "transfer_state": TransferState.ATTEMPTING,
+                    "transfer_reason": None,
+                    "version": request.version + 1,
+                }
             )
             return attempt
 
     async def finish_attempt(
-        self, attempt_id, outcome, finished_at, reason, *, call_id, route, priority,
-        operation=None
+        self, attempt_id, outcome, finished_at, reason, *, call_id, route, priority, operation=None
     ):
         async with self._lock:
             attempt = self.attempts.get(attempt_id)
@@ -131,8 +132,12 @@ class MemoryHandoffStore:
                 if outcome == TransferState.CONNECTED:
                     mis_state = MisDeliveryState.PENDING
                 request = request.model_copy(
-                    update={"transfer_state": state, "transfer_reason": reason,
-                            "mis_state": mis_state, "version": request.version + 1}
+                    update={
+                        "transfer_state": state,
+                        "transfer_reason": reason,
+                        "mis_state": mis_state,
+                        "version": request.version + 1,
+                    }
                 )
                 if operation is not None:
                     if operation.request_id != request.request_id:
@@ -140,11 +145,13 @@ class MemoryHandoffStore:
                     if request.mis_operation_id is not None:
                         raise HandoffConflict("операция MIS уже назначена")
                     self.mis_operations[operation.operation_id] = operation
-                    request = request.model_copy(update={
-                        "mis_state": operation.state,
-                        "mis_operation_id": operation.operation_id,
-                        "version": request.version + 1,
-                    })
+                    request = request.model_copy(
+                        update={
+                            "mis_state": operation.state,
+                            "mis_operation_id": operation.operation_id,
+                            "version": request.version + 1,
+                        }
+                    )
                 self.requests[request.request_id] = request
             elif operation is not None:
                 raise HandoffConflict("исход устаревшей попытки не создаёт операцию")
@@ -186,16 +193,20 @@ class MemoryHandoffStore:
             self.mis_operations[operation.operation_id] = updated
             request = self.requests[updated.request_id]
             self.requests[request.request_id] = request.model_copy(
-                update={"mis_state": updated.state, "mis_operation_id": updated.operation_id,
-                        "mis_escalation_id": updated.escalation_id,
-                        "version": request.version + 1}
+                update={
+                    "mis_state": updated.state,
+                    "mis_operation_id": updated.operation_id,
+                    "mis_escalation_id": updated.escalation_id,
+                    "version": request.version + 1,
+                }
             )
             return updated
 
     async def due_mis_operations(self, now, limit):
         async with self._lock:
             items = [
-                o for o in self.mis_operations.values()
+                o
+                for o in self.mis_operations.values()
                 if o.state.value in {"pending", "unknown", "sending"}
                 and (o.next_check_at is None or o.next_check_at <= now)
             ]
@@ -224,14 +235,16 @@ class MemoryHandoffStore:
             if request_id is None:
                 return None
             draft = self.callback_drafts.get(request_id)
-            if draft is None or turn_id <= draft.last_turn_id:
+            if draft is None or turn_id <= max(draft.last_turn_id, draft.started_turn_id):
                 return draft
-            updated = draft.model_copy(update={
-                "input_epoch": draft.input_epoch + 1,
-                "last_turn_id": turn_id - 1,
-                "invalid_turns": 0,
-                "version": draft.version + 1,
-            })
+            updated = draft.model_copy(
+                update={
+                    "input_epoch": draft.input_epoch + 1,
+                    "started_turn_id": turn_id,
+                    "last_turn_id": turn_id - 1,
+                    "version": draft.version + 1,
+                }
+            )
             self.callback_drafts[request_id] = updated
             return updated
 
@@ -243,10 +256,12 @@ class MemoryHandoffStore:
             draft = self.callback_drafts.pop(request_id, None)
             if draft is not None:
                 request = self.requests[request_id]
-                self.requests[request_id] = request.model_copy(update={
-                    "callback_state": CallbackState.CANCELLED,
-                    "version": request.version + 1,
-                })
+                self.requests[request_id] = request.model_copy(
+                    update={
+                        "callback_state": CallbackState.CANCELLED,
+                        "version": request.version + 1,
+                    }
+                )
             return draft
 
     async def delete_callback_draft(self, request_id, *, expected_version=None):
@@ -258,9 +273,7 @@ class MemoryHandoffStore:
                 raise HandoffConflict("версия черновика изменилась")
             return self.callback_drafts.pop(request_id)
 
-    async def create_callback_task(
-        self, task, *, draft_version, consent_turn_id, input_epoch
-    ):
+    async def create_callback_task(self, task, *, draft_version, consent_turn_id, input_epoch):
         async with self._lock:
             existing_id = self.callback_by_request.get(task.request_id)
             if existing_id:
@@ -289,9 +302,13 @@ class MemoryHandoffStore:
             self.callback_drafts.pop(task.request_id, None)
             request = self.requests[task.request_id]
             self.requests[request.request_id] = request.model_copy(
-                update={"summary": task.summary or request.summary,
-                        "callback_state": task.state, "callback_deadline": task.deadline,
-                        "callback_preferred_at": task.preferred_at, "version": request.version + 1}
+                update={
+                    "summary": task.summary or request.summary,
+                    "callback_state": task.state,
+                    "callback_deadline": task.deadline,
+                    "callback_preferred_at": task.preferred_at,
+                    "version": request.version + 1,
+                }
             )
             return task
 
@@ -323,9 +340,14 @@ class MemoryHandoffStore:
                 raise HandoffConflict("задача недоступна для взятия")
             if task.next_at > now:
                 raise HandoffConflict("срок следующего действия ещё не наступил")
-            updated = task.model_copy(update={"state": CallbackState.CLAIMED,
-                                              "owner": owner, "lease_until": lease_until,
-                                              "version": task.version + 1})
+            updated = task.model_copy(
+                update={
+                    "state": CallbackState.CLAIMED,
+                    "owner": owner,
+                    "lease_until": lease_until,
+                    "version": task.version + 1,
+                }
+            )
             self.callback_tasks[task_id] = updated
             return updated
 
@@ -344,10 +366,14 @@ class MemoryHandoffStore:
                     raise HandoffConflict("attempt_id уже использован")
                 return task, old
             self.callback_attempts[attempt.attempt_id] = attempt
-            updated = task.model_copy(update={"state": CallbackState.IN_PROGRESS,
-                                              "attempts": task.attempts + 1,
-                                              "active_attempt_id": attempt.attempt_id,
-                                              "version": task.version + 1})
+            updated = task.model_copy(
+                update={
+                    "state": CallbackState.IN_PROGRESS,
+                    "attempts": task.attempts + 1,
+                    "active_attempt_id": attempt.attempt_id,
+                    "version": task.version + 1,
+                }
+            )
             self.callback_tasks[task.task_id] = updated
             return updated, attempt
 
@@ -359,7 +385,11 @@ class MemoryHandoffStore:
             if attempt is None:
                 raise HandoffConflict("попытка callback не найдена")
             if attempt.finished_at is not None:
-                if attempt.owner != owner or attempt.outcome.value != outcome or attempt.reason != reason:
+                if (
+                    attempt.owner != owner
+                    or attempt.outcome.value != outcome
+                    or attempt.reason != reason
+                ):
                     raise HandoffConflict("исход попытки уже сохранён")
                 return self.callback_tasks[attempt.task_id]
             outcome = CallbackOutcome(outcome)
@@ -374,9 +404,9 @@ class MemoryHandoffStore:
                 or task.lease_until <= finished_at
             ):
                 raise HandoffConflict("попытка больше не принадлежит сотруднику")
-            attempt = attempt.model_copy(update={"outcome": outcome,
-                                                 "finished_at": finished_at,
-                                                 "reason": reason})
+            attempt = attempt.model_copy(
+                update={"outcome": outcome, "finished_at": finished_at, "reason": reason}
+            )
             self.callback_attempts[attempt_id] = attempt
             if outcome == CallbackOutcome.CONNECTED:
                 state, next_at, sms = CallbackState.DONE, finished_at, False
@@ -390,17 +420,29 @@ class MemoryHandoffStore:
                 # Межпопыточный интервал — рабочее решение, не норматив SLA.
                 state, next_at, sms = CallbackState.QUEUED, finished_at, False
                 from datetime import timedelta
+
                 next_at = finished_at + timedelta(minutes=5)
-            task = task.model_copy(update={"state": state, "next_at": next_at,
-                                           "last_outcome": outcome, "sms_pending": sms,
-                                           "owner": None, "lease_until": None,
-                                           "active_attempt_id": None,
-                                           "version": task.version + 1})
+            task = task.model_copy(
+                update={
+                    "state": state,
+                    "next_at": next_at,
+                    "last_outcome": outcome,
+                    "sms_pending": sms,
+                    "owner": None,
+                    "lease_until": None,
+                    "active_attempt_id": None,
+                    "version": task.version + 1,
+                }
+            )
             self.callback_tasks[task.task_id] = task
             request = self.requests[task.request_id]
             self.requests[request.request_id] = request.model_copy(
-                update={"callback_state": state, "callback_attempts": task.attempts,
-                        "callback_sms_pending": sms, "version": request.version + 1}
+                update={
+                    "callback_state": state,
+                    "callback_attempts": task.attempts,
+                    "callback_sms_pending": sms,
+                    "version": request.version + 1,
+                }
             )
             return task
 
@@ -409,21 +451,29 @@ class MemoryHandoffStore:
             task = self.callback_tasks.get(task_id)
             if task is None or task.version != expected_version:
                 raise HandoffConflict("задача уже изменилась")
-            if task.state in {CallbackState.DONE, CallbackState.CANCELLED,
-                              CallbackState.EXHAUSTED, CallbackState.MANUAL}:
+            if task.state in {
+                CallbackState.DONE,
+                CallbackState.CANCELLED,
+                CallbackState.EXHAUSTED,
+                CallbackState.MANUAL,
+            }:
                 raise HandoffConflict("задача уже завершена")
             if task.owner not in {None, owner} or task.state == CallbackState.IN_PROGRESS:
                 raise HandoffConflict("задача исполняется другим сотрудником")
             if task.owner is not None and (task.lease_until is None or task.lease_until <= now):
                 raise HandoffConflict("срок владения задачей истёк")
-            updated = task.model_copy(update={"state": CallbackState.CANCELLED,
-                                              "owner": None, "lease_until": None,
-                                              "version": task.version + 1})
+            updated = task.model_copy(
+                update={
+                    "state": CallbackState.CANCELLED,
+                    "owner": None,
+                    "lease_until": None,
+                    "version": task.version + 1,
+                }
+            )
             self.callback_tasks[task_id] = updated
             request = self.requests[task.request_id]
             self.requests[request.request_id] = request.model_copy(
-                update={"callback_state": CallbackState.CANCELLED,
-                        "version": request.version + 1}
+                update={"callback_state": CallbackState.CANCELLED, "version": request.version + 1}
             )
             return updated
 
@@ -442,26 +492,46 @@ class MemoryHandoffStore:
         async with self._lock:
             recovered = []
             for task_id, task in tuple(self.callback_tasks.items()):
-                if task.state == CallbackState.CLAIMED and task.lease_until and task.lease_until <= now:
-                    task = task.model_copy(update={
-                        "state": CallbackState.QUEUED, "owner": None, "lease_until": None,
-                        "version": task.version + 1,
-                    })
+                if (
+                    task.state == CallbackState.CLAIMED
+                    and task.lease_until
+                    and task.lease_until <= now
+                ):
+                    task = task.model_copy(
+                        update={
+                            "state": CallbackState.QUEUED,
+                            "owner": None,
+                            "lease_until": None,
+                            "version": task.version + 1,
+                        }
+                    )
                     self.callback_tasks[task_id] = task
                     self._update_request_callback(task)
                     recovered.append(task)
-                elif task.state == CallbackState.IN_PROGRESS and task.lease_until and task.lease_until <= now:
+                elif (
+                    task.state == CallbackState.IN_PROGRESS
+                    and task.lease_until
+                    and task.lease_until <= now
+                ):
                     attempt = self.callback_attempts.get(task.active_attempt_id)
                     if attempt is not None and attempt.finished_at is None:
-                        self.callback_attempts[attempt.attempt_id] = attempt.model_copy(update={
-                            "outcome": CallbackOutcome.UNKNOWN, "finished_at": now,
-                            "reason": "PROCESS_LOST",
-                        })
-                    task = task.model_copy(update={
-                        "state": CallbackState.MANUAL, "last_outcome": CallbackOutcome.UNKNOWN,
-                        "owner": None, "lease_until": None, "active_attempt_id": None,
-                        "version": task.version + 1,
-                    })
+                        self.callback_attempts[attempt.attempt_id] = attempt.model_copy(
+                            update={
+                                "outcome": CallbackOutcome.UNKNOWN,
+                                "finished_at": now,
+                                "reason": "PROCESS_LOST",
+                            }
+                        )
+                    task = task.model_copy(
+                        update={
+                            "state": CallbackState.MANUAL,
+                            "last_outcome": CallbackOutcome.UNKNOWN,
+                            "owner": None,
+                            "lease_until": None,
+                            "active_attempt_id": None,
+                            "version": task.version + 1,
+                        }
+                    )
                     self.callback_tasks[task_id] = task
                     self._update_request_callback(task)
                     recovered.append(task)
@@ -469,7 +539,11 @@ class MemoryHandoffStore:
 
     def _update_request_callback(self, task):
         request = self.requests[task.request_id]
-        self.requests[request.request_id] = request.model_copy(update={
-            "callback_state": task.state, "callback_attempts": task.attempts,
-            "callback_sms_pending": task.sms_pending, "version": request.version + 1,
-        })
+        self.requests[request.request_id] = request.model_copy(
+            update={
+                "callback_state": task.state,
+                "callback_attempts": task.attempts,
+                "callback_sms_pending": task.sms_pending,
+                "version": request.version + 1,
+            }
+        )

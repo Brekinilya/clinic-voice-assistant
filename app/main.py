@@ -12,8 +12,8 @@ from app.api.debug import router as debug_router
 from app.api.demo import chat_router
 from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
-from app.api.health import router as health_router
 from app.api.handoffs import router as handoffs_router
+from app.api.health import router as health_router
 from app.bootstrap import build_runtime
 from app.diagnostics.bootstrap import open_diagnostics
 from app.dialogue.bootstrap import open_dialogue_backend

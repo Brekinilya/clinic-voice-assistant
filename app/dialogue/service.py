@@ -185,6 +185,10 @@ class DialogueService:
                         return claim.cached
                 return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
             if current.phase == Phase.HANDOFF:
+                if self.handoffs is not None and not turn.is_final:
+                    # Промежуточная речь отзывает согласие даже без отдельного
+                    # input_started. Итоговый HTTP-ввод сохраняет строгий порядок.
+                    await self.handoffs.callback_input_started(call_id, turn.turn_id)
                 if self.handoffs is None or not await self.handoffs.has_callback_draft(call_id):
                     return handoff_reply(current, turn.turn_id)
             if turn.turn_id >= current.observed_turn_id:
@@ -353,7 +357,9 @@ class DialogueService:
         if state.phase == Phase.HANDOFF:
             if self.handoffs is not None:
                 if await self.handoffs.has_callback_draft(call_id):
-                    return reply(state, event.turn_id, code="CALLBACK_INPUT_STARTED", kind="partial")
+                    return reply(
+                        state, event.turn_id, code="CALLBACK_INPUT_STARTED", kind="partial"
+                    )
             return handoff_reply(state, event.turn_id)
         return reply(
             state,

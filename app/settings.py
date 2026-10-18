@@ -91,7 +91,9 @@ class Settings(BaseSettings):
         ):
             raise ValueError("для внешнего диалога нужны natural, postgres и SCHEDULE_INDEX_PATH")
         if self.handoffs_enabled and (not self.dialogue_enabled or not self.web_access_enabled):
-            raise ValueError("для заявок оператору нужны DIALOGUE_ENABLED и защищённый WEB_ACCESS_ENABLED")
+            raise ValueError(
+                "для заявок оператору нужны DIALOGUE_ENABLED и защищённый WEB_ACCESS_ENABLED"
+            )
         if self.callback_enabled and not self.handoffs_enabled:
             raise ValueError("CALLBACK_ENABLED требует HANDOFFS_ENABLED")
         if (

@@ -128,6 +128,8 @@ class CallbackDraft(BookingModel):
     deadline: datetime
     summary: str = Field(max_length=200)
     input_epoch: int = Field(default=0, ge=0)
+    # Повтор доставки одного input_started не отзывает согласие повторно.
+    started_turn_id: int = Field(default=0, ge=0)
     last_turn_id: int = Field(default=0, ge=0)
     invalid_turns: int = Field(default=0, ge=0, le=3)
     version: int = Field(default=1, ge=1)

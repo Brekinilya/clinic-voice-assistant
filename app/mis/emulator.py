@@ -102,7 +102,10 @@ class MisEmulator:
                         items.sort(key=lambda item: (item.created_at, item.id), reverse=True)
                         return httpx.Response(
                             200,
-                            json=[item.model_dump(mode="json") for item in items[offset : offset + limit]],
+                            json=[
+                                item.model_dump(mode="json")
+                                for item in items[offset : offset + limit]
+                            ],
                         )
                     return self._list(path[0], token, query)
                 if path == ["escalations"] and request.method == "POST":

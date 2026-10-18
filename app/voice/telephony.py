@@ -463,7 +463,8 @@ class Telephony:
                 call.handoff_journaled = True
             except Exception:
                 log.exception("bounded transfer journal write failed")
-                await self._report(call, "failed", "handoff_journal_unavailable")
+                # Журнал недоступен, но попытка соединения ещё впереди.
+                # Терминальный исход сообщаем после ответа ARI/оператора.
         try:
             if call.caller not in self.calls:
                 return

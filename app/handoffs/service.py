@@ -1,4 +1,4 @@
-﻿"""Оркестрация локальной карточки, достоверных исходов и ручного callback."""
+"""Оркестрация локальной карточки, достоверных исходов и ручного callback."""
 
 import asyncio
 import base64
@@ -48,8 +48,14 @@ class HandoffService:
         )
 
     async def ensure_request(
-        self, call_id: str, route: str, priority: str, state: DialogueState | None = None,
-        *, source: str = "phone", summary_override: str | None = None
+        self,
+        call_id: str,
+        route: str,
+        priority: str,
+        state: DialogueState | None = None,
+        *,
+        source: str = "phone",
+        summary_override: str | None = None,
     ) -> HandoffRequest:
         now = self.clock.now().astimezone(CLINIC_TIMEZONE)
         known = state is not None and state.client_id is not None
@@ -81,7 +87,9 @@ class HandoffService:
             purpose=purpose,
             summary=summary,
             recording_opt_out=state.recording_opt_out if state is not None else None,
-            mis_state=MisDeliveryState.MANUAL if priority == "P1" else MisDeliveryState.NOT_REQUIRED,
+            mis_state=MisDeliveryState.MANUAL
+            if priority == "P1"
+            else MisDeliveryState.NOT_REQUIRED,
         )
         saved = await self.store.create_request(request)
         return saved
@@ -115,13 +123,20 @@ class HandoffService:
             return
         outcome = TransferState(event.outcome)
         operation = None
-        if request.mis_operation_id is None and request.priority == "P1" and self.settings.technical_client_id is not None:
+        if (
+            request.mis_operation_id is None
+            and request.priority == "P1"
+            and self.settings.technical_client_id is not None
+        ):
             operation = self._new_mis_operation(
                 request, "emergency_notice", self.settings.technical_client_id, outcome
             )
-        elif (request.mis_operation_id is None and outcome == TransferState.CONNECTED
-              and request.identity_status == "verified"
-              and request.client_id is not None):
+        elif (
+            request.mis_operation_id is None
+            and outcome == TransferState.CONNECTED
+            and request.identity_status == "verified"
+            and request.client_id is not None
+        ):
             operation = self._new_mis_operation(request, "transfer", request.client_id, outcome)
         try:
             saved, _ = await self.store.finish_attempt(
@@ -139,8 +154,11 @@ class HandoffService:
             return
         if saved.attempt_id != event.attempt_id:
             return
-        if (operation is None and saved.mis_operation_id is None
-                and (request.priority == "P1" or outcome == TransferState.CONNECTED)):
+        if (
+            operation is None
+            and saved.mis_operation_id is None
+            and (request.priority == "P1" or outcome == TransferState.CONNECTED)
+        ):
             await self._mark_request(saved, mis_state=MisDeliveryState.MANUAL)
 
     def _new_mis_operation(
@@ -149,7 +167,9 @@ class HandoffService:
         operation_id = uuid4().hex
         marker = f"T08:{operation_id}"
         label = "Экстренное уведомление" if kind == "emergency_notice" else "Передача разговора"
-        description = f"[{marker}] {label}. Маршрут {request.route}, исход {outcome.value}. {request.summary}"[:1000]
+        description = f"[{marker}] {label}. Маршрут {request.route}, исход {outcome.value}. {request.summary}"[
+            :1000
+        ]
         return MisOperation(
             operation_id=operation_id,
             request_id=request.request_id,
@@ -172,8 +192,9 @@ class HandoffService:
             return
         current = await self.store.get_request(request.request_id)
         if current is not None:
-            await self._mark_request(current, mis_state=MisDeliveryState.PENDING,
-                                     mis_operation_id=saved.operation_id)
+            await self._mark_request(
+                current, mis_state=MisDeliveryState.PENDING, mis_operation_id=saved.operation_id
+            )
 
     async def _mark_request(self, request, **changes):
         try:
@@ -196,18 +217,26 @@ class HandoffService:
         existing = await self.store.get_callback_task_by_request(request.request_id)
         if existing is not None:
             return self._callback_reply(
-                call_id, turn_id,
+                call_id,
+                turn_id,
                 ("Задача обратного звонка уже сохранена. Всего доброго.",),
-                code="CALLBACK_QUEUED", ended=True,
+                code="CALLBACK_QUEUED",
+                ended=True,
             )
         now = self.clock.now().astimezone(CLINIC_TIMEZONE)
         try:
             deadline = callback_deadline(now, request.priority)
         except CalendarUnavailable:
             await self._mark_request(request, callback_state=CallbackState.MANUAL)
-            return self._callback_reply(call_id, turn_id,
-                ("Сейчас не могу проверить срок обратного звонка. Обращение доступно сотруднику для ручной обработки.",),
-                code="CALLBACK_CALENDAR_UNAVAILABLE", ended=True)
+            return self._callback_reply(
+                call_id,
+                turn_id,
+                (
+                    "Сейчас не могу проверить срок обратного звонка. Обращение доступно сотруднику для ручной обработки.",
+                ),
+                code="CALLBACK_CALENDAR_UNAVAILABLE",
+                ended=True,
+            )
         existing_draft = await self.store.get_callback_draft(request.request_id)
         if existing_draft is not None:
             return self._callback_prompt(call_id, turn_id, existing_draft)
@@ -226,12 +255,13 @@ class HandoffService:
                 return None
             return self._callback_prompt(call_id, turn_id, existing_draft)
         request = await self.store.get_request(request.request_id)
-        await self._mark_request(request, callback_state=CallbackState.DRAFT,
-                                 callback_deadline=deadline)
+        await self._mark_request(
+            request, callback_state=CallbackState.DRAFT, callback_deadline=deadline
+        )
         return self._callback_reply(
-            call_id, turn_id,
-            ("Регистратор не ответил.", "Могу сохранить задачу для обратного звонка.",
-             "Согласны?"),
+            call_id,
+            turn_id,
+            ("Регистратор не ответил.", "Могу сохранить задачу для обратного звонка.", "Согласны?"),
             code="CALLBACK_OFFERED",
         )
 
@@ -245,29 +275,51 @@ class HandoffService:
     async def callback_turn(self, call_id: str, turn: Turn) -> Reply:
         request = await self.store.request_for_call(call_id)
         if request is None:
-            return self._callback_reply(call_id, turn.turn_id,
-                ("Запрос уже завершён.",), code="CALLBACK_UNAVAILABLE", ended=True)
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
+                ("Запрос уже завершён.",),
+                code="CALLBACK_UNAVAILABLE",
+                ended=True,
+            )
         task = await self.store.get_callback_task_by_request(request.request_id)
         if task is not None:
             if turn.turn_id < task.consent_turn_id:
-                return self._callback_reply(call_id, turn.turn_id,
+                return self._callback_reply(
+                    call_id,
+                    turn.turn_id,
                     ("Ответ устарел; задача уже сохранена по предыдущему подтверждению.",),
-                    code="CALLBACK_STALE")
-            return self._callback_reply(call_id, turn.turn_id,
+                    code="CALLBACK_STALE",
+                )
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
                 ("Задача обратного звонка сохранена.", "Всего доброго."),
-                code="CALLBACK_QUEUED", ended=True)
+                code="CALLBACK_QUEUED",
+                ended=True,
+            )
         draft = await self.store.get_callback_draft(request.request_id)
         if draft is None:
-            return self._callback_reply(call_id, turn.turn_id,
-                ("Обратный звонок не оформлен.",), code="CALLBACK_NOT_QUEUED", ended=True)
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
+                ("Обратный звонок не оформлен.",),
+                code="CALLBACK_NOT_QUEUED",
+                ended=True,
+            )
         if turn.turn_id <= draft.last_turn_id:
             return self._callback_prompt(call_id, turn.turn_id, draft)
         if turn.turn_id != draft.last_turn_id + 1:
-            return self._callback_reply(call_id, turn.turn_id,
-                ("Реплика устарела. Повторите ответ после сигнала.",), code="CALLBACK_STALE")
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
+                ("Реплика устарела. Повторите ответ после сигнала.",),
+                code="CALLBACK_STALE",
+            )
         if not turn.is_final:
-            return self._callback_reply(call_id, turn.turn_id,
-                ("Ожидаю, когда вы закончите.",), code="CALLBACK_PARTIAL")
+            return self._callback_reply(
+                call_id, turn.turn_id, ("Ожидаю, когда вы закончите.",), code="CALLBACK_PARTIAL"
+            )
         text = turn.text.strip()
         answer = parse_answer(text)
         if draft.stage == "offer":
@@ -277,51 +329,95 @@ class HandoffService:
                 )
                 request = await self.store.get_request(request.request_id)
                 await self._mark_request(request, callback_state=CallbackState.CANCELLED)
-                return self._callback_reply(call_id, turn.turn_id,
+                return self._callback_reply(
+                    call_id,
+                    turn.turn_id,
                     ("Хорошо. Обратный звонок не оформлен.", "Всего доброго."),
-                    code="CALLBACK_DECLINED", ended=True)
+                    code="CALLBACK_DECLINED",
+                    ended=True,
+                )
             if answer != "yes":
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Сохранить задачу для обратного звонка? Ответьте да или нет.",))
-            draft = draft.model_copy(update={"stage": "contact", "last_turn_id": turn.turn_id,
-                                             "invalid_turns": 0,
-                                             "version": draft.version + 1})
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    ("Сохранить задачу для обратного звонка? Ответьте да или нет.",),
+                )
+            draft = draft.model_copy(
+                update={
+                    "stage": "contact",
+                    "last_turn_id": turn.turn_id,
+                    "invalid_turns": 0,
+                    "version": draft.version + 1,
+                }
+            )
             await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
-            return self._callback_prompt(call_id, turn.turn_id, draft,
-                ("Назовите номер телефона для обратного звонка, начиная с кода страны.",))
+            return self._callback_prompt(
+                call_id,
+                turn.turn_id,
+                draft,
+                ("Назовите номер телефона для обратного звонка, начиная с кода страны.",),
+            )
         if draft.stage == "contact":
             digits = parse_digits(text, 11) or parse_digits(text, 10)
             raw_digits = re.sub(r"\D", "", text)
             digits = digits or (raw_digits if len(raw_digits) in {10, 11} else None)
             if digits is None or len(digits) not in {10, 11}:
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Не удалось проверить номер.", "Продиктуйте 10 или 11 цифр ещё раз."))
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    ("Не удалось проверить номер.", "Продиктуйте 10 или 11 цифр ещё раз."),
+                )
             if len(digits) == 10:
                 digits = "7" + digits
             elif digits.startswith("8"):
                 digits = "7" + digits[1:]
             if len(digits) != 11 or not digits.startswith("7"):
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Нужен российский номер с кодом 7 или 8. Назовите номер ещё раз.",))
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    ("Нужен российский номер с кодом 7 или 8. Назовите номер ещё раз.",),
+                )
             contact = "+" + digits
-            draft = draft.model_copy(update={
-                "stage": "time", "contact_ciphertext": self.cipher.encrypt(contact.encode()).decode(),
-                "contact_masked": "•••• " + digits[-4:],
-                "last_turn_id": turn.turn_id, "invalid_turns": 0,
-                "version": draft.version + 1,
-            })
+            draft = draft.model_copy(
+                update={
+                    "stage": "time",
+                    "contact_ciphertext": self.cipher.encrypt(contact.encode()).decode(),
+                    "contact_masked": "•••• " + digits[-4:],
+                    "last_turn_id": turn.turn_id,
+                    "invalid_turns": 0,
+                    "version": draft.version + 1,
+                }
+            )
             await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
-            return self._callback_prompt(call_id, turn.turn_id, draft,
-                (f"Я записала номер, оканчивающийся на {digits[-4:]}.",
-                 "Есть удобное время для звонка? Если нет, скажите «в ближайшее время».",))
+            return self._callback_prompt(
+                call_id,
+                turn.turn_id,
+                draft,
+                (
+                    f"Я записала номер, оканчивающийся на {digits[-4:]}.",
+                    "Есть удобное время для звонка? Если нет, скажите «в ближайшее время».",
+                ),
+            )
         if draft.stage == "time":
             if answer == "no" or "ближайш" in text.casefold():
-                draft = draft.model_copy(update={"stage": "confirm", "last_turn_id": turn.turn_id,
-                                                 "invalid_turns": 0,
-                                                 "version": draft.version + 1})
+                draft = draft.model_copy(
+                    update={
+                        "stage": "confirm",
+                        "last_turn_id": turn.turn_id,
+                        "invalid_turns": 0,
+                        "version": draft.version + 1,
+                    }
+                )
                 await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
-                return self._callback_prompt(call_id, turn.turn_id, draft,
-                    self._confirmation_lines(request, draft))
+                return self._callback_prompt(
+                    call_id, turn.turn_id, draft, self._confirmation_lines(request, draft)
+                )
             if answer == "repeat" or "когда" in text.casefold():
                 try:
                     fresh = callback_deadline(
@@ -329,30 +425,54 @@ class HandoffService:
                     )
                 except CalendarUnavailable:
                     fresh = draft.deadline
-                if fresh > draft.deadline + timedelta(minutes=5):
-                    updated = draft.model_copy(update={
-                        "deadline": fresh, "last_turn_id": turn.turn_id,
+                updated = draft.model_copy(
+                    update={
+                        "deadline": max(fresh, draft.deadline),
+                        "last_turn_id": turn.turn_id,
+                        "invalid_turns": 0,
                         "version": draft.version + 1,
-                    })
-                    await self.store.save_callback_draft(updated, expected_version=draft.version)
-                    draft = updated
-                return self._callback_prompt(call_id, turn.turn_id, draft,
-                    (f"Нормативный срок — до {format_clinic(draft.deadline)}.",
-                     "Есть удобное время?"))
+                    }
+                )
+                await self.store.save_callback_draft(updated, expected_version=draft.version)
+                draft = updated
+                return self._callback_prompt(
+                    call_id,
+                    turn.turn_id,
+                    draft,
+                    (
+                        f"Нормативный срок — до {format_clinic(draft.deadline)}.",
+                        "Есть удобное время?",
+                    ),
+                )
             preferred = parse_preferred_time(text, self.clock.now().astimezone(CLINIC_TIMEZONE))
             if preferred is None:
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Не удалось определить дату и время.",
-                     "Скажите «в ближайшее время» или назовите дату и время."))
-            draft = draft.model_copy(update={"stage": "confirm", "preferred_at": preferred,
-                                             "last_turn_id": turn.turn_id,
-                                             "invalid_turns": 0,
-                                             "version": draft.version + 1})
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    (
+                        "Не удалось определить дату и время.",
+                        "Скажите «в ближайшее время» или назовите дату и время.",
+                    ),
+                )
+            draft = draft.model_copy(
+                update={
+                    "stage": "confirm",
+                    "preferred_at": preferred,
+                    "last_turn_id": turn.turn_id,
+                    "invalid_turns": 0,
+                    "version": draft.version + 1,
+                }
+            )
             await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
             lines = self._confirmation_lines(request, draft)
             if preferred > draft.deadline:
-                lines = (f"Вы назвали время позже норматива {format_clinic(draft.deadline)}.",
-                         f"Подтвердите ожидание до {format_clinic(preferred)}.", *lines)
+                lines = (
+                    f"Вы назвали время позже норматива {format_clinic(draft.deadline)}.",
+                    f"Подтвердите ожидание до {format_clinic(preferred)}.",
+                    *lines,
+                )
             return self._callback_prompt(call_id, turn.turn_id, draft, lines)
         if draft.stage == "goal":
             goals = {
@@ -363,16 +483,26 @@ class HandoffService:
             }
             selected = next((label for key, label in goals.items() if key in text.casefold()), None)
             if selected is None:
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Выберите цель: запись, отмена, перенос или другой вопрос.",))
-            draft = draft.model_copy(update={
-                "stage": "confirm", "summary": selected,
-                "last_turn_id": turn.turn_id, "invalid_turns": 0,
-                "version": draft.version + 1,
-            })
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    ("Выберите цель: запись, отмена, перенос или другой вопрос.",),
+                )
+            draft = draft.model_copy(
+                update={
+                    "stage": "confirm",
+                    "summary": selected,
+                    "last_turn_id": turn.turn_id,
+                    "invalid_turns": 0,
+                    "version": draft.version + 1,
+                }
+            )
             await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
-            return self._callback_prompt(call_id, turn.turn_id, draft,
-                self._confirmation_lines(request, draft))
+            return self._callback_prompt(
+                call_id, turn.turn_id, draft, self._confirmation_lines(request, draft)
+            )
         if draft.stage == "confirm":
             if answer == "repeat" or "когда" in text.casefold():
                 try:
@@ -381,23 +511,37 @@ class HandoffService:
                     )
                 except CalendarUnavailable:
                     fresh = draft.deadline
-                if fresh > draft.deadline + timedelta(minutes=5):
-                    draft = draft.model_copy(update={
-                        "deadline": fresh, "last_turn_id": turn.turn_id,
+                draft = draft.model_copy(
+                    update={
+                        "deadline": max(fresh, draft.deadline),
+                        "last_turn_id": turn.turn_id,
+                        "invalid_turns": 0,
                         "version": draft.version + 1,
-                    })
-                    await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
-                return self._callback_prompt(call_id, turn.turn_id, draft,
-                    self._confirmation_lines(request, draft))
+                    }
+                )
+                await self.store.save_callback_draft(draft, expected_version=draft.version - 1)
+                return self._callback_prompt(
+                    call_id, turn.turn_id, draft, self._confirmation_lines(request, draft)
+                )
             lowered = text.casefold()
-            if any(phrase in lowered for phrase in ("изменить цель", "другая тема", "другой вопрос")):
-                updated = draft.model_copy(update={
-                    "stage": "goal", "last_turn_id": turn.turn_id,
-                    "invalid_turns": 0, "version": draft.version + 1,
-                })
+            if any(
+                phrase in lowered for phrase in ("изменить цель", "другая тема", "другой вопрос")
+            ):
+                updated = draft.model_copy(
+                    update={
+                        "stage": "goal",
+                        "last_turn_id": turn.turn_id,
+                        "invalid_turns": 0,
+                        "version": draft.version + 1,
+                    }
+                )
                 await self.store.save_callback_draft(updated, expected_version=draft.version)
-                return self._callback_prompt(call_id, turn.turn_id, updated,
-                    ("Уточните новую цель: запись, отмена, перенос или другой вопрос.",))
+                return self._callback_prompt(
+                    call_id,
+                    turn.turn_id,
+                    updated,
+                    ("Уточните новую цель: запись, отмена, перенос или другой вопрос.",),
+                )
             digits = parse_digits(text, 11) or parse_digits(text, 10)
             raw_digits = re.sub(r"\D", "", text)
             digits = digits or (raw_digits if len(raw_digits) in {10, 11} else None)
@@ -407,18 +551,32 @@ class HandoffService:
                 elif len(digits) == 11 and digits.startswith("8"):
                     digits = "7" + digits[1:]
                 if len(digits) != 11 or not digits.startswith("7"):
-                    return await self._retry_callback_input(call_id, turn, request, draft,
-                        ("Нужен российский номер с кодом 7 или 8. Назовите его ещё раз.",))
-                updated = draft.model_copy(update={
-                    "contact_ciphertext": self.cipher.encrypt(("+" + digits).encode()).decode(),
-                    "contact_masked": "•••• " + digits[-4:],
-                    "last_turn_id": turn.turn_id, "invalid_turns": 0,
-                    "version": draft.version + 1,
-                })
+                    return await self._retry_callback_input(
+                        call_id,
+                        turn,
+                        request,
+                        draft,
+                        ("Нужен российский номер с кодом 7 или 8. Назовите его ещё раз.",),
+                    )
+                updated = draft.model_copy(
+                    update={
+                        "contact_ciphertext": self.cipher.encrypt(("+" + digits).encode()).decode(),
+                        "contact_masked": "•••• " + digits[-4:],
+                        "last_turn_id": turn.turn_id,
+                        "invalid_turns": 0,
+                        "version": draft.version + 1,
+                    }
+                )
                 await self.store.save_callback_draft(updated, expected_version=draft.version)
-                return self._callback_prompt(call_id, turn.turn_id, updated,
-                    (f"Номер исправлен, оканчивается на {digits[-4:]}.",
-                     *self._confirmation_lines(request, updated)))
+                return self._callback_prompt(
+                    call_id,
+                    turn.turn_id,
+                    updated,
+                    (
+                        f"Номер исправлен, оканчивается на {digits[-4:]}.",
+                        *self._confirmation_lines(request, updated),
+                    ),
+                )
             if answer != "yes":
                 if answer == "no":
                     await self.store.delete_callback_draft(
@@ -427,11 +585,20 @@ class HandoffService:
                     current = await self.store.get_request(request.request_id)
                     if current is not None:
                         await self._mark_request(current, callback_state=CallbackState.CANCELLED)
-                    return self._callback_reply(call_id, turn.turn_id,
+                    return self._callback_reply(
+                        call_id,
+                        turn.turn_id,
                         ("Не сохраняю задачу обратного звонка.", "Всего доброго."),
-                        code="CALLBACK_DECLINED", ended=True)
-                return await self._retry_callback_input(call_id, turn, request, draft,
-                    ("Подтвердите сохранение задачи обратного звонка: да или нет.",))
+                        code="CALLBACK_DECLINED",
+                        ended=True,
+                    )
+                return await self._retry_callback_input(
+                    call_id,
+                    turn,
+                    request,
+                    draft,
+                    ("Подтвердите сохранение задачи обратного звонка: да или нет.",),
+                )
             now = self.clock.now().astimezone(CLINIC_TIMEZONE)
             try:
                 deadline = callback_deadline(now, request.priority)
@@ -442,19 +609,33 @@ class HandoffService:
                 current = await self.store.get_request(request.request_id)
                 if current is not None:
                     await self._mark_request(current, callback_state=CallbackState.MANUAL)
-                return self._callback_reply(call_id, turn.turn_id,
-                    ("Срок нельзя проверить по доступному календарю. Задача callback не сохранена; обращение оставлено для ручной обработки.",),
-                    code="CALLBACK_CALENDAR_UNAVAILABLE", ended=True)
+                return self._callback_reply(
+                    call_id,
+                    turn.turn_id,
+                    (
+                        "Срок нельзя проверить по доступному календарю. Задача callback не сохранена; обращение оставлено для ручной обработки.",
+                    ),
+                    code="CALLBACK_CALENDAR_UNAVAILABLE",
+                    ended=True,
+                )
             if deadline > draft.deadline + timedelta(minutes=5):
-                updated = draft.model_copy(update={
-                    "deadline": deadline,
-                    "last_turn_id": turn.turn_id,
-                    "version": draft.version + 1,
-                })
+                updated = draft.model_copy(
+                    update={
+                        "deadline": deadline,
+                        "last_turn_id": turn.turn_id,
+                        "version": draft.version + 1,
+                    }
+                )
                 await self.store.save_callback_draft(updated, expected_version=draft.version)
-                return self._callback_prompt(call_id, turn.turn_id, updated,
-                    (*self._confirmation_lines(request, updated),
-                     "Срок изменился за время разговора. Подтвердите его ещё раз."))
+                return self._callback_prompt(
+                    call_id,
+                    turn.turn_id,
+                    updated,
+                    (
+                        *self._confirmation_lines(request, updated),
+                        "Срок изменился за время разговора. Подтвердите его ещё раз.",
+                    ),
+                )
             task = CallbackTask(
                 task_id=uuid4().hex,
                 request_id=request.request_id,
@@ -484,13 +665,23 @@ class HandoffService:
                 if current is not None and current.consent_turn_id == turn.turn_id:
                     saved = current
                 else:
-                    return self._callback_reply(call_id, turn.turn_id,
+                    return self._callback_reply(
+                        call_id,
+                        turn.turn_id,
                         ("Подтверждение устарело; задача не сохранена. Повторите ответ.",),
-                        code="CALLBACK_STALE")
+                        code="CALLBACK_STALE",
+                    )
             when = saved.preferred_at or saved.deadline
-            return self._callback_reply(call_id, turn.turn_id,
-                (f"Задача сохранена в очереди сотрудника. Ожидаемый срок — до {format_clinic(when)}.",
-                 "Всего доброго."), code="CALLBACK_QUEUED", ended=True)
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
+                (
+                    f"Задача сохранена в очереди сотрудника. Ожидаемый срок — до {format_clinic(when)}.",
+                    "Всего доброго.",
+                ),
+                code="CALLBACK_QUEUED",
+                ended=True,
+            )
         return self._callback_prompt(call_id, turn.turn_id, draft)
 
     async def _retry_callback_input(self, call_id, turn, request, draft, phrases):
@@ -502,14 +693,20 @@ class HandoffService:
             current = await self.store.get_request(request.request_id)
             if current is not None:
                 await self._mark_request(current, callback_state=CallbackState.CANCELLED)
-            return self._callback_reply(call_id, turn.turn_id,
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
                 ("Не удалось оформить обратный звонок. Задача не сохранена.", "Всего доброго."),
-                code="CALLBACK_UNDERSTANDING_LIMIT", ended=True)
-        updated = draft.model_copy(update={
-            "invalid_turns": invalid_turns,
-            "last_turn_id": turn.turn_id,
-            "version": draft.version + 1,
-        })
+                code="CALLBACK_UNDERSTANDING_LIMIT",
+                ended=True,
+            )
+        updated = draft.model_copy(
+            update={
+                "invalid_turns": invalid_turns,
+                "last_turn_id": turn.turn_id,
+                "version": draft.version + 1,
+            }
+        )
         await self.store.save_callback_draft(updated, expected_version=draft.version)
         return self._callback_prompt(call_id, turn.turn_id, updated, phrases)
 
@@ -517,7 +714,8 @@ class HandoffService:
         contact = self._open_contact(draft.contact_ciphertext)
         preferred = (
             f"Предпочтение: {format_clinic(draft.preferred_at)}."
-            if draft.preferred_at else "Звонок — в ближайшее возможное время."
+            if draft.preferred_at
+            else "Звонок — в ближайшее возможное время."
         )
         return (
             f"Обращение: {draft.summary or request.summary}",
@@ -529,8 +727,12 @@ class HandoffService:
 
     def _callback_prompt(self, call_id, turn_id, draft, phrases=None):
         state = DialogueState(call_id=call_id, phase=Phase.HANDOFF)
-        return reply(state, turn_id, *(phrases or ("Продолжим оформление обратного звонка.",)),
-                     code="CALLBACK_STEP").model_copy(update={"transfer": None})
+        return reply(
+            state,
+            turn_id,
+            *(phrases or ("Продолжим оформление обратного звонка.",)),
+            code="CALLBACK_STEP",
+        ).model_copy(update={"transfer": None})
 
     def _callback_reply(self, call_id, turn_id, phrases, *, code, ended=False):
         state = DialogueState(call_id=call_id, phase=Phase.ENDED if ended else Phase.HANDOFF)
@@ -561,18 +763,25 @@ class HandoffService:
         if task is None:
             raise HandoffConflict("задача не найдена")
         attempt = CallbackAttempt(
-            attempt_id=uuid4().hex, task_id=task_id,
+            attempt_id=uuid4().hex,
+            task_id=task_id,
             started_at=self.clock.now().astimezone(CLINIC_TIMEZONE),
             owner=owner,
         )
         return await self.store.start_callback_attempt(
-            attempt, expected_version=version,
+            attempt,
+            expected_version=version,
             now=self.clock.now().astimezone(CLINIC_TIMEZONE),
         )
 
     async def operator_finish_attempt(
-        self, attempt_id, outcome, *, owner: str | None = None,
-        version: int | None = None, reason=None
+        self,
+        attempt_id,
+        outcome,
+        *,
+        owner: str | None = None,
+        version: int | None = None,
+        reason=None,
     ):
         if owner is None or version is None:
             # Internal compatibility for the original service-level tests. The HTTP
@@ -584,8 +793,12 @@ class HandoffService:
             owner = owner or attempt.owner
             version = task.version if version is None else version
         return await self.store.finish_callback_attempt(
-            attempt_id, outcome, self.clock.now().astimezone(CLINIC_TIMEZONE), reason,
-            owner=owner, expected_version=version,
+            attempt_id,
+            outcome,
+            self.clock.now().astimezone(CLINIC_TIMEZONE),
+            reason,
+            owner=owner,
+            expected_version=version,
         )
 
     async def operator_cancel(self, task_id, owner, version):
@@ -597,9 +810,7 @@ class HandoffService:
         return await self.store.callback_attempts_for_task(task_id)
 
     async def recover_callbacks_once(self):
-        return await self.store.recover_callback_tasks(
-            self.clock.now().astimezone(CLINIC_TIMEZONE)
-        )
+        return await self.store.recover_callback_tasks(self.clock.now().astimezone(CLINIC_TIMEZONE))
 
     async def recover_missing_mis_intents_once(self):
         """Seed legacy connected rows lacking an intent; never repeats a POST."""
@@ -631,9 +842,13 @@ class HandoffService:
     async def reveal_contact_for_owner(self, task_id: str, owner: str) -> str | None:
         task = await self.store.get_callback_task(task_id)
         now = self.clock.now().astimezone(CLINIC_TIMEZONE)
-        if (task is None or task.owner != owner
-                or task.state not in {CallbackState.CLAIMED, CallbackState.IN_PROGRESS}
-                or task.lease_until is None or task.lease_until <= now):
+        if (
+            task is None
+            or task.owner != owner
+            or task.state not in {CallbackState.CLAIMED, CallbackState.IN_PROGRESS}
+            or task.lease_until is None
+            or task.lease_until <= now
+        ):
             raise HandoffConflict("задача не принадлежит активному владельцу")
         return self.reveal_contact(task)
 
@@ -645,39 +860,50 @@ class HandoffService:
         for operation in operations:
             try:
                 if operation.state == MisDeliveryState.PENDING:
-                    sending = operation.model_copy(update={
-                        "state": MisDeliveryState.SENDING,
-                        "sending_at": now,
-                        "next_check_at": now + timedelta(seconds=45),
-                        "version": operation.version + 1,
-                    })
+                    sending = operation.model_copy(
+                        update={
+                            "state": MisDeliveryState.SENDING,
+                            "sending_at": now,
+                            "next_check_at": now + timedelta(seconds=45),
+                            "version": operation.version + 1,
+                        }
+                    )
                     operation = await self.store.update_mis_operation(
                         sending, expected_version=operation.version
                     )
                     # CAS-проигравший worker увидит конфликт и не имеет права посылать второй POST.
-                    with demand(Priority.BACKGROUND, until=now + timedelta(seconds=2),
-                                owner=operation.operation_id):
+                    with demand(
+                        Priority.BACKGROUND,
+                        until=now + timedelta(seconds=2),
+                        owner=operation.operation_id,
+                    ):
                         result = await self.mis.create_escalation(
-                            EscalationCreate(client_id=operation.client_id,
-                                             description=operation.description)
+                            EscalationCreate(
+                                client_id=operation.client_id, description=operation.description
+                            )
                         )
-                    applied = operation.model_copy(update={
-                        "state": MisDeliveryState.APPLIED,
-                        "escalation_id": result.id,
-                        "next_check_at": None,
-                        "reason": None,
-                        "version": operation.version + 1,
-                    })
-                    await self.store.update_mis_operation(applied,
-                                                          expected_version=operation.version)
+                    applied = operation.model_copy(
+                        update={
+                            "state": MisDeliveryState.APPLIED,
+                            "escalation_id": result.id,
+                            "next_check_at": None,
+                            "reason": None,
+                            "version": operation.version + 1,
+                        }
+                    )
+                    await self.store.update_mis_operation(
+                        applied, expected_version=operation.version
+                    )
                 elif operation.state in {MisDeliveryState.UNKNOWN, MisDeliveryState.SENDING}:
                     if operation.state == MisDeliveryState.SENDING:
-                        unknown = operation.model_copy(update={
-                            "state": MisDeliveryState.UNKNOWN,
-                            "reason": "SENDING_RESULT_LOST",
-                            "next_check_at": now,
-                            "version": operation.version + 1,
-                        })
+                        unknown = operation.model_copy(
+                            update={
+                                "state": MisDeliveryState.UNKNOWN,
+                                "reason": "SENDING_RESULT_LOST",
+                                "next_check_at": now,
+                                "version": operation.version + 1,
+                            }
+                        )
                         operation = await self.store.update_mis_operation(
                             unknown, expected_version=operation.version
                         )
@@ -689,77 +915,90 @@ class HandoffService:
             except BudgetExhausted as error:
                 current = await self.store.get_mis_operation(operation.operation_id)
                 if current is not None and current.state == MisDeliveryState.SENDING:
-                    pending = current.model_copy(update={
-                        "state": MisDeliveryState.PENDING,
-                        "sending_at": None,
-                        "next_check_at": now + timedelta(seconds=error.retry_after or 15),
-                        "reason": "BUDGET_NOT_SENT",
-                        "version": current.version + 1,
-                    })
-                    await self.store.update_mis_operation(pending,
-                                                          expected_version=current.version)
+                    pending = current.model_copy(
+                        update={
+                            "state": MisDeliveryState.PENDING,
+                            "sending_at": None,
+                            "next_check_at": now + timedelta(seconds=error.retry_after or 15),
+                            "reason": "BUDGET_NOT_SENT",
+                            "version": current.version + 1,
+                        }
+                    )
+                    await self.store.update_mis_operation(pending, expected_version=current.version)
             except MisError as error:
                 current = await self.store.get_mis_operation(operation.operation_id)
                 if current is None:
                     continue
                 if error.code == "RATE_LIMIT" and current.state == MisDeliveryState.SENDING:
                     # Внешний 429 означает, что эта команда отклонена до создания карточки.
-                    pending = current.model_copy(update={
-                        "state": MisDeliveryState.PENDING,
-                        "sending_at": None,
-                        "next_check_at": now + timedelta(seconds=error.retry_after or 60),
-                        "reason": "RATE_LIMIT",
-                        "version": current.version + 1,
-                    })
-                    await self.store.update_mis_operation(pending,
-                                                          expected_version=current.version)
+                    pending = current.model_copy(
+                        update={
+                            "state": MisDeliveryState.PENDING,
+                            "sending_at": None,
+                            "next_check_at": now + timedelta(seconds=error.retry_after or 60),
+                            "reason": "RATE_LIMIT",
+                            "version": current.version + 1,
+                        }
+                    )
+                    await self.store.update_mis_operation(pending, expected_version=current.version)
                 elif isinstance(error, MisOutcomeUnknown):
-                    unknown = current.model_copy(update={
-                        "state": MisDeliveryState.UNKNOWN,
-                        "checks": 0,
-                        "next_check_at": now + timedelta(seconds=15),
-                        "reason": error.code,
-                        "version": current.version + 1,
-                    })
-                    await self.store.update_mis_operation(unknown,
-                                                          expected_version=current.version)
+                    unknown = current.model_copy(
+                        update={
+                            "state": MisDeliveryState.UNKNOWN,
+                            "checks": 0,
+                            "next_check_at": now + timedelta(seconds=15),
+                            "reason": error.code,
+                            "version": current.version + 1,
+                        }
+                    )
+                    await self.store.update_mis_operation(unknown, expected_version=current.version)
                 else:
-                    rejected = current.model_copy(update={
-                        "state": MisDeliveryState.REJECTED,
-                        "next_check_at": None,
-                        "reason": error.code,
-                        "version": current.version + 1,
-                    })
-                    await self.store.update_mis_operation(rejected,
-                                                          expected_version=current.version)
+                    rejected = current.model_copy(
+                        update={
+                            "state": MisDeliveryState.REJECTED,
+                            "next_check_at": None,
+                            "reason": error.code,
+                            "version": current.version + 1,
+                        }
+                    )
+                    await self.store.update_mis_operation(
+                        rejected, expected_version=current.version
+                    )
             except Exception:
                 # Неизвестная ошибка после состояния sending — только сверка, никогда POST-повтор.
                 current = await self.store.get_mis_operation(operation.operation_id)
                 if current and current.state == MisDeliveryState.SENDING:
-                    unknown = current.model_copy(update={
-                        "state": MisDeliveryState.UNKNOWN,
-                        "next_check_at": now + timedelta(seconds=15),
-                        "reason": "DELIVERY_ERROR",
-                        "version": current.version + 1,
-                    })
+                    unknown = current.model_copy(
+                        update={
+                            "state": MisDeliveryState.UNKNOWN,
+                            "next_check_at": now + timedelta(seconds=15),
+                            "reason": "DELIVERY_ERROR",
+                            "version": current.version + 1,
+                        }
+                    )
                     try:
-                        await self.store.update_mis_operation(unknown,
-                                                              expected_version=current.version)
+                        await self.store.update_mis_operation(
+                            unknown, expected_version=current.version
+                        )
                     except HandoffConflict:
                         pass
         return processed
 
     async def _reconcile_mis(self, operation: MisOperation, now: datetime) -> None:
-        if (operation.marker != f"T08:{operation.operation_id}"
-                or re.fullmatch(r"T08:[0-9a-f]{32}", operation.marker) is None):
+        if (
+            operation.marker != f"T08:{operation.operation_id}"
+            or re.fullmatch(r"T08:[0-9a-f]{32}", operation.marker) is None
+        ):
             current = await self.store.get_mis_operation(operation.operation_id)
             if current is not None:
-                manual = current.model_copy(update={
-                    "state": MisDeliveryState.MANUAL,
-                    "reason": "INVALID_MARKER",
-                    "next_check_at": None,
-                    "version": current.version + 1,
-                })
+                manual = current.model_copy(
+                    update={
+                        "state": MisDeliveryState.MANUAL,
+                        "reason": "INVALID_MARKER",
+                        "next_check_at": None,
+                        "version": current.version + 1,
+                    }
+                )
                 await self.store.update_mis_operation(manual, expected_version=current.version)
             return
         matches = []
@@ -768,8 +1007,9 @@ class HandoffService:
         complete = False
         marker_conflict = False
         try:
-            with demand(Priority.RECONCILE, until=now + timedelta(seconds=3),
-                        owner=operation.operation_id):
+            with demand(
+                Priority.RECONCILE, until=now + timedelta(seconds=3), owner=operation.operation_id
+            ):
                 for page_number in range(3):
                     page = await self.mis.escalations(
                         operation.client_id, limit=50, offset=page_number * 50
@@ -802,7 +1042,11 @@ class HandoffService:
         if current is None:
             return
         if marker_conflict:
-            state, reason, escalation_id = MisDeliveryState.MANUAL, "RECONCILE_MARKER_MISMATCH", None
+            state, reason, escalation_id = (
+                MisDeliveryState.MANUAL,
+                "RECONCILE_MARKER_MISMATCH",
+                None,
+            )
         elif len(matches) > 1:
             state, reason, escalation_id = MisDeliveryState.MANUAL, "DUPLICATE_MARKER", None
         elif unstable or not complete:
@@ -818,11 +1062,16 @@ class HandoffService:
         else:
             state, reason, escalation_id = MisDeliveryState.UNKNOWN, "NOT_VISIBLE_YET", None
         next_at = now + timedelta(seconds=20) if state == MisDeliveryState.UNKNOWN else None
-        updated = current.model_copy(update={
-            "state": state, "reason": reason, "escalation_id": escalation_id,
-            "checks": current.checks + 1, "next_check_at": next_at,
-            "version": current.version + 1,
-        })
+        updated = current.model_copy(
+            update={
+                "state": state,
+                "reason": reason,
+                "escalation_id": escalation_id,
+                "checks": current.checks + 1,
+                "next_check_at": next_at,
+                "version": current.version + 1,
+            }
+        )
         await self.store.update_mis_operation(updated, expected_version=current.version)
 
     async def _defer_reconciliation(self, operation, now, reason):
@@ -833,10 +1082,15 @@ class HandoffService:
             state, due = MisDeliveryState.MANUAL, None
         else:
             state, due = MisDeliveryState.UNKNOWN, now + timedelta(seconds=30)
-        updated = current.model_copy(update={
-            "state": state, "reason": reason, "checks": current.checks + 1,
-            "next_check_at": due, "version": current.version + 1,
-        })
+        updated = current.model_copy(
+            update={
+                "state": state,
+                "reason": reason,
+                "checks": current.checks + 1,
+                "next_check_at": due,
+                "version": current.version + 1,
+            }
+        )
         await self.store.update_mis_operation(updated, expected_version=current.version)
 
 
