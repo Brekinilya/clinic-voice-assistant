@@ -8,6 +8,7 @@ from app.dialogue.models import (
     WriteAuthorization,
     reply,
 )
+from app.dialogue.outbound import MarkOperation, ReminderResult, mark_action_id
 from app.voice.phrases import load_phrasebook
 
 
@@ -50,8 +51,39 @@ def start_input(state: DialogueState, turn_id: int) -> DialogueState:
 
 
 def authorize_write(
-    state: DialogueState, version: int, epoch: int, turn_id: int
+    state: DialogueState,
+    version: int,
+    epoch: int,
+    turn_id: int,
+    *,
+    reminder_operation: MarkOperation | None = None,
 ) -> DialogueState | None:
+    if reminder_operation is not None:
+        session = state.reminder
+        if (
+            session is None
+            or not session.verified
+            or state.phase in {Phase.ENDED, Phase.HANDOFF, Phase.INTERRUPTED}
+            or state.client_id != session.binding.client_id
+            or state.version != version
+            or state.input_epoch != epoch
+            or state.observed_turn_id != turn_id
+            or state.pending_turn_id != turn_id
+            or reminder_operation == "confirm"
+            and (state.phase != Phase.REMIND_DETAILS or session.declined)
+        ):
+            return None
+        return state.model_copy(
+            update={
+                "authorization": WriteAuthorization(
+                    turn_id=turn_id,
+                    version=version,
+                    input_epoch=epoch,
+                    action_id=mark_action_id(session.binding, reminder_operation),
+                    revision=session.binding.fence,
+                )
+            }
+        )
     proposal = state.cancel_proposal if state.phase == Phase.CANCEL_CONFIRM else state.proposal
     if state.phase in {Phase.MOVE_CONFIRM, Phase.MOVE_FINISH_CONFIRM}:
         proposal = state.move_proposal
@@ -139,6 +171,11 @@ def preempt_state(state: DialogueState, transfer: TransferRequest) -> DialogueSt
             "retry_at": None,
             "mis_wait_since": None,
             "transfer": transfer,
+            "reminder_result": ReminderResult(
+                attempt_id=state.reminder.binding.attempt_id, outcome="ESCALATED"
+            )
+            if state.reminder
+            else None,
             "visit_items": (),
             "visit_cursor": None,
             "visit_has_more": False,

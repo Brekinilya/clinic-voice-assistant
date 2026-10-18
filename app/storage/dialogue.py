@@ -6,6 +6,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.booking.models import Approval
 from app.dialogue.models import (
     Claim,
     DialogueError,
@@ -15,6 +16,8 @@ from app.dialogue.models import (
     TransferRequest,
     reply,
 )
+from app.dialogue.outbound import MarkOperation, ReminderBinding
+from app.dialogue.reminder_guard import check_reminder_guard
 from app.dialogue.transitions import (
     authorize_write,
     handoff_reply,
@@ -192,10 +195,22 @@ class PostgresDialogueStore:
             )
             return state
 
-    async def authorize(self, call_id: str, version: int, epoch: int, turn_id: int) -> bool:
+    async def authorize(
+        self,
+        call_id: str,
+        version: int,
+        epoch: int,
+        turn_id: int,
+        *,
+        reminder_operation: MarkOperation | None = None,
+    ) -> bool:
         async with self._locked(call_id) as (connection, row):
             state = authorize_write(
-                DialogueState.model_validate(row.state), version, epoch, turn_id
+                DialogueState.model_validate(row.state),
+                version,
+                epoch,
+                turn_id,
+                reminder_operation=reminder_operation,
             )
             if state is None:
                 return False
@@ -205,6 +220,15 @@ class PostgresDialogueStore:
                 .values(state=state.model_dump(mode="json"))
             )
             return True
+
+    async def check_reminder_guard(
+        self,
+        approval: Approval,
+        binding: ReminderBinding,
+        operation: MarkOperation,
+    ) -> None:
+        async with self._locked(approval.call_id) as (_, row):
+            check_reminder_guard(row.state, approval, binding, operation)
 
     async def preempt(self, call_id: str, turn_id: int, transfer: TransferRequest) -> DialogueState:
         async with self._locked(call_id) as (connection, row):

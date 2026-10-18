@@ -36,6 +36,8 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
         return ActiveQuestion(key="more_help", expect="yes_no")
     if state.medical_boundary_pending:
         return ActiveQuestion(key="medical_booking", expect="yes_no")
+    if state.phase == "remind_details" and state.reminder and state.reminder.declined:
+        return ActiveQuestion(key="reminder_cancel_or_move", expect="free")
     if state.phase == "identifying":
         return ActiveQuestion(
             key="birth_date" if state.identity_draft else "patient_identity",

@@ -2,8 +2,10 @@
 
 from typing import Protocol
 
+from app.booking.models import Approval
 from app.contracts import NluResult, SafetyDecision
 from app.dialogue.models import Claim, DialogueState, Reply, TransferRequest, Turn
+from app.dialogue.outbound import MarkOperation, ReminderBinding
 
 
 class DialogueStore(Protocol):
@@ -13,7 +15,21 @@ class DialogueStore(Protocol):
     async def end(self, call_id: str) -> DialogueState: ...
     async def observe(self, call_id: str, turn_id: int, digest: str) -> DialogueState: ...
     async def start_input(self, call_id: str, turn_id: int) -> DialogueState: ...
-    async def authorize(self, call_id: str, version: int, epoch: int, turn_id: int) -> bool: ...
+    async def authorize(
+        self,
+        call_id: str,
+        version: int,
+        epoch: int,
+        turn_id: int,
+        *,
+        reminder_operation: MarkOperation | None = None,
+    ) -> bool: ...
+    async def check_reminder_guard(
+        self,
+        approval: Approval,
+        binding: ReminderBinding,
+        operation: MarkOperation,
+    ) -> None: ...
     async def preempt(
         self, call_id: str, turn_id: int, transfer: TransferRequest
     ) -> DialogueState: ...

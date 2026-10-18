@@ -10,7 +10,7 @@ from app.booking.preferences import SlotPreferences
 from app.cancellation.models import CancelProposal
 from app.contracts import ExpectedAnswer
 from app.dialogue.expectation import ActiveQuestion, active_question, expected_answer
-from app.dialogue.outbound import ReminderResult
+from app.dialogue.outbound import ReminderResult, ReminderSession
 from app.mis.models import MisId
 from app.rescheduling.models import MoveProposal
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
@@ -133,6 +133,8 @@ class DialogueState(BookingModel):
     visit_items: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     visit_cursor: VisitCursor | None = None
     visit_has_more: bool = False
+    reminder: ReminderSession | None = Field(default=None, repr=False)
+    reminder_result: ReminderResult | None = None
 
 
 class InformationReference(BookingModel):
@@ -201,6 +203,7 @@ def reply(
         has_more_visits=state.visit_has_more,
         cancel_proposal=state.cancel_proposal,
         move_proposal=state.move_proposal,
+        reminder_result=state.reminder_result,
     )
 
 

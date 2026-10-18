@@ -10,6 +10,7 @@ from app.diagnostics.recorder import emit, observe, opt_out
 from app.dialogue.failures import mis_failure
 from app.dialogue.input import CommandInterpreter, InputInterpreter, Operation
 from app.dialogue.models import (
+    DialogueError,
     DialogueState,
     InputStart,
     Phase,
@@ -19,7 +20,15 @@ from app.dialogue.models import (
     Turn,
     reply,
 )
+from app.dialogue.outbound import (
+    OutboundContext,
+    OutboundEvent,
+    ReminderActions,
+    ReminderBinding,
+    ReminderSession,
+)
 from app.dialogue.ports import Conversation, DialogueStore, SafetyChecker
+from app.dialogue.reminder import ReminderConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
 from app.mis.budget import Priority, demand
@@ -40,6 +49,7 @@ class DialogueService:
         conversation: Conversation | None = None,
         mis_turn_wait_s: float = 8.0,
         mis_wait_limit_s: int = 120,
+        reminder_actions: ReminderActions | None = None,
     ) -> None:
         if len(hash_key) < 32:
             raise ValueError("ключ квитанций должен содержать хотя бы 32 байта")
@@ -52,6 +62,92 @@ class DialogueService:
         self.mis_turn_wait_s = mis_turn_wait_s
         self.mis_wait_limit_s = mis_wait_limit_s
         self.debug = None
+        if reminder_actions is not None and conversation is None:
+            raise ValueError("исходящему диалогу нужен естественный сценарий")
+        self.reminders = (
+            ReminderConversation(conversation, reminder_actions)
+            if reminder_actions is not None
+            else None
+        )
+
+    def _outbound_digest(self, call_id: str, kind: str, payload: str) -> str:
+        return hmac.new(
+            self._hash_key, f"{call_id}\0outbound:{kind}\0{payload}".encode(), hashlib.sha256
+        ).hexdigest()
+
+    async def open_outbound(self, call_id: str, context: OutboundContext) -> Reply:
+        """Внутренний порт исполнителя. Публичный HTTP не принимает этот контекст."""
+        if self.reminders is None:
+            raise DialogueError("OUTBOUND_NOT_CONFIGURED")
+        context = OutboundContext.model_validate(context)
+        digest = self._outbound_digest(call_id, "open", context.model_dump_json())
+        claim = await self.store.claim(call_id, 1, digest)
+        if not claim.acquired:
+            return claim.cached or reply(claim.state, 1, kind="processing")
+        state = claim.state.model_copy(
+            update={
+                "phase": Phase.REMIND_VERIFY,
+                "reminder": ReminderSession(
+                    binding=ReminderBinding.model_validate(
+                        context.model_dump(exclude={"addressee"})
+                    ),
+                    context_digest=digest,
+                ),
+                "client_id": None,
+            }
+        )
+        try:
+            await self.reminders.actions.check_attempt(state.reminder.binding)
+            if context.visit.scheduled_at <= self.booking.clock.now():
+                raise BookingError("VISIT_PAST")
+            result = reply(
+                state,
+                1,
+                "Здравствуйте! Я виртуальный помощник регистратуры.",
+                f"Это {context.addressee}?",
+                code="REMINDER_VERIFY",
+            )
+        except Exception:
+            # После сбоя открытия этот call_id нельзя переиспользовать для нового звонка.
+            state, result = await self.reminders.finish(
+                state,
+                Turn(turn_id=1, text="открытие"),
+                "ESCALATED",
+                "Не удалось начать напоминание. Обратитесь в регистратуру.",
+            )
+        return await self._complete_outbound(state, 1, result)
+
+    async def outbound_event(self, call_id: str, event: OutboundEvent) -> Reply:
+        if self.reminders is None:
+            raise DialogueError("OUTBOUND_NOT_CONFIGURED")
+        event = OutboundEvent.model_validate(event)
+        current = await self.store.inspect(call_id)
+        if current.reminder is None or current.reminder.binding.attempt_id != event.attempt_id:
+            raise DialogueError("OUTBOUND_ATTEMPT_CONFLICT")
+        digest = self._outbound_digest(call_id, "event", event.model_dump_json())
+        await self.store.observe(call_id, event.turn_id, digest)
+        claim = await self.store.claim(call_id, event.turn_id, digest)
+        if not claim.acquired:
+            return claim.cached or reply(claim.state, event.turn_id, kind="processing")
+        turn = Turn(turn_id=event.turn_id, text="автоответчик")
+        state, result = await self.reminders.finish(
+            claim.state, turn, "VOICEMAIL", "Пожалуйста, перезвоните в регистратуру. Всего доброго."
+        )
+        return await self._complete_outbound(state, event.turn_id, result)
+
+    async def _complete_outbound(self, state, turn_id, result):
+        if not await self.store.complete(state, turn_id, result):
+            await self._release_call(state.call_id)
+            state = await self.store.inspect(state.call_id)
+            if state.phase == Phase.HANDOFF:
+                return handoff_reply(state, turn_id)
+            return reply(state, turn_id, "Разговор прерван.", code="TURN_INTERRUPTED")
+        if self.debug is not None:
+            # Имя адресата и сырой OutboundContext не передаются в диагностику открытия.
+            self.debug.emit(
+                state.call_id, turn_id, "dialogue.outbound", phase=state.phase, code=result.code
+            )
+        return result
 
     def _digest(self, call_id: str, turn: Turn) -> str:
         # ФИО и дата рождения не сохраняются в журнале команд даже в виде обычного SHA256.
@@ -77,6 +173,14 @@ class DialogueService:
         if self.safety is not None:
             current = await self.store.observe(call_id, turn.turn_id, digest)
             if current.phase == Phase.ENDED:
+                if (
+                    current.reminder is not None
+                    and turn.is_final
+                    and turn.turn_id <= current.last_turn_id
+                ):
+                    claim = await self.store.claim(call_id, turn.turn_id, digest)
+                    if claim.cached is not None:
+                        return claim.cached
                 return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
             if current.phase == Phase.HANDOFF:
                 return handoff_reply(current, turn.turn_id)
@@ -285,6 +389,11 @@ class DialogueService:
                 "Обработка прервана. Завершите разговор.",
                 code="PROCESSING_INTERRUPTED",
             )
+        if state.reminder is not None:
+            if self.reminders is None:
+                # Сессия не получает прав после перезапуска без адаптера заданий.
+                raise DialogueError("OUTBOUND_NOT_CONFIGURED")
+            return await self.reminders.step(state, turn)
         if state.phase == Phase.HELD and state.proposal is not None:
             action = await self.booking.store.get(state.proposal.action_id)
             if action.state in {
