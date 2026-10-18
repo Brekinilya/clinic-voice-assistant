@@ -11,7 +11,7 @@ from app.mis.http import HttpMedicalSystem
 from app.mis.models import Client, ClientComment, VisitChange, VisitCreate, VisitStatus
 from app.reminders.calendar import ClinicCalendar
 from app.reminders.executor import LEASE, ReminderExecutor
-from app.reminders.marks import MarkResult, ReminderMarks, confirmation_line
+from app.reminders.marks import ReminderMarks, confirmation_line, confirmed_in
 from app.reminders.memory import MemoryReminderStore
 from app.reminders.models import Contact, ReminderJob
 from app.reminders.ports import DialRejected
@@ -52,8 +52,8 @@ class Dialer:
         self.calls = []
         self.reject = reject
 
-    async def call_out(self, attempt_id, endpoint, context):
-        self.calls.append((attempt_id, endpoint, context))
+    async def call_out(self, attempt_id, endpoint, context, channel_id):
+        self.calls.append((attempt_id, endpoint, context, channel_id))
         if self.reject:
             raise DialRejected()
 
@@ -215,10 +215,15 @@ async def ready(stand, *, comment=None, endpoint=PHONE, now=None):
 async def test_call_goes_out_once_with_only_first_name_and_patronymic(stand):
     visit = await ready(stand)
     await stand.executor.tick()
-    [(attempt_id, endpoint, context)] = stand.dialer.calls
+    [(attempt_id, endpoint, context, channel_id)] = stand.dialer.calls
     assert endpoint == PHONE and context.visit.visit_id == visit.id
     assert context.addressee == "Иван Иванович"
-    assert (await stand.store.attempt(attempt_id)).state == "dialing"
+    attempt = await stand.store.attempt(attempt_id)
+    assert attempt.state == "dialing" and context.fence == attempt.fence == 1
+    # Канал задан заранее и связан с попыткой: после сбоя звонок можно найти в АТС
+    assert channel_id == attempt.channel_id == f"reminder-{attempt_id}"
+    assert await stand.executor.guard(attempt_id, 1)
+    assert not await stand.executor.guard(attempt_id, 2)
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 1
 
@@ -283,7 +288,7 @@ async def test_visit_changed_before_the_call_is_not_called(stand):
 @pytest.mark.parametrize(
     "comment, reason",
     [
-        ("Подтверждена запись #{id} 20.10.2026 10:00", "already_confirmed"),
+        ("Аллергия\nПодтверждена запись #{id} 20.10.2026 10:00", "already_confirmed"),
         ("Аллергия\nОтказ от обзвона 01.10.2026", "opt_out"),
     ],
 )
@@ -343,7 +348,7 @@ async def test_restart_before_dialing_releases_the_attempt(stand):
     stand.clock.value += LEASE + timedelta(seconds=1)
     await stand.make_executor("vm-2").tick()
     assert (await stand.store.attempt(attempt.id)).state == "abandoned"
-    [(second, _, _)] = stand.dialer.calls
+    [(second, _, _, _)] = stand.dialer.calls
     assert (await stand.store.attempt(second)).number == 1
 
 
@@ -357,42 +362,120 @@ async def test_lease_is_renewed_while_the_call_lasts(stand):
     assert (await stand.store.attempt(attempt_id)).state == "dialing"
 
 
-# 4. Отметки в комментарии клиента
+# 4. Отметки в комментарии клиента: журнал, свежий визит, без повторного PATCH
 
 
-async def test_confirmation_appends_to_the_comment_and_keeps_other_text(stand):
-    visit = await ready(stand, comment="Аллергия на пенициллин")
-    marks = ReminderMarks(stand.mis, stand.store, stand.clock)
-    assert await marks.confirm(3, visit.id, visit.scheduled_at) == MarkResult.WRITTEN
-    assert await marks.confirm(3, visit.id, visit.scheduled_at) == MarkResult.ALREADY
-    comment = stand.emulator.clients["demo"][3].comment
-    assert comment == "Аллергия на пенициллин\n" + confirmation_line(visit.id, visit.scheduled_at)
-    assert comment.endswith(f"#{visit.id} 20.10.2026 10:00")
+async def calling(stand, **kwargs):
+    """Звонок идёт: у попытки действующий lease, контекст как у диалога."""
+    visit = await ready(stand, **kwargs)
+    await stand.executor.tick()
+    context = stand.dialer.calls[0][2]
+    return visit, context, ReminderMarks(stand.mis, stand.store, stand.clock, owner="vm-1")
+
+
+def comment(stand):
+    return stand.emulator.clients["demo"][3].comment
+
+
+async def test_confirmation_keeps_the_previous_text_verbatim(stand):
+    visit, context, marks = await calling(stand, comment="Аллергия на пенициллин  \n\n")
+    assert await marks.confirm(context) == "applied"
+    line = confirmation_line(visit.id, visit.scheduled_at)
+    assert comment(stand) == "Аллергия на пенициллин  \n\n" + line
+    assert line == f"Подтверждена запись #{visit.id} 20.10.2026 10:00"
+    # Повтор доставки результата той же попытки — та же запись журнала, второго PATCH нет
+    assert await marks.confirm(context) == "applied"
     assert stand.emulator.patch_count == 1 and await stand.store.confirmed(visit.id)
 
 
-async def test_confirmation_that_does_not_fit_never_truncates_other_text(stand):
-    visit = await ready(stand, comment="х" * 990)
-    marks = ReminderMarks(stand.mis, stand.store, stand.clock)
-    assert await marks.confirm(3, visit.id, visit.scheduled_at) == MarkResult.TOO_LONG
-    assert stand.emulator.clients["demo"][3].comment == "х" * 990
+async def test_confirmation_that_does_not_fit_is_manual_and_truncates_nothing(stand):
+    visit, context, marks = await calling(stand, comment="х" * 990)
+    assert await marks.confirm(context) == "manual"
+    assert comment(stand) == "х" * 990 and stand.emulator.patch_count == 0
+    assert (await stand.store.mark(f"confirm:{context.attempt_id}")).reason == "comment_too_long"
     assert await stand.store.confirmed(visit.id)
 
 
-async def test_lost_patch_response_is_checked_by_reading_not_by_rewriting(stand):
-    visit = await ready(stand)
-    marks = ReminderMarks(stand.mis, stand.store, stand.clock)
+async def test_lost_patch_response_is_settled_by_reading_only(stand):
+    visit, context, marks = await calling(stand)
     stand.emulator.next_failure = "lost_response"
-    assert await marks.confirm(3, visit.id, visit.scheduled_at) == MarkResult.WRITTEN
+    assert await marks.confirm(context) == "pending"
+    stand.clock.value += timedelta(minutes=1)
+    assert await marks.reconcile() == 1
+    assert (await stand.store.mark(f"confirm:{context.attempt_id}")).state == "applied"
     assert stand.emulator.patch_count == 1
 
 
-async def test_opt_out_is_marked_locally_and_in_the_comment(stand):
-    await ready(stand)
-    marks = ReminderMarks(stand.mis, stand.store, stand.clock)
-    assert await marks.opt_out(3) == MarkResult.WRITTEN
-    assert stand.emulator.clients["demo"][3].comment == "Отказ от обзвона 19.10.2026"
+async def test_unknown_patch_is_never_sent_again_and_ends_in_manual(stand):
+    from app.mis.ports import MisOutcomeUnknown
+
+    visit, context, marks = await calling(stand)
+    sent = []
+
+    async def lost(client_id, request):
+        sent.append(request)
+        raise MisOutcomeUnknown("TRANSPORT_FAILURE")
+
+    stand.mis.update_client_comment = lost
+    assert await marks.confirm(context) == "pending"
+    for _ in range(3):
+        stand.clock.value += timedelta(minutes=1)
+        await marks.reconcile()
+    mark = await stand.store.mark(f"confirm:{context.attempt_id}")
+    assert (mark.state, mark.reason) == ("manual", "not_visible")
+    # И повторная доставка результата той же попытки не отправляет PATCH снова
+    assert await marks.confirm(context) == "manual"
+    assert len(sent) == 1
+
+
+async def test_visit_changed_after_the_call_started_is_not_confirmed(stand):
+    visit, context, marks = await calling(stand)
+    await stand.mis.change_visit(visit.id, VisitChange(scheduled_at=at(21, 10)))
+    assert await marks.confirm(context) == "manual"
+    assert stand.emulator.patch_count == 1  # только сам перенос визита
+    assert (await stand.store.mark(f"confirm:{context.attempt_id}")).reason == "visit_changed"
+
+
+async def test_stale_attempt_cannot_write_the_comment(stand):
+    visit, context, marks = await calling(stand)
+    await stand.executor.finished(context.attempt_id, "INCOMPLETE")
+    assert await marks.confirm(context) == "manual"
+    assert stand.emulator.patch_count == 0
+    reason = (await stand.store.mark(f"confirm:{context.attempt_id}")).reason
+    assert reason == "attempt_not_current"
+
+
+async def test_opt_out_is_local_at_once_and_marked_in_the_comment(stand):
+    visit, context, marks = await calling(stand, comment="Аллергия")
+    assert await marks.opt_out(context) == "applied"
+    assert comment(stand) == "Аллергия\nОтказ от обзвона 19.10.2026"
     assert (await stand.store.contact(3)).opt_out_at == stand.clock.now()
+
+
+async def test_concurrent_marks_of_one_patient_do_not_lose_each_other(stand):
+    import asyncio
+
+    visit, context, marks = await calling(stand, comment="Аллергия")
+    other = ReminderMarks(stand.mis, stand.store, stand.clock, owner="vm-2")
+    results = await asyncio.gather(marks.confirm(context), other.opt_out(context))
+    assert results == ["applied", "applied"]
+    text = comment(stand)
+    assert text.startswith("Аллергия\n")
+    assert confirmation_line(visit.id, visit.scheduled_at) in text
+    assert "Отказ от обзвона 19.10.2026" in text
+
+
+def test_confirmation_match_is_by_whole_line_with_time():
+    when = at(20, 10)
+    assert not confirmed_in("Подтверждена запись #10 20.10.2026 10:00", 1, when)
+    assert not confirmed_in("Подтверждена запись #1 21.10.2026 10:00", 1, when)
+    assert confirmed_in("Аллергия\nПодтверждена запись #1 20.10.2026 10:00", 1, when)
+
+
+def test_calendar_outside_the_checked_period_is_not_a_working_window():
+    calendar = ClinicCalendar(frozenset(), (date(2026, 10, 1), date(2026, 12, 31)))
+    assert calendar.is_open(at(19, 12))
+    assert not calendar.is_open(datetime(2027, 1, 11, 12, tzinfo=CLINIC_TIMEZONE))
 
 
 async def test_client_key_fields_cannot_be_patched_on_the_emulator(stand):
@@ -420,5 +503,5 @@ async def test_mis_failure_before_the_call_does_not_use_an_attempt(stand):
     stand.mis.visit = original
     stand.clock.value += timedelta(minutes=5)
     await stand.executor.tick()
-    [(attempt_id, _, _)] = stand.dialer.calls
+    [(attempt_id, _, _, _)] = stand.dialer.calls
     assert (await stand.store.attempt(attempt_id)).number == 1

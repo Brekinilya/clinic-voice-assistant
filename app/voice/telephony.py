@@ -142,7 +142,11 @@ class Ari:
             port = (variable or {}).get("value")
         return channel["id"], int(port) if port else None
 
-    async def originate(self, endpoint: str, args: list[str], timeout: int) -> str:
+    async def originate(
+        self, endpoint: str, args: list[str], timeout: int, channel_id: str | None = None
+    ) -> str:
+        # Свой channelId: после сбоя процесса звонок можно найти в АТС по попытке
+        extra = {"channelId": channel_id} if channel_id else {}
         channel = await self._call(
             "POST",
             "channels",
@@ -150,6 +154,7 @@ class Ari:
             app=self.settings.app,
             appArgs=",".join(args),
             timeout=timeout,
+            **extra,
         )
         return channel["id"]
 
@@ -225,7 +230,13 @@ class OutboundEvents(Protocol):
     """Исполнитель напоминаний: ему шлюз сообщает ответ абонента и исход попытки."""
 
     async def answered(self, attempt_id: str) -> None: ...
-    async def finished(self, attempt_id: str, result: str, reason: str | None = None) -> bool: ...
+    async def finished(
+        self,
+        attempt_id: str,
+        result: str,
+        reason: str | None = None,
+        mis_status: str | None = None,
+    ) -> bool: ...
 
 
 @dataclass
@@ -306,7 +317,9 @@ class Telephony:
             return
         await self._incoming(channel)
 
-    async def call_out(self, attempt_id: str, endpoint: str, context: object) -> None:
+    async def call_out(
+        self, attempt_id: str, endpoint: str, context: object, channel_id: str | None = None
+    ) -> None:
         """Исходящее напоминание. Исход придёт исполнителю через reminders."""
         from app.reminders.ports import DialRejected
 
@@ -316,7 +329,7 @@ class Telephony:
         self._outgoing[attempt_id] = outgoing
         try:
             outgoing.channel = await self.ari.originate(
-                endpoint, ["outbound", attempt_id], OUTBOUND_RING_S
+                endpoint, ["outbound", attempt_id], OUTBOUND_RING_S, channel_id
             )
         except AriError as error:
             self._outgoing.pop(attempt_id, None)
@@ -337,8 +350,10 @@ class Telephony:
         # Asterisk кладёт результат AMD() третьим аргументом, если dialplan его запускал
         machine = args[1:2] == ["MACHINE"]
 
-        async def done(outcome: str | None) -> None:
-            await self.reminders.finished(outgoing.attempt_id, outcome or "INCOMPLETE")
+        async def done(outcome: str | None, mis_status: str | None = None) -> None:
+            await self.reminders.finished(
+                outgoing.attempt_id, outcome or "INCOMPLETE", None, mis_status
+            )
 
         await self._incoming(
             channel,

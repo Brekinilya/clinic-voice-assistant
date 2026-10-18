@@ -57,6 +57,7 @@ async def test_jobs_show_only_technical_fields(reminder_store):  # noqa: F811
             ReminderJob(
                 visit_id=visit_id,
                 client_id=3,
+                doctor_id=1,
                 scheduled_at=at(day + 1, 10),
                 call_day=date(2026, 10, day),
                 next_at=at(day, 10),

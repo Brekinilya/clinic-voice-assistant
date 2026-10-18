@@ -1,12 +1,22 @@
-"""Хранилище напоминаний в памяти: те же правила, что потребуются от PostgreSQL."""
+"""Хранилище напоминаний в памяти: те же правила, что в PostgreSQL (app/storage/reminders.py)."""
 
 import asyncio
 from datetime import date, datetime, timedelta
 
 from app.recovery.models import OwnershipLost
-from app.reminders.models import AttemptResult, Contact, ReminderAttempt, ReminderJob
+from app.reminders.models import (
+    AttemptResult,
+    Contact,
+    ReminderAttempt,
+    ReminderJob,
+    ReminderMark,
+)
 
 ACTIVE = {"claimed", "dialing", "answered"}
+
+
+def channel_for(attempt_id: str) -> str:
+    return f"reminder-{attempt_id}"
 
 
 class MemoryReminderStore:
@@ -15,6 +25,8 @@ class MemoryReminderStore:
         self.attempts: dict[str, ReminderAttempt] = {}
         self.contacts: dict[int, Contact] = {}
         self.confirmations: dict[int, datetime] = {}
+        self.marks: dict[str, ReminderMark] = {}
+        self.locks: dict[int, tuple[str, datetime]] = {}
         self.days: set[date] = set()
         self._lock = asyncio.Lock()
 
@@ -26,9 +38,9 @@ class MemoryReminderStore:
 
     async def add_job(self, job: ReminderJob) -> bool:
         async with self._lock:
-            # Одно задание на визит и его время: перенесённый визит — уже другое задание
             if any(
-                j.visit_id == job.visit_id and j.scheduled_at == job.scheduled_at
+                (j.visit_id, j.scheduled_at, j.doctor_id)
+                == (job.visit_id, job.scheduled_at, job.doctor_id)
                 for j in self.jobs.values()
             ):
                 return False
@@ -64,18 +76,23 @@ class MemoryReminderStore:
             job = self.jobs[job_id]
             if job.state not in {"planned", "waiting_retry"} or job.next_at > now:
                 return None
-            if any(a.job_id == job_id and a.state in ACTIVE for a in self.attempts.values()):
+            mine = [a for a in self.attempts.values() if a.job_id == job_id]
+            if any(a.state in ACTIVE for a in mine):
                 return None
             number = job.attempts + 1
             # Номер уникален среди засчитанных попыток: несостоявшаяся номер не занимает
-            if any(
-                a.job_id == job_id and a.number == number and a.state != "abandoned"
-                for a in self.attempts.values()
-            ):
+            if any(a.number == number and a.state != "abandoned" for a in mine):
                 return None
             attempt = ReminderAttempt(
-                job_id=job_id, number=number, owner=owner, lease_until=now + lease, started_at=now
+                job_id=job_id,
+                number=number,
+                fence=max((a.fence for a in mine), default=0) + 1,
+                owner=owner,
+                lease_until=now + lease,
+                channel_id="",
+                started_at=now,
             )
+            attempt = attempt.model_copy(update={"channel_id": channel_for(attempt.id)})
             self.attempts[attempt.id] = attempt
             self.jobs[job_id] = job.model_copy(
                 update={"state": "calling", "attempts": number, "version": job.version + 1}
@@ -93,7 +110,16 @@ class MemoryReminderStore:
             self.attempts[attempt_id] = attempt
             return attempt
 
-    async def finish(self, attempt_id, result, reason, now, job) -> bool:
+    async def guard(self, attempt_id: str, fence: int, now: datetime) -> bool:
+        attempt = self.attempts.get(attempt_id)
+        return (
+            attempt is not None
+            and attempt.fence == fence
+            and attempt.state in ACTIVE
+            and attempt.lease_until > now
+        )
+
+    async def finish(self, attempt_id, result, reason, now, job, mis_status=None) -> bool:
         async with self._lock:
             attempt = self.attempts[attempt_id]
             # Исход попытки записывается один раз: повтор события ничего не меняет
@@ -101,7 +127,13 @@ class MemoryReminderStore:
                 return False
             state = "abandoned" if result == AttemptResult.ABANDONED else "finished"
             self.attempts[attempt_id] = attempt.model_copy(
-                update={"state": state, "result": result, "reason": reason, "finished_at": now}
+                update={
+                    "state": state,
+                    "result": result,
+                    "mis_status": mis_status,
+                    "reason": reason,
+                    "finished_at": now,
+                }
             )
             current = self.jobs[attempt.job_id]
             self.jobs[attempt.job_id] = current.model_copy(
@@ -155,3 +187,41 @@ class MemoryReminderStore:
 
     async def mark_confirmed(self, visit_id: int, now: datetime) -> None:
         self.confirmations.setdefault(visit_id, now)
+
+    async def prepare_mark(self, mark: ReminderMark) -> ReminderMark:
+        """Первая запись журнала; повтор с тем же id возвращает уже существующую."""
+        async with self._lock:
+            return self.marks.setdefault(mark.id, mark)
+
+    async def mark(self, mark_id: str) -> ReminderMark | None:
+        return self.marks.get(mark_id)
+
+    async def move_mark(self, mark_id: str, expected: set[str], **changes) -> ReminderMark | None:
+        """Сменить состояние, только если оно всё ещё одно из ожидаемых."""
+        async with self._lock:
+            mark = self.marks[mark_id]
+            if mark.state not in expected:
+                return None
+            mark = mark.model_copy(update=changes)
+            self.marks[mark_id] = mark
+            return mark
+
+    async def marks_to_check(self, now: datetime) -> list[ReminderMark]:
+        return [
+            m
+            for m in self.marks.values()
+            if m.state == "unknown" and m.next_check_at is not None and m.next_check_at <= now
+        ]
+
+    async def lock_client(self, client_id, owner, now, ttl) -> bool:
+        async with self._lock:
+            held = self.locks.get(client_id)
+            if held is not None and held[0] != owner and held[1] > now:
+                return False
+            self.locks[client_id] = (owner, now + ttl)
+            return True
+
+    async def unlock_client(self, client_id, owner) -> None:
+        async with self._lock:
+            if self.locks.get(client_id, (None,))[0] == owner:
+                del self.locks[client_id]

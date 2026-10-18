@@ -1,30 +1,29 @@
-"""Задания и попытки напоминаний в PostgreSQL: общие для процессов, переживают перезапуск.
+"""Задания, попытки и журнал отметок напоминаний в PostgreSQL: общие для процессов.
 
-Каждый метод — одна транзакция. Гонку двух исполнителей за одну попытку решают уникальные
-индексы: проигравший получает None, а не второй звонок.
+Каждый метод — одна короткая транзакция; во время HTTP транзакция не держится. Гонку двух
+исполнителей за одну попытку решают уникальные индексы: проигравший получает None.
 """
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.recovery.models import OwnershipLost
-from app.reminders.models import AttemptResult, Contact, ReminderAttempt, ReminderJob
-from app.storage.schema import (
-    reminder_attempts as attempts,
+from app.reminders.memory import channel_for
+from app.reminders.models import (
+    AttemptResult,
+    Contact,
+    ReminderAttempt,
+    ReminderJob,
+    ReminderMark,
 )
-from app.storage.schema import (
-    reminder_confirmations as confirmations,
-)
-from app.storage.schema import (
-    reminder_contacts as contacts,
-)
-from app.storage.schema import (
-    reminder_days as days,
-)
-from app.storage.schema import (
-    reminder_jobs as jobs,
-)
+from app.storage.schema import reminder_attempts as attempts
+from app.storage.schema import reminder_client_locks as locks
+from app.storage.schema import reminder_confirmations as confirmations
+from app.storage.schema import reminder_contacts as contacts
+from app.storage.schema import reminder_days as days
+from app.storage.schema import reminder_jobs as jobs
+from app.storage.schema import reminder_marks as marks
 
 ACTIVE = ("claimed", "dialing", "answered")
 
@@ -35,6 +34,10 @@ def _job(row) -> ReminderJob:
 
 def _attempt(row) -> ReminderAttempt:
     return ReminderAttempt.model_validate(row._asdict())
+
+
+def _mark(row) -> ReminderMark:
+    return ReminderMark.model_validate(row._asdict())
 
 
 class PostgresReminderStore:
@@ -98,14 +101,24 @@ class PostgresReminderStore:
                 job = _job(row)
                 if job.state not in {"planned", "waiting_retry"} or job.next_at > now:
                     return None
+                fence = (
+                    await connection.execute(
+                        select(func.coalesce(func.max(attempts.c.fence), 0)).where(
+                            attempts.c.job_id == job_id
+                        )
+                    )
+                ).scalar_one() + 1
                 number = job.attempts + 1
                 attempt = ReminderAttempt(
                     job_id=job_id,
                     number=number,
+                    fence=fence,
                     owner=owner,
                     lease_until=now + lease,
+                    channel_id="",
                     started_at=now,
                 )
+                attempt = attempt.model_copy(update={"channel_id": channel_for(attempt.id)})
                 await connection.execute(insert(attempts).values(**attempt.model_dump()))
                 await connection.execute(
                     update(jobs)
@@ -137,14 +150,32 @@ class PostgresReminderStore:
             raise OwnershipLost()
         return _attempt(row)
 
-    async def finish(self, attempt_id, result, reason, now, job):
+    async def guard(self, attempt_id, fence, now):
+        async with self.engine.connect() as connection:
+            row = await connection.execute(
+                select(attempts.c.id).where(
+                    attempts.c.id == attempt_id,
+                    attempts.c.fence == fence,
+                    attempts.c.state.in_(ACTIVE),
+                    attempts.c.lease_until > now,
+                )
+            )
+            return row.first() is not None
+
+    async def finish(self, attempt_id, result, reason, now, job, mis_status=None):
         state = "abandoned" if result == AttemptResult.ABANDONED else "finished"
         async with self.engine.begin() as connection:
             row = (
                 await connection.execute(
                     update(attempts)
                     .where(attempts.c.id == attempt_id, attempts.c.state.in_(ACTIVE))
-                    .values(state=state, result=result, reason=reason, finished_at=now)
+                    .values(
+                        state=state,
+                        result=result,
+                        mis_status=mis_status,
+                        reason=reason,
+                        finished_at=now,
+                    )
                     .returning(attempts.c.job_id)
                 )
             ).first()
@@ -213,6 +244,7 @@ class PostgresReminderStore:
     async def save_contact(self, contact):
         data = contact.model_dump()
         async with self.engine.begin() as connection:
+            # Новый номер не снимает прежний отказ от обзвона
             await connection.execute(
                 insert(contacts)
                 .values(**data)
@@ -242,4 +274,59 @@ class PostgresReminderStore:
                 insert(confirmations)
                 .values(visit_id=visit_id, confirmed_at=now)
                 .on_conflict_do_nothing()
+            )
+
+    async def prepare_mark(self, mark):
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                insert(marks).values(**mark.model_dump()).on_conflict_do_nothing()
+            )
+            return _mark(
+                (await connection.execute(select(marks).where(marks.c.id == mark.id))).one()
+            )
+
+    async def mark(self, mark_id):
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(select(marks).where(marks.c.id == mark_id))).first()
+            return None if row is None else _mark(row)
+
+    async def move_mark(self, mark_id, expected, **changes):
+        async with self.engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    update(marks)
+                    .where(marks.c.id == mark_id, marks.c.state.in_(sorted(expected)))
+                    .values(**changes)
+                    .returning(*marks.c)
+                )
+            ).first()
+            return None if row is None else _mark(row)
+
+    async def marks_to_check(self, now):
+        async with self.engine.connect() as connection:
+            rows = await connection.execute(
+                select(marks).where(marks.c.state == "unknown", marks.c.next_check_at <= now)
+            )
+            return [_mark(row) for row in rows]
+
+    async def lock_client(self, client_id, owner, now, ttl):
+        async with self.engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    insert(locks)
+                    .values(client_id=client_id, owner=owner, until=now + ttl)
+                    .on_conflict_do_update(
+                        index_elements=[locks.c.client_id],
+                        set_={"owner": owner, "until": now + ttl},
+                        where=or_(locks.c.owner == owner, locks.c.until <= now),
+                    )
+                    .returning(locks.c.owner)
+                )
+            ).first()
+            return row is not None and row.owner == owner
+
+    async def unlock_client(self, client_id, owner):
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                locks.delete().where(locks.c.client_id == client_id, locks.c.owner == owner)
             )

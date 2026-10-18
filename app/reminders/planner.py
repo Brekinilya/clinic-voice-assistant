@@ -25,6 +25,12 @@ class ReminderPlanner:
 
     async def plan(self, call_day: date) -> int:
         """Один раз за день звонка. Возвращает число новых заданий, которые будут звонить."""
+        if not self.calendar.covers(call_day):
+            # Календарь не знает этот день: рабочим его молча не считаем
+            log.warning(
+                "календарь обзвона не покрывает %s: дополните config/calendar.yaml", call_day
+            )
+            return 0
         window = self.calendar.window(call_day)
         if window is None or await self.store.planned(call_day):
             return 0
@@ -44,6 +50,7 @@ class ReminderPlanner:
             job = ReminderJob(
                 visit_id=visit.id,
                 client_id=visit.client_id,
+                doctor_id=visit.doctor.id,
                 scheduled_at=visit.scheduled_at,
                 call_day=call_day,
                 next_at=max(start, now, visit.created_at + FRESH_VISIT),

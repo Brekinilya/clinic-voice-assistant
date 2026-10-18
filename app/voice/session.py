@@ -19,8 +19,8 @@ from typing import Protocol
 
 from app.diagnostics.channel import ObservedChannel
 from app.dialogue.models import Turn
+from app.dialogue.outbound import OutboundEvent
 from app.nlu.parsers.answers import parse_answer
-from app.reminders.models import Outcome
 from app.voice.audibility import split_audibility
 from app.voice.endpoint import FRAME_BYTES, Endpointer, EndpointSettings
 from app.voice.fallback import load_fallback
@@ -41,8 +41,6 @@ PLAYBACK_MARGIN_S = 0.3
 ASR_FAILURES_LIMIT = 2
 # После такого ответа продолжать разговор нельзя: квитанция прошлой реплики не закрыта
 INTERRUPTED = "PROCESSING_INTERRUPTED"
-# Коды, которыми диалог напоминания сообщает исход разговора
-REMINDER_OUTCOMES = frozenset(Outcome)
 
 
 class RecognitionStatus(StrEnum):
@@ -101,7 +99,7 @@ class CallSession:
         wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         outbound: object | None = None,
         machine: bool = False,
-        on_outcome: Callable[[str | None], Awaitable[None]] | None = None,
+        on_outcome: Callable[[str | None, str | None], Awaitable[None]] | None = None,
     ):
         self.call_id = call_id
         # Исходящее напоминание: первым говорит диалог, исход С-10 уходит исполнителю
@@ -109,6 +107,7 @@ class CallSession:
         self.machine = machine
         self._on_outcome = on_outcome
         self._outcome: str | None = None
+        self._mis_status: str | None = None
         self._outcome_sent = False
         debug = getattr(dialogue, "debug", None)
         self.channel = ObservedChannel(channel, debug, call_id) if debug is not None else channel
@@ -188,13 +187,23 @@ class CallSession:
         await self.channel.send_json(
             {"type": "ready", "call_id": self.call_id, "direction": "outbound"}
         )
+        # Открытие — реплика 1, первая речь пациента получит номер 2 (app/dialogue/outbound)
+        self.turn_id = 1
         try:
-            opening = (
-                self.dialogue.outbound_event(self.call_id, "voicemail")
-                if self.machine
-                else self.dialogue.open_outbound(self.call_id, self.outbound)
+            reply = await asyncio.wait_for(
+                self.dialogue.open_outbound(self.call_id, self.outbound),
+                self.settings.dialogue_timeout_s,
             )
-            reply = await asyncio.wait_for(opening, self.settings.dialogue_timeout_s)
+            if self.machine:
+                # Автоответчику приветствие с именем не звучит: только нейтральное сообщение
+                self.turn_id = 2
+                event = OutboundEvent(
+                    attempt_id=self.outbound.attempt_id, turn_id=2, kind="voicemail"
+                )
+                reply = await asyncio.wait_for(
+                    self.dialogue.outbound_event(self.call_id, event),
+                    self.settings.dialogue_timeout_s,
+                )
         except Exception:
             # Пациент взял трубку, а диалог не начался: молча кладём, попытка без исхода
             log.error("диалог не открыл исходящий звонок")
@@ -202,7 +211,7 @@ class CallSession:
             self.closing = True
             self._spawn(self._finish("ended"))
             return
-        await self._deliver(0, reply)
+        await self._deliver(self.turn_id, reply)
 
     async def feed(self, pcm: bytes) -> None:
         """Звук от клиента: PCM 16 бит, 16 кГц, моно, кусками любой длины."""
@@ -254,7 +263,7 @@ class CallSession:
             return
         self._outcome_sent = True
         try:
-            await self._on_outcome(self._outcome)
+            await self._on_outcome(self._outcome, self._mis_status)
         except Exception:
             log.error("не удалось сообщить исход напоминания")
 
@@ -570,8 +579,11 @@ class CallSession:
         self._audibility_pending = False
         transfer = getattr(reply, "transfer", None)
         phase = str(getattr(reply, "phase", "") or "")
-        if self.outbound is not None and code in REMINDER_OUTCOMES:
-            self._outcome = code
+        result = getattr(reply, "reminder_result", None)
+        if self.outbound is not None and result is not None:
+            # Исход берём из результата диалога, а не из кода реплики: в нём и статус МИС
+            if result.attempt_id == self.outbound.attempt_id:
+                self._outcome, self._mis_status = result.outcome, result.mis_status
         if code == "NOT_UNDERSTOOD":
             self._misunderstandings += 1
             if self._misunderstandings >= 3:

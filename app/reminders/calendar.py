@@ -16,13 +16,25 @@ WINDOWS = {**{day: (time(10), time(19)) for day in range(5)}, 5: (time(10), time
 
 
 class ClinicCalendar:
-    def __init__(self, holidays: frozenset[date] = frozenset()):
+    def __init__(
+        self,
+        holidays: frozenset[date] = frozenset(),
+        covered: tuple[date, date] = (date.min, date.max),
+    ):
         self.holidays = holidays
+        self.covered = covered
 
     @classmethod
     def load(cls, path: Path | None = None) -> "ClinicCalendar":
         data = yaml.safe_load((path or config_directory() / "calendar.yaml").read_text("utf-8"))
-        return cls(frozenset(date.fromisoformat(str(day)) for day in data.get("holidays") or ()))
+        period = data["covered"]
+        return cls(
+            frozenset(date.fromisoformat(str(day)) for day in data.get("holidays") or ()),
+            (date.fromisoformat(str(period["from"])), date.fromisoformat(str(period["to"]))),
+        )
+
+    def covers(self, day: date) -> bool:
+        return self.covered[0] <= day <= self.covered[1]
 
     def working(self, day: date) -> bool:
         """Рабочий день для правила «за один рабочий день»: понедельник–пятница, не праздник."""
@@ -30,7 +42,8 @@ class ClinicCalendar:
 
     def window(self, day: date) -> tuple[datetime, datetime] | None:
         hours = WINDOWS.get(day.weekday())
-        if hours is None or day in self.holidays:
+        # Вне сверенного периода не звоним: праздник мог быть неизвестен
+        if hours is None or day in self.holidays or not self.covers(day):
             return None
         start, end = hours
         return (

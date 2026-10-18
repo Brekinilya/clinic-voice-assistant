@@ -10,14 +10,15 @@ import logging
 from collections.abc import Callable, Collection
 from datetime import timedelta
 
+from app.dialogue.outbound import OutboundContext
 from app.mis.budget import Priority, demand
 from app.mis.models import VisitStatus
 from app.mis.ports import MedicalSystem, MisError
 from app.ports import Clock
 from app.recovery.models import OwnershipLost
 from app.reminders.calendar import ClinicCalendar
-from app.reminders.marks import confirmed_in, opted_out
-from app.reminders.models import AttemptResult, OutboundContext, after_attempt
+from app.reminders.marks import ReminderMarks, confirmed_in, opted_out
+from app.reminders.models import AttemptResult, after_attempt
 from app.reminders.planner import ReminderPlanner
 from app.reminders.ports import Dialer, DialRejected, ReminderStore
 from app.visits.models import VisitSummary
@@ -43,6 +44,7 @@ class ReminderExecutor:
         owner: str,
         allowed_endpoints: Collection[str],
         events: Events | None = None,
+        marks: ReminderMarks | None = None,
     ):
         self.store = store
         self.mis = mis
@@ -52,6 +54,7 @@ class ReminderExecutor:
         self.owner = owner
         self.allowed = frozenset(allowed_endpoints)
         self.events = events
+        self.marks = marks
         self.planner = ReminderPlanner(mis, store, calendar, clock)
         # Один софтфон: следующий звонок только после исхода текущего
         self.active: str | None = None
@@ -61,6 +64,8 @@ class ReminderExecutor:
         async with self._lock:
             now = self.clock.now()
             await self._recover(now)
+            if self.marks is not None:
+                await self.marks.reconcile()
             if self.active is not None:
                 await self._renew(now)
                 return
@@ -88,16 +93,26 @@ class ReminderExecutor:
         except OwnershipLost:
             log.warning("попытка %s уже не наша", attempt_id)
 
-    async def finished(self, attempt_id: str, result: str, reason: str | None = None) -> bool:
+    async def guard(self, attempt_id: str, fence: int) -> bool:
+        """Для диалога: контекст звонка всё ещё относится к действующей попытке."""
+        return await self.store.guard(attempt_id, fence, self.clock.now())
+
+    async def finished(
+        self,
+        attempt_id: str,
+        result: str,
+        reason: str | None = None,
+        mis_status: str | None = None,
+    ) -> bool:
         """Исход попытки: от шлюза (не ответили) или от разговора (код С-10). Повтор — no-op."""
         now = self.clock.now()
         attempt = await self.store.attempt(attempt_id)
         job = await self.store.job(attempt.job_id)
         window = self.calendar.window(job.call_day)
         update = after_attempt(
-            job, attempt.number, result, reason, now, window[1] if window else None
+            job, attempt.number, result, reason, now, window[1] if window else None, mis_status
         )
-        written = await self.store.finish(attempt_id, result, reason, now, update)
+        written = await self.store.finish(attempt_id, result, reason, now, update, mis_status)
         if self.active == attempt_id:
             self.active = None
         if written:
@@ -108,6 +123,7 @@ class ReminderExecutor:
                 attempt_id=attempt_id,
                 number=attempt.number,
                 result=result,
+                mis_status=mis_status,
                 reason=reason,
                 job_state=update["state"],
             )
@@ -118,7 +134,12 @@ class ReminderExecutor:
         try:
             with demand(Priority.BACKGROUND, until=now + MIS_WAIT):
                 visit = await self.mis.visit(job.visit_id)
-                if visit.status != VisitStatus.PLANNED or visit.scheduled_at != job.scheduled_at:
+                if (
+                    visit.status != VisitStatus.PLANNED
+                    or visit.scheduled_at != job.scheduled_at
+                    or visit.doctor.id != job.doctor_id
+                    or visit.client_id != job.client_id
+                ):
                     await self.finished(attempt.id, AttemptResult.SKIPPED, "changed")
                     return
                 client = await self.mis.client(job.client_id, fresh=True)
@@ -133,6 +154,7 @@ class ReminderExecutor:
         contact = await self.store.contact(job.client_id)
         context = OutboundContext(
             attempt_id=attempt.id,
+            fence=attempt.fence,
             client_id=job.client_id,
             visit=VisitSummary(
                 visit_id=visit.id,
@@ -149,12 +171,14 @@ class ReminderExecutor:
             return
         self.active = attempt.id
         try:
-            await self.dialer.call_out(attempt.id, contact.endpoint, context)
+            await self.dialer.call_out(attempt.id, contact.endpoint, context, attempt.channel_id)
         except DialRejected:
             await self.finished(attempt.id, AttemptResult.FAILED, "originate_rejected")
 
     async def _skip_reason(self, job, comment: str | None) -> str | None:
-        if confirmed_in(comment, job.visit_id) or await self.store.confirmed(job.visit_id):
+        if confirmed_in(comment, job.visit_id, job.scheduled_at) or await self.store.confirmed(
+            job.visit_id
+        ):
             return "already_confirmed"
         contact = await self.store.contact(job.client_id)
         if contact is None:

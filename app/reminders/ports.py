@@ -1,9 +1,10 @@
-"""Границы напоминаний: хранилище заданий, исходящий вызов и вход в диалог."""
+"""Границы напоминаний: хранилище заданий, исходящий вызов. Порт диалога — app/dialogue/outbound."""
 
 from datetime import date, datetime, timedelta
 from typing import Literal, Protocol
 
-from app.reminders.models import Contact, OutboundContext, ReminderAttempt, ReminderJob
+from app.dialogue.outbound import OutboundContext
+from app.reminders.models import Contact, ReminderAttempt, ReminderJob, ReminderMark
 
 
 class DialRejected(Exception):
@@ -33,8 +34,18 @@ class ReminderStore(Protocol):
         now: datetime,
         lease: timedelta,
     ) -> ReminderAttempt: ...
+    async def guard(self, attempt_id: str, fence: int, now: datetime) -> bool:
+        """Попытка всё ещё действует и fence совпадает: иначе контекст звонка устарел."""
+        ...
+
     async def finish(
-        self, attempt_id: str, result: str, reason: str | None, now: datetime, job: dict
+        self,
+        attempt_id: str,
+        result: str,
+        reason: str | None,
+        now: datetime,
+        job: dict,
+        mis_status: str | None = None,
     ) -> bool: ...
     async def stale(self, now: datetime) -> list[ReminderAttempt]: ...
     async def recover(self, attempt_id: str, now: datetime) -> None: ...
@@ -43,16 +54,21 @@ class ReminderStore(Protocol):
     async def opt_out(self, client_id: int, now: datetime) -> None: ...
     async def confirmed(self, visit_id: int) -> bool: ...
     async def mark_confirmed(self, visit_id: int, now: datetime) -> None: ...
+    async def prepare_mark(self, mark: ReminderMark) -> ReminderMark: ...
+    async def mark(self, mark_id: str) -> ReminderMark | None: ...
+    async def move_mark(
+        self, mark_id: str, expected: set[str], **changes
+    ) -> ReminderMark | None: ...
+    async def marks_to_check(self, now: datetime) -> list[ReminderMark]: ...
+    async def lock_client(
+        self, client_id: int, owner: str, now: datetime, ttl: timedelta
+    ) -> bool: ...
+    async def unlock_client(self, client_id: int, owner: str) -> None: ...
 
 
 class Dialer(Protocol):
-    async def call_out(self, attempt_id: str, endpoint: str, context: OutboundContext) -> None:
+    async def call_out(
+        self, attempt_id: str, endpoint: str, context: OutboundContext, channel_id: str
+    ) -> None:
         """Отдать вызов шлюзу. Исход придёт позже через ReminderExecutor.finished."""
         ...
-
-
-class OutboundDialogue(Protocol):
-    """Порт диалога для исходящего звонка; согласуется с владельцем app/dialogue."""
-
-    async def open_outbound(self, call_id: str, context: OutboundContext) -> object: ...
-    async def outbound_event(self, call_id: str, kind: Literal["voicemail"]) -> object: ...

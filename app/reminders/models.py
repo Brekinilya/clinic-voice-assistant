@@ -9,7 +9,6 @@ from pydantic import AwareDatetime, Field
 
 from app.booking.models import BookingModel
 from app.mis.models import MisId
-from app.visits.models import VisitSummary
 
 # С-10: до двух попыток с интервалом не менее двух часов
 MAX_ATTEMPTS = 2
@@ -54,6 +53,8 @@ NEEDS_SMS = frozenset({Outcome.NO_ANSWER, Outcome.WRONG_PERSON})
 
 JobState = Literal["planned", "calling", "waiting_retry", "done", "skipped", "manual"]
 AttemptState = Literal["claimed", "dialing", "answered", "finished", "unknown", "abandoned"]
+# Фиксация исхода в МИС: намерение пациента и подтверждённая запись — разные факты
+MisStatus = Literal["not_required", "applied", "pending", "manual"]
 SkipReason = Literal[
     "created_recently",
     "no_contact",
@@ -61,6 +62,7 @@ SkipReason = Literal[
     "opt_out",
     "already_confirmed",
     "changed",
+    "calendar_not_covered",
 ]
 
 
@@ -72,12 +74,15 @@ class ReminderJob(BookingModel):
     id: str = Field(default_factory=new_id)
     visit_id: MisId
     client_id: MisId = Field(repr=False)
+    # Отпечаток визита: тот же visit_id с другим временем или врачом — уже другое задание
+    doctor_id: MisId
     scheduled_at: AwareDatetime
     call_day: date
     state: JobState = "planned"
     next_at: AwareDatetime
     attempts: int = Field(default=0, ge=0, le=MAX_ATTEMPTS)
     outcome: str | None = None
+    mis_status: MisStatus | None = None
     reason: str | None = None
     # SMS-напоминание нужно, но канала доставки пока нет: флаг виден, отправленным не считается
     sms_pending: bool = False
@@ -88,10 +93,15 @@ class ReminderAttempt(BookingModel):
     id: str = Field(default_factory=new_id)
     job_id: str
     number: int = Field(ge=1, le=MAX_ATTEMPTS)
+    # Растёт с каждой попыткой задания; диалог проверяет его перед входом и изменением
+    fence: int = Field(ge=1)
     owner: str
     lease_until: AwareDatetime
     state: AttemptState = "claimed"
+    # Канал задаём сами до originate: после сбоя по нему можно найти звонок в АТС
+    channel_id: str
     result: str | None = None
+    mis_status: MisStatus | None = None
     reason: str | None = None
     started_at: AwareDatetime
     finished_at: AwareDatetime | None = None
@@ -105,15 +115,31 @@ class Contact(BookingModel):
     opt_out_at: AwareDatetime | None = None
 
 
-class OutboundContext(BookingModel):
-    """С чем исходящий звонок входит в диалог. Полномочия звонка — только этот визит."""
+MarkKind = Literal["confirm", "opt_out"]
+MarkState = Literal["prepared", "sending", "unknown", "applied", "manual"]
+# Сколько раз только читаем комментарий после неизвестного исхода PATCH, прежде чем позвать человека
+MARK_CHECKS = 3
+MARK_CHECK_AFTER = timedelta(minutes=1)
 
+
+class ReminderMark(BookingModel):
+    """Журнал одной отметки в комментарии клиента. Хранится только наша строка, не чужой текст."""
+
+    id: str
     attempt_id: str
-    purpose: Literal["reminder"] = "reminder"
+    kind: MarkKind
     client_id: MisId = Field(repr=False)
-    visit: VisitSummary
-    # Только имя и отчество: до подтверждения адресата фамилия не звучит (раздел 3.5)
-    addressee: str = Field(min_length=1, max_length=201, repr=False)
+    visit_id: MisId | None = None
+    line: str = Field(min_length=1, max_length=200)
+    state: MarkState = "prepared"
+    checks: int = Field(default=0, ge=0)
+    reason: str | None = None
+    next_check_at: AwareDatetime | None = None
+    updated_at: AwareDatetime
+
+    @property
+    def mis_status(self) -> MisStatus:
+        return {"applied": "applied", "manual": "manual"}.get(self.state, "pending")
 
 
 def after_attempt(
@@ -123,12 +149,15 @@ def after_attempt(
     reason: str | None,
     now: datetime,
     retry_window_end: datetime | None,
+    mis_status: str | None = None,
 ) -> dict:
     """Новое состояние задания после попытки. retry_window_end — конец окна дня звонка."""
     if result in FINAL:
+        # Пациент ответил, но запись в МИС не установлена: решает человек, повторного звонка нет
         return {
-            "state": "done",
+            "state": "manual" if mis_status == "manual" else "done",
             "outcome": result,
+            "mis_status": mis_status or "not_required",
             "reason": reason,
             "sms_pending": result in NEEDS_SMS,
             "next_at": now,

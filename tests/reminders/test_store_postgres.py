@@ -20,6 +20,7 @@ def job(visit_id=7):
     return ReminderJob(
         visit_id=visit_id,
         client_id=3,
+        doctor_id=1,
         scheduled_at=at(20, 10),
         call_day=date(2026, 10, 19),
         next_at=at(19, 10),
@@ -120,3 +121,55 @@ async def test_reminder_tables_hold_no_names_or_phone_numbers_in_jobs(pg_engine)
         )
     forbidden = {"last_name", "first_name", "middle_name", "phone", "endpoint", "text"}
     assert not any(forbidden & names for names in columns.values())
+
+
+@pytest.mark.postgres
+async def test_mark_journal_is_idempotent_and_moves_only_from_expected_state(pg_engine):
+    from app.reminders.models import ReminderMark
+
+    store = PostgresReminderStore(pg_engine)
+    mark = ReminderMark(
+        id="confirm:att-1",
+        attempt_id="att-1",
+        kind="confirm",
+        client_id=3,
+        visit_id=7,
+        line="Подтверждена запись #7 20.10.2026 10:00",
+        updated_at=at(19, 10),
+    )
+    assert (await store.prepare_mark(mark)).state == "prepared"
+    sending = await store.move_mark(mark.id, {"prepared"}, state="sending", updated_at=at(19, 10))
+    assert sending.state == "sending"
+    # Повтор подготовки не сбрасывает журнал, повтор перехода из prepared не проходит
+    assert (await store.prepare_mark(mark)).state == "sending"
+    assert await store.move_mark(mark.id, {"prepared"}, state="sending") is None
+
+
+@pytest.mark.postgres
+async def test_client_lock_has_one_owner_until_it_expires(pg_engine):
+    store = PostgresReminderStore(pg_engine)
+    ttl = timedelta(seconds=30)
+    assert await store.lock_client(3, "vm-1", at(19, 10), ttl)
+    assert not await store.lock_client(3, "vm-2", at(19, 10), ttl)
+    assert await store.lock_client(3, "vm-1", at(19, 10), ttl)
+    assert await store.lock_client(3, "vm-2", at(19, 10, 1), ttl)
+    await store.unlock_client(3, "vm-1")
+    assert not await store.lock_client(3, "vm-1", at(19, 10, 1), ttl)
+    await store.unlock_client(3, "vm-2")
+    assert await store.lock_client(3, "vm-1", at(19, 10, 1), ttl)
+
+
+@pytest.mark.postgres
+async def test_fence_grows_with_each_attempt_and_channel_is_unique(pg_engine):
+    store = PostgresReminderStore(pg_engine)
+    item = job()
+    await store.add_job(item)
+    first = await store.claim(item.id, "vm-1", at(19, 10, 5), LEASE)
+    await store.finish(first.id, "NO_ANSWER", None, at(19, 10, 6), {"state": "waiting_retry"})
+    second = await store.claim(item.id, "vm-1", at(19, 12, 6), LEASE)
+    assert (first.fence, second.fence) == (1, 2)
+    assert first.channel_id != second.channel_id
+    assert await store.guard(second.id, 2, at(19, 12, 6))
+    # Lease кончается ровно через минуту: с этого момента контекст звонка не действует
+    assert not await store.guard(second.id, 2, at(19, 12, 7))
+    assert not await store.guard(first.id, 1, at(19, 12, 6))
