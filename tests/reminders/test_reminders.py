@@ -13,8 +13,9 @@ from app.reminders.calendar import ClinicCalendar
 from app.reminders.executor import LEASE, ReminderExecutor
 from app.reminders.marks import MarkResult, ReminderMarks, confirmation_line
 from app.reminders.memory import MemoryReminderStore
-from app.reminders.models import Contact
+from app.reminders.models import Contact, ReminderJob
 from app.reminders.ports import DialRejected
+from app.storage.reminders import PostgresReminderStore
 
 PHONE = "PJSIP/phone-021@gateway"
 CALENDAR = ClinicCalendar(frozenset({date(2026, 11, 4)}))
@@ -104,10 +105,10 @@ def test_holidays_are_loaded_from_config():
 
 
 class Stand:
-    def __init__(self):
+    def __init__(self, store=None):
         self.clock = Clock(at(18, 9))
         self.emulator = demo_emulator(self.clock)
-        self.store = MemoryReminderStore()
+        self.store = store or MemoryReminderStore()
         self.dialer = Dialer()
         self.http = httpx.AsyncClient(
             base_url="https://offline.invalid/api/v1/",
@@ -147,12 +148,31 @@ class Stand:
         return sum(1 for _, method, p, _ in self.emulator.log if method == "GET" and p == path)
 
     async def job(self, visit_id):
-        return next(j for j in self.store.jobs.values() if j.visit_id == visit_id)
+        return next(j for j in await self.jobs() if j.visit_id == visit_id)
+
+    async def jobs(self):
+        if isinstance(self.store, MemoryReminderStore):
+            return list(self.store.jobs.values())
+        from sqlalchemy import select
+
+        from app.storage.schema import reminder_jobs
+
+        async with self.store.engine.connect() as connection:
+            rows = await connection.execute(select(reminder_jobs))
+            return [ReminderJob.model_validate(row._asdict()) for row in rows]
+
+
+@pytest.fixture(params=["memory", "postgres"])
+def reminder_store(request):
+    # Одни и те же правила проверяем на памяти и на настоящем PostgreSQL
+    if request.param == "memory":
+        return MemoryReminderStore()
+    return PostgresReminderStore(request.getfixturevalue("pg_engine"))
 
 
 @pytest.fixture
-async def stand():
-    value = Stand()
+async def stand(reminder_store):
+    value = Stand(reminder_store)
     yield value
     await value.http.aclose()
 
@@ -177,7 +197,7 @@ async def test_planning_applies_regulation_filters_with_one_request(stand):
     assert (await stand.job(fresh.id)).reason == "created_recently"
     # Сутки исполнятся в 12:00 — тогда и позвоним
     assert (await stand.job(later.id)).next_at == at(19, 12)
-    assert all(j.visit_id != cancelled.id for j in stand.store.jobs.values())
+    assert all(j.visit_id != cancelled.id for j in await stand.jobs())
     # Повторный отбор в тот же день не читает МИС
     assert await stand.executor.planner.plan(date(2026, 10, 19)) == 0
     assert stand.gets("visits") - before == 1
@@ -198,7 +218,7 @@ async def test_call_goes_out_once_with_only_first_name_and_patronymic(stand):
     [(attempt_id, endpoint, context)] = stand.dialer.calls
     assert endpoint == PHONE and context.visit.visit_id == visit.id
     assert context.addressee == "Иван Иванович"
-    assert stand.store.attempts[attempt_id].state == "dialing"
+    assert (await stand.store.attempt(attempt_id)).state == "dialing"
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 1
 
@@ -226,7 +246,7 @@ async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 2
     second = stand.dialer.calls[1][0]
-    assert stand.store.attempts[second].number == 2
+    assert (await stand.store.attempt(second)).number == 2
     await stand.executor.finished(second, "NO_ANSWER")
     job = await stand.job(visit.id)
     assert (job.state, job.outcome, job.sms_pending) == ("done", "NO_ANSWER", True)
@@ -285,7 +305,7 @@ async def test_only_the_team_softphone_can_be_called(stand):
 async def test_no_calls_outside_the_window(stand):
     await ready(stand, now=at(19, 19, 30))
     await stand.executor.tick()
-    assert not stand.dialer.calls and not stand.store.jobs
+    assert not stand.dialer.calls and not await stand.jobs()
 
 
 async def test_rejected_originate_is_a_failed_attempt(stand):
@@ -307,7 +327,7 @@ async def test_restart_after_dialing_goes_to_manual_without_redial(stand):
     restarted = stand.make_executor("vm-2")
     stand.clock.value += LEASE + timedelta(seconds=1)
     await restarted.tick()
-    assert stand.store.attempts[attempt_id].state == "unknown"
+    assert (await stand.store.attempt(attempt_id)).state == "unknown"
     job = await stand.job(visit.id)
     assert (job.state, job.reason) == ("manual", "unknown_dialing")
     assert len(stand.dialer.calls) == 1
@@ -322,9 +342,9 @@ async def test_restart_before_dialing_releases_the_attempt(stand):
     attempt = await stand.store.claim(job.id, "vm-1", stand.clock.now(), LEASE)
     stand.clock.value += LEASE + timedelta(seconds=1)
     await stand.make_executor("vm-2").tick()
-    assert stand.store.attempts[attempt.id].state == "abandoned"
+    assert (await stand.store.attempt(attempt.id)).state == "abandoned"
     [(second, _, _)] = stand.dialer.calls
-    assert stand.store.attempts[second].number == 1
+    assert (await stand.store.attempt(second)).number == 1
 
 
 async def test_lease_is_renewed_while_the_call_lasts(stand):
@@ -334,7 +354,7 @@ async def test_lease_is_renewed_while_the_call_lasts(stand):
     for _ in range(10):
         stand.clock.value += timedelta(seconds=30)
         await stand.executor.tick()
-    assert stand.store.attempts[attempt_id].state == "dialing"
+    assert (await stand.store.attempt(attempt_id)).state == "dialing"
 
 
 # 4. Отметки в комментарии клиента
@@ -401,4 +421,4 @@ async def test_mis_failure_before_the_call_does_not_use_an_attempt(stand):
     stand.clock.value += timedelta(minutes=5)
     await stand.executor.tick()
     [(attempt_id, _, _)] = stand.dialer.calls
-    assert stand.store.attempts[attempt_id].number == 1
+    assert (await stand.store.attempt(attempt_id)).number == 1

@@ -2,8 +2,10 @@
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -228,3 +230,73 @@ Index(
     postgresql_where=active_moves,
 )
 Index("backend_move_revision", moves.c.call_id, moves.c.revision, unique=True)
+
+# Напоминания С-10 (T11). Только технические ссылки: ни ФИО, ни текста разговора.
+# Номер версии схемы назначается при сборке; таблицы создаёт общий migrate.
+reminder_days = Table("reminder_days", metadata, Column("call_day", Date, primary_key=True))
+reminder_jobs = Table(
+    "reminder_jobs",
+    metadata,
+    Column("id", String(32), primary_key=True),
+    Column("visit_id", Integer, nullable=False),
+    Column("client_id", Integer, nullable=False),
+    Column("scheduled_at", DateTime(timezone=True), nullable=False),
+    Column("call_day", Date, nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("next_at", DateTime(timezone=True), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("outcome", String(16)),
+    Column("reason", String(64)),
+    Column("sms_pending", Boolean, nullable=False),
+    Column("version", Integer, nullable=False),
+    CheckConstraint("visit_id > 0 AND client_id > 0 AND attempts BETWEEN 0 AND 2"),
+    CheckConstraint("state IN ('planned','calling','waiting_retry','done','skipped','manual')"),
+)
+# Одно задание на визит и его время: перенесённый визит — новое задание
+Index("reminder_job_visit", reminder_jobs.c.visit_id, reminder_jobs.c.scheduled_at, unique=True)
+Index("reminder_job_due", reminder_jobs.c.state, reminder_jobs.c.next_at)
+reminder_attempts = Table(
+    "reminder_attempts",
+    metadata,
+    Column("id", String(32), primary_key=True),
+    Column("job_id", String(32), ForeignKey(reminder_jobs.c.id), nullable=False),
+    Column("number", Integer, nullable=False),
+    Column("owner", String(128), nullable=False),
+    Column("lease_until", DateTime(timezone=True), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("result", String(16)),
+    Column("reason", String(64)),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True)),
+    CheckConstraint("number BETWEEN 1 AND 2"),
+    CheckConstraint("state IN ('claimed','dialing','answered','finished','unknown','abandoned')"),
+)
+# Несостоявшаяся попытка номер не занимает; у задания не больше одной активной попытки
+Index(
+    "reminder_attempt_number",
+    reminder_attempts.c.job_id,
+    reminder_attempts.c.number,
+    unique=True,
+    postgresql_where=reminder_attempts.c.state != "abandoned",
+)
+Index(
+    "reminder_attempt_active",
+    reminder_attempts.c.job_id,
+    unique=True,
+    postgresql_where=reminder_attempts.c.state.in_(["claimed", "dialing", "answered"]),
+)
+Index("reminder_attempt_lease", reminder_attempts.c.state, reminder_attempts.c.lease_until)
+reminder_contacts = Table(
+    "reminder_contacts",
+    metadata,
+    Column("client_id", Integer, primary_key=True),
+    Column("endpoint", String(200), nullable=False),
+    Column("opt_out_at", DateTime(timezone=True)),
+    CheckConstraint("client_id > 0"),
+)
+reminder_confirmations = Table(
+    "reminder_confirmations",
+    metadata,
+    Column("visit_id", Integer, primary_key=True),
+    Column("confirmed_at", DateTime(timezone=True), nullable=False),
+)

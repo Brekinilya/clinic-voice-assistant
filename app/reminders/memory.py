@@ -131,6 +131,10 @@ class MemoryReminderStore:
         return self.contacts.get(client_id)
 
     async def save_contact(self, contact: Contact) -> None:
+        # Новый номер не снимает прежний отказ от обзвона
+        previous = self.contacts.get(contact.client_id)
+        if previous is not None and previous.opt_out_at is not None:
+            contact = contact.model_copy(update={"opt_out_at": previous.opt_out_at})
         self.contacts[contact.client_id] = contact
 
     async def opt_out(self, client_id: int, now: datetime) -> None:
