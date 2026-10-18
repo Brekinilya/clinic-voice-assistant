@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 SILENCE_GAP_S = 0.1
 # Раздел 7.5: сколько ждать ответа регистратора по приоритету перевода
 OPERATOR_TIMEOUT_S = {"P1": 20, "P2": 30, "P3": 90}
+HANDOFF_JOURNAL_TIMEOUT_S = 1.0
 # Сколько ждать ответа пациента на исходящее напоминание
 OUTBOUND_RING_S = 30
 # Причины Q.850, при которых регистратор был досягаем, но не взял трубку
@@ -195,6 +196,8 @@ class PhoneCall:
     connected: bool = False
     # Разговор с ассистентом закончен: прощание или перевод уже начаты
     finishing: bool = False
+    transfer_in_progress: bool = False
+    handoff_journaled: bool = False
     attempt: str | None = None
     reported: bool = False
     rate: int = 24000
@@ -435,9 +438,12 @@ class Telephony:
             await self.ari.hangup(call.caller)
 
     async def transfer(self, call: PhoneCall, priority: str, route: str | None = None) -> None:
+        if call.transfer_in_progress:
+            return
+        call.transfer_in_progress = True
         call.priority = priority
         call.route = route
-        call.finishing = False
+        call.finishing = True
         call.reported = False
         # Намерение перевести ещё не перевод: исход попытки сообщает transfer_result
         call.attempt = uuid.uuid4().hex
@@ -453,13 +459,14 @@ class Telephony:
             try:
                 delivered = self.on_transfer_start(event)
                 if inspect.isawaitable(delivered):
-                    await delivered
+                    await asyncio.wait_for(delivered, timeout=HANDOFF_JOURNAL_TIMEOUT_S)
+                call.handoff_journaled = True
             except Exception:
-                log.exception("failed to persist transfer request before originate")
+                log.exception("bounded transfer journal write failed")
                 await self._report(call, "failed", "handoff_journal_unavailable")
-                await self._operator_failed(call)
-                return
         try:
+            if call.caller not in self.calls:
+                return
             call.operator = await self.ari.originate(
                 self.settings.operator_endpoint, ["operator", call.caller], timeout
             )
@@ -507,7 +514,7 @@ class Telephony:
         try:
             delivered = self.on_transfer(result)
             if inspect.isawaitable(delivered):
-                await delivered
+                await asyncio.wait_for(delivered, timeout=HANDOFF_JOURNAL_TIMEOUT_S)
         except Exception:
             # Получатель результата не должен ломать сам звонок
             log.exception("не удалось передать исход перевода")
@@ -516,16 +523,16 @@ class Telephony:
         # Раздел 7.5: на P1 повторяем 103/112 и завершаем. Обратный звонок для P2 и P3 должен
         # предложить диалог; пока он не знает о неответе, ничего не обещаем
         await self._music(call, False)
+        if call.priority in {"P2", "P3"} and call.session is not None and call.handoff_journaled:
+            resume = getattr(call.session, "resume_after_transfer", None)
+            if resume is not None and await resume("no_answer"):
+                call.finishing = False
+                call.transfer_in_progress = False
+                return
         template = "emergency.no_answer" if call.priority == "P1" else "transfer.no_answer"
         pcm, rate = await self.say(template)
         call.rtp.play(self.resample(pcm, rate, call.codec.rate))
         await call.rtp.drained()
-        if call.priority in {"P2", "P3"} and call.session is not None:
-            resume = getattr(call.session, "resume_after_transfer", None)
-            if resume is not None:
-                call.finishing = False
-                if await resume("no_answer"):
-                    return
         await self.ari.hangup(call.caller)
 
     async def _gone(self, channel: str, cause: int | None = None) -> None:

@@ -341,6 +341,10 @@ class DialogueService:
 
     async def input_started(self, call_id: str, turn_id: int) -> Reply:
         event = InputStart(turn_id=turn_id)
+        # HandoffStore serializes this epoch bump with callback-task creation.
+        # Whichever transaction commits first defines whether consent was current.
+        if self.handoffs is not None:
+            await self.handoffs.callback_input_started(call_id, event.turn_id)
         state = await self.store.start_input(call_id, event.turn_id)
         if self.debug is not None:
             self.debug.emit(
@@ -348,7 +352,6 @@ class DialogueService:
             )
         if state.phase == Phase.HANDOFF:
             if self.handoffs is not None:
-                await self.handoffs.callback_input_started(call_id, event.turn_id)
                 if await self.handoffs.has_callback_draft(call_id):
                     return reply(state, event.turn_id, code="CALLBACK_INPUT_STARTED", kind="partial")
             return handoff_reply(state, event.turn_id)

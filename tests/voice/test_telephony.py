@@ -5,6 +5,7 @@ import socket
 
 import pytest
 
+from app.voice import telephony as telephony_module
 from app.voice.rtp import CODECS, RtpSender, Upsampler
 from app.voice.telephony import PhoneChannel, Telephony, TelephonySettings
 
@@ -222,3 +223,46 @@ async def test_registrar_does_not_answer(line, priority, template, timeout):
     await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
     await settled(lambda: line.ari.calls[-1] == ("hangup", "caller-1"))
     assert line.said == [template]
+
+
+async def test_journal_timeout_still_originates_once_and_duplicate_finish_is_ignored(
+    line, monkeypatch
+):
+    monkeypatch.setattr(telephony_module, "HANDOFF_JOURNAL_TIMEOUT_S", 0.02)
+    entered = asyncio.Event()
+
+    async def blocked_start(_):
+        entered.set()
+        await asyncio.Event().wait()
+
+    line.on_transfer_start = blocked_start
+    await line.handle(start("caller-1", "inbound"))
+    call = line.calls["caller-1"]
+    first = asyncio.create_task(
+        line.finish(call, {"reason": "transfer", "route": "R-01", "priority": "P1"})
+    )
+    await entered.wait()
+    await line.finish(call, {"reason": "transfer", "route": "R-01", "priority": "P1"})
+    await first
+    assert sum(c[0] == "originate" for c in line.ari.calls) == 1
+
+
+async def test_patient_hangup_during_journal_write_prevents_originate(line, monkeypatch):
+    monkeypatch.setattr(telephony_module, "HANDOFF_JOURNAL_TIMEOUT_S", 0.2)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_start(_):
+        entered.set()
+        await release.wait()
+
+    line.on_transfer_start = blocked_start
+    await line.handle(start("caller-1", "inbound"))
+    call = line.calls["caller-1"]
+    transfer = asyncio.create_task(
+        line.finish(call, {"reason": "transfer", "route": "R-01", "priority": "P1"})
+    )
+    await entered.wait()
+    await line.handle(end("caller-1"))
+    release.set()
+    await transfer
+    assert not any(c[0] == "originate" for c in line.ari.calls)

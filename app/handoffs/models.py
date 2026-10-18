@@ -51,6 +51,7 @@ class CallbackOutcome(StrEnum):
 class HandoffRequest(BookingModel):
     request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     call_id: str = Field(min_length=1, max_length=128)
+    source: Literal["phone", "text"] = "phone"
     created_at: datetime
     route: str = Field(min_length=1, max_length=16)
     priority: Literal["P1", "P2", "P3"]
@@ -120,7 +121,7 @@ class MisOperation(BookingModel):
 
 class CallbackDraft(BookingModel):
     request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    stage: Literal["offer", "contact", "time", "confirm"]
+    stage: Literal["offer", "contact", "time", "confirm", "goal"]
     contact_ciphertext: str | None = Field(default=None, repr=False)
     contact_masked: str | None = None
     preferred_at: datetime | None = None
@@ -128,6 +129,7 @@ class CallbackDraft(BookingModel):
     summary: str = Field(max_length=200)
     input_epoch: int = Field(default=0, ge=0)
     last_turn_id: int = Field(default=0, ge=0)
+    invalid_turns: int = Field(default=0, ge=0, le=3)
     version: int = Field(default=1, ge=1)
 
 
@@ -136,6 +138,7 @@ class CallbackTask(BookingModel):
     request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     state: CallbackState
     priority: Literal["P2", "P3"]
+    summary: str = Field(default="", max_length=200)
     consented_at: datetime
     deadline: datetime
     preferred_at: datetime | None = None
@@ -143,6 +146,10 @@ class CallbackTask(BookingModel):
     contact_masked: str
     endpoint: str | None = Field(default=None, max_length=64)
     attempts: int = Field(default=0, ge=0, le=3)
+    active_attempt_id: str | None = None
+    consent_turn_id: int = Field(default=0, ge=0)
+    consent_input_epoch: int = Field(default=0, ge=0)
+    consent_draft_version: int = Field(default=0, ge=0)
     next_at: datetime
     owner: str | None = Field(default=None, max_length=64)
     lease_until: datetime | None = None
