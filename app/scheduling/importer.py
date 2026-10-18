@@ -125,6 +125,10 @@ def import_workbook(
             raise ScheduleImportError("WORKBOOK_CHANGED_DURING_IMPORT")
         # На Windows соединение надо закрыть до публикации файла.
         db.close()
+        # mkstemp создаёт файл 0600: опубликованный индекс должен читаться
+        # сервисным UID приложения, даже если импорт запускал другой пользователь.
+        # Секретов и данных пациентов в индексе нет (только хеш области токена).
+        os.chmod(temporary, 0o644)
         if replace:
             os.replace(temporary, destination)
         else:

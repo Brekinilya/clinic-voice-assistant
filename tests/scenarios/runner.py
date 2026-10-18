@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from app.dialogue.models import Reply
 from app.mis.models import VisitStatus
-from tests.scenarios.runtime import ScenarioRuntime, moment
+from tests.scenarios.runtime import TOKEN, ScenarioRuntime, moment
 
 PHASES = {
     "ident.ask": {"identifying"},
@@ -49,7 +49,6 @@ GAPS = {
     "home_visit.": "home_visit_T09",
     "callback.": "callback_T08",
     "waitlist.": "waitlist_T08",
-    "remind.": "outbound_T11",
     "attach.": "faq_T09",
     "schedule.": "schedule_faq_T09",
     "silence.": "voice_event_channel_T03",
@@ -144,6 +143,7 @@ class DialogResult:
             "escalations_created": 0,
         }
     )
+    evidence: dict = field(default_factory=dict)
     elapsed_ms: float = 0
     simulated_seconds: float = 0
     budget_profile: str = "functional_unlimited_emulator"
@@ -219,6 +219,55 @@ def verify_step(result, number, step, response):
         result.add("slot_weekdays", "Предложен запрещённый день недели", step=number)
     for name in templates(step):
         gap = next((value for prefix, value in GAPS.items() if name.startswith(prefix)), None)
+        if name == "remind.details":
+            if response.code != "REMINDER_DETAILS" or response.phase != "remind_details":
+                result.add(
+                    "reminder_details", "Адресат не подтвердил переход к деталям", step=number
+                )
+            continue
+        if name == "remind.confirmed":
+            if (
+                response.reminder_result is None
+                or response.reminder_result.outcome != "CONFIRMED"
+                or response.reminder_result.mis_status != "applied"
+            ):
+                result.add("reminder_confirm", "Отметка подтверждения не применена", step=number)
+            continue
+        if name == "remind.wrong_person":
+            if (
+                response.reminder_result is None
+                or response.reminder_result.outcome != "WRONG_PERSON"
+            ):
+                result.add(
+                    "reminder_wrong_person", "Не зафиксирован неправильный адресат", step=number
+                )
+            continue
+        if name == "remind.voicemail":
+            if response.reminder_result is None or response.reminder_result.outcome != "VOICEMAIL":
+                result.add(
+                    "reminder_voicemail",
+                    "Событие не завершилось исходом автоответчика",
+                    step=number,
+                )
+            continue
+        if name == "remind.maybe":
+            if response.reminder_result is None or response.reminder_result.outcome != "MAYBE":
+                result.add("reminder_maybe", "Не зафиксирован неопределённый ответ", step=number)
+            continue
+        if name == "remind.opt_out":
+            if response.reminder_result is None or response.reminder_result.outcome != "OPT_OUT":
+                result.add("reminder_opt_out", "Не зафиксирован отказ от обзвона", step=number)
+            continue
+        if name in {"remind.offer_reschedule", "remind.done_moved"}:
+            if name == "remind.offer_reschedule" and response.code not in {
+                "REMINDER_DECLINED",
+                "MOVE_OPTIONS",
+            }:
+                result.add("reminder_move", "Не предложен безопасный перенос", step=number)
+            elif name == "remind.done_moved" and response.reminder_result is not None:
+                if response.reminder_result.outcome != "RESCHEDULED":
+                    result.add("reminder_move", "Перенос завершился другим исходом", step=number)
+            continue
         if name in LABORATORY_EXPECTATIONS:
             codes, topics, required = LABORATORY_EXPECTATIONS[name]
             if (
@@ -280,6 +329,67 @@ def verify_step(result, number, step, response):
             )
     if len(response.options) > 3:
         result.add("too_many_options", "Больше трёх вариантов", "critical", number)
+
+
+async def verify_reminder_result(result, runtime, reminder_result):
+    """Проверить доменный исход T11, локальный контакт и фактическую запись в эмуляторе."""
+    from app.reminders.marks import confirmation_line
+
+    outcome = reminder_result.outcome
+    attempt = await runtime.reminder_store.attempt(runtime.reminder_attempt_id)
+    if attempt.result != outcome:
+        result.add("reminder_attempt", "Исполнитель не сохранил фактический исход звонка")
+    client_id = runtime.client_ids[runtime.dialog.setup["call"]["client"]]
+    client = runtime.emulator.clients[TOKEN][client_id]
+    if outcome == "CONFIRMED":
+        mark = await runtime.reminder_store.mark(f"confirm:{runtime.reminder_attempt_id}")
+        expected = confirmation_line(runtime.initial_visit.id, runtime.initial_visit.scheduled_at)
+        if (
+            mark is None
+            or mark.state != "applied"
+            or client.comment != "Прежняя заметка регистратора\n" + expected
+            or runtime.emulator.client_patch_count != 1
+        ):
+            result.add("reminder_mark", "PATCH или журнал отметки не подтверждены фактически")
+    elif outcome == "OPT_OUT":
+        contact = await runtime.reminder_store.contact(client_id)
+        if contact is None or contact.opt_out_at is None:
+            result.add("reminder_contact_opt_out", "Локальный контакт не исключён из обзвона")
+        if runtime.emulator.client_patch_count:
+            result.add(
+                "reminder_identity_write", "Карточка изменена до проверки адресата", "critical"
+            )
+    elif outcome in {"WRONG_PERSON", "VOICEMAIL", "MAYBE"}:
+        if (
+            runtime.emulator.client_patch_count
+            or runtime.emulator.patch_count
+            or runtime.emulator.write_count
+        ):
+            result.add(
+                "reminder_unexpected_write",
+                "МИС изменилась без подтверждённого действия",
+                "critical",
+            )
+    mark = await runtime.reminder_store.mark(f"confirm:{runtime.reminder_attempt_id}")
+    contact = await runtime.reminder_store.contact(client_id)
+    result.evidence["outbound"] = {
+        "path": "ReminderExecutor.tick → ReminderActionAdapter → DialogueService",
+        "substitutions": [
+            "телефонный originate/answer: ScenarioDialer",
+            "HTTP МИС: ScenarioEmulator",
+            "задания, попытки и отметки: MemoryReminderStore",
+        ],
+        "attempt_state": attempt.state,
+        "outcome": outcome,
+        "mis_status": reminder_result.mis_status,
+        "mark_state": mark.state if mark is not None else None,
+        "client_comment_patches": runtime.emulator.client_patch_count,
+        "preserved_existing_comment": (
+            client.comment is not None and client.comment.startswith("Прежняя заметка регистратора")
+        ),
+        "contact_opt_out": contact is not None and contact.opt_out_at is not None,
+        "voicemail_event_port": outcome == "VOICEMAIL",
+    }
 
 
 def verify_records(result, runtime, expectation):
@@ -352,23 +462,48 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
     started = time.perf_counter()
     beginning = runtime.clock.now()
     responses = []
-    if dialog.setup["channel"] == "outbound":
-        result.add(
-            "outbound_T11",
-            "Прогон реплик не проверяет originate и исходящий контекст",
-            "unsupported",
-        )
+    outbound = dialog.setup["channel"] == "outbound"
     try:
         async with runtime.application() as client:
+            if outbound:
+                opening = await runtime.start_outbound()
+                if opening is None:
+                    result.add("outbound_open", "Исполнитель не открыл исходящий диалог", "error")
+                else:
+                    responses.append(opening)
             for number, step in enumerate(dialog.steps, 1):
                 if "patient" not in step:
                     if "event" in step:
-                        result.add(
-                            "event:" + step["event"],
-                            "Событие отсутствует в текстовом API",
-                            "unsupported",
-                            number,
-                        )
+                        if outbound and step["event"] == "voicemail":
+                            from app.dialogue.outbound import OutboundEvent
+
+                            reply = await runtime.service.outbound_event(
+                                runtime.call_id,
+                                OutboundEvent(
+                                    attempt_id=runtime.reminder_attempt_id,
+                                    turn_id=2,
+                                    kind="voicemail",
+                                ),
+                            )
+                            responses.append(reply)
+                            result.steps.append(
+                                {
+                                    "step": number,
+                                    "turn": 2,
+                                    "phase": reply.phase,
+                                    "code": reply.code,
+                                    "options": len(reply.options),
+                                    "event": "voicemail",
+                                }
+                            )
+                            verify_step(result, number, step, reply)
+                        else:
+                            result.add(
+                                "event:" + step["event"],
+                                "Событие отсутствует в текстовом API",
+                                "unsupported",
+                                number,
+                            )
                     # Приветствие браузера не подменяем вымышленным ответом сервера.
                     continue
                 if step.get("advance_s"):
@@ -455,7 +590,13 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     or not body["is_final"]
                     or step.get("safety", {}).get("flags")
                     or previous_phase
-                    not in {"held", "cancel_confirm", "move_confirm", "move_finish_confirm"}
+                    not in {
+                        "held",
+                        "cancel_confirm",
+                        "move_confirm",
+                        "move_finish_confirm",
+                        "remind_details",
+                    }
                 ):
                     result.add(
                         "mutation_without_consent",
@@ -464,6 +605,16 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         number,
                     )
                 verify_step(result, number, step, reply)
+            if outbound and runtime.reminder_attempt_id is not None:
+                state = await runtime.dialogue_store.inspect(runtime.call_id)
+                reminder_result = state.reminder_result
+                if reminder_result is not None:
+                    await runtime.reminder_executor.finished(
+                        runtime.reminder_attempt_id,
+                        reminder_result.outcome,
+                        mis_status=reminder_result.mis_status,
+                    )
+                    await verify_reminder_result(result, runtime, reminder_result)
             verify_records(result, runtime, dialog.result.get("stand"))
             expected_code = dialog.result.get("code")
             if expected_code == "ESCALATED" and any(r.transfer is not None for r in responses):

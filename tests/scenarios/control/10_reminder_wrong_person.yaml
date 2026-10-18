@@ -10,7 +10,7 @@ setup:
   channel: outbound
   call: {purpose: reminder, client: smirnova_ov}
   visits:
-    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45", created_at: "29.09.2026 08:45"}
 
 steps:
   - say: remind.greeting

@@ -2,7 +2,7 @@
 
 import hashlib
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 
@@ -18,12 +18,20 @@ from app.main import create_app
 from app.mis.budget import MemoryBudget
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Client, Doctor, Visit, VisitStatus
+from app.reminders.calendar import ClinicCalendar
+from app.reminders.dialogue_adapter import ReminderActionAdapter
+from app.reminders.executor import ReminderExecutor
+from app.reminders.marks import ReminderMarks
+from app.reminders.memory import MemoryReminderStore
+from app.reminders.models import Contact
 from app.rescheduling.memory import MemoryMoveStore
 from app.settings import Settings
 from tests.scenarios.emulator import ScenarioEmulator
 from tests.scenarios.scenario_plan import STAND_TIME, load_fixtures
 
 TOKEN = "scenario-only-fictional-token"
+REMINDER_ENDPOINT = "5550101"
+REMINDER_OWNER = "scenario-runtime"
 
 
 def moment(value):
@@ -40,6 +48,7 @@ class NoExternalDatabase:
 
 class ScenarioRuntime:
     def __init__(self, dialog, *, internal_limit=None, external_limit=None, doctor_count=None):
+        self.dialog = dialog
         fixtures = load_fixtures()
         self.clock = DemoClock()
         self.clock.value = dialog.now.replace(tzinfo=CLINIC_TIMEZONE)
@@ -74,9 +83,14 @@ class ScenarioRuntime:
                 doctor=self.emulator.doctors[self.doctor_ids[item["doctor"]]],
                 scheduled_at=moment(item["at"]),
                 status=VisitStatus.PLANNED,
-                created_at=self.clock.now(),
+                created_at=(
+                    moment(item["created_at"])
+                    if item.get("created_at")
+                    else self.clock.now() - timedelta(days=2)
+                ),
                 updated_at=self.clock.now(),
             )
+        self.initial_visit = self.emulator.records[TOKEN].get(1)
         self.initial_records = self.snapshot()
         slots_by_doctor = fixtures["slots"] | dialog.setup.get("slots", {})
         slots = tuple(
@@ -148,6 +162,11 @@ class ScenarioRuntime:
             web_access_enabled=False,
         )
         self.service = None
+        self.reminder_store = None
+        self.reminder_executor = None
+        self.reminder_dialer = None
+        self.reminder_attempt_id = None
+        self.outbound_reply = None
         self.background_catalog = dialog.setup.get("background_catalog", False)
         self.budget_profile = (
             f"memory_{internal_limit}_server_{external_limit}_per_min"
@@ -181,6 +200,38 @@ class ScenarioRuntime:
                     await background.doctors(fresh=True)
                     for record in self.emulator.requests:
                         record.source = "background"
+                reminder_actions = None
+                if self.dialog.setup.get("channel") == "outbound":
+                    self.reminder_store = MemoryReminderStore(guard_reader=self.dialogue_store)
+                    client_id = self.client_ids[self.dialog.setup["call"]["client"]]
+                    self.emulator.clients[TOKEN][client_id] = self.emulator.clients[TOKEN][
+                        client_id
+                    ].model_copy(update={"comment": "Прежняя заметка регистратора"})
+                    await self.reminder_store.save_contact(
+                        Contact(client_id=client_id, endpoint=REMINDER_ENDPOINT)
+                    )
+                    calendar = ClinicCalendar(covered=(date(2026, 1, 1), date(2027, 12, 31)))
+                    marks = ReminderMarks(
+                        mis,
+                        self.reminder_store,
+                        self.clock,
+                        owner=REMINDER_OWNER,
+                        require_dialogue_guard=True,
+                    )
+                    self.reminder_dialer = ScenarioDialer(self)
+                    self.reminder_executor = ReminderExecutor(
+                        self.reminder_store,
+                        mis,
+                        calendar,
+                        self.clock,
+                        self.reminder_dialer,
+                        owner=REMINDER_OWNER,
+                        allowed_endpoints={REMINDER_ENDPOINT},
+                        marks=marks,
+                    )
+                    reminder_actions = ReminderActionAdapter(
+                        self.reminder_executor, marks, self.reminder_store, self.clock
+                    )
                 self.service = assemble_dialogue(
                     settings,
                     clock,
@@ -191,7 +242,10 @@ class ScenarioRuntime:
                     self.cancellation_store,
                     self.move_store,
                     b"fictional-scenario-hash-key-longer-than-32",
+                    reminder_actions=reminder_actions,
                 )
+                if self.reminder_dialer is not None:
+                    self.reminder_dialer.executor = self.reminder_executor
                 yield self.service
 
         app = create_app(
@@ -206,9 +260,40 @@ class ScenarioRuntime:
             ) as client:
                 yield client
 
+    async def start_outbound(self):
+        """Use T11 selection/originate path; only the telephone leg is synthetic."""
+        if self.reminder_executor is None:
+            return None
+        await self.reminder_executor.tick()
+        if self.reminder_dialer.context is None:
+            return None
+        self.reminder_attempt_id = self.reminder_dialer.attempt_id
+        return self.outbound_reply
+
     def matches_visit(self, record, reference, field="at"):
         return (
             record["client_id"] == self.client_ids[reference["client"]]
             and record["doctor"]["id"] == self.doctor_ids[reference["doctor"]]
             and record["scheduled_at"] == moment(reference[field]).strftime(STAND_TIME)
+        )
+
+
+class ScenarioDialer:
+    """Synthetic answered phone leg; it never supplies a dialogue reply or outcome."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.executor = None
+        self.context = None
+        self.attempt_id = None
+
+    async def call_out(self, attempt_id, endpoint, context, channel_id):
+        if endpoint != REMINDER_ENDPOINT or not channel_id:
+            raise ValueError("Некорректный вымышленный телефонный канал")
+        self.attempt_id = attempt_id
+        self.context = context
+        if not await self.executor.answered(attempt_id):
+            return
+        self.runtime.outbound_reply = await self.runtime.service.open_outbound(
+            self.runtime.call_id, context
         )

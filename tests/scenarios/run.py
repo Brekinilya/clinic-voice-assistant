@@ -155,6 +155,28 @@ def markdown(document):
             f"{item['requests']['total']} |"
         )
     lines.append("")
+    outbound = [item for item in document["results"] if "outbound" in item.get("evidence", {})]
+    if outbound:
+        lines += [
+            "## Исходящий T11",
+            "",
+            "| Диалог | Исход | Отметка МИС | Подмена внешней части |",
+            "|---|---|---|---|",
+        ]
+        for item in outbound:
+            evidence = item["evidence"]["outbound"]
+            lines.append(
+                f"| {item['label']} | {evidence['outcome']} | {evidence['mis_status']} | "
+                f"{'; '.join(evidence['substitutions'])} |"
+            )
+        lines += [
+            "",
+            "Эти строки исполняются через планировщик T11, адаптер отметок и настоящий диалог. "
+            "Телефонный транспорт, HTTP-стенд и хранилища заменены указанными тестовыми портами.",
+            "SIP/ASR/TTS и PostgreSQL не проверялись. Неподдержанные требования остаются в "
+            "статусе unsupported с причиной в findings.",
+            "",
+        ]
     return "\n".join(lines)
 
 
