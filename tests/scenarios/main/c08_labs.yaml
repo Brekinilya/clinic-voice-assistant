@@ -1,32 +1,32 @@
-id: M-08
-title: Готовность анализов — эталонный диалог
-source: раздел 5, С-08
+﻿id: M-08
+title: Анализы — общие сроки и способы получения
+source: разделы 2.5, 3.8, С-08; уточнение организаторов 15.10.2026 21:10
 blocking: false
-expected: Статусы готовности без значений, способы получения; на вопрос «всё нормально?» — отказ оценивать
+expected: Общий срок без идентификации и лабораторного API, каналы получения, отказ оценивать значения
 covers: [С-08]
 
+# Уточнение организаторов: статусы заказов не обязательны. Прежний диалог
+# требовал вымышленного лабораторного API и сбора ФИО. Основание замены
+# записано в tests/scenarios/README.md; Git хранит исходную версию.
+# Запрет значений и интерпретации сохранён, добавлена проверка общих сроков.
 setup:
   now: "30.09.2026 10:15"
   channel: inbound
-  labs:
-    - {client: orlova_mi, test: Общий анализ крови, ordered: "28.09.2026", status: ready}
-    - {client: orlova_mi, test: Гормоны щитовидной железы, ordered: "28.09.2026", status: pending, ready_on: "02.10.2026"}
 
 steps:
   - say: greeting.inbound
   - patient: Хотела узнать, готовы ли анализы крови.
     intent: I-07
-    say: ident.ask
-  - patient: Орлова Мария Ивановна, четырнадцатое ноября восемьдесят восьмого.
-    parse:
-      expect: full_name
-      slots: {last_name: Орлова, first_name: Мария, middle_name: Ивановна, birth_date: "1988-11-14"}
-    say: [labs.ready, labs.pending, labs.how_to_get]
-  # словарь эту фразу не ловит: медицинский вопрос здесь распознаёт общий разбор
+    say: labs.ask_type
+  - patient: Общий анализ крови
+    say: labs.general_terms
+    forbid: [результат готов, ммоль, повышен, понижен, в норме]
+  - patient: Где получить результаты анализов?
+    say: labs.how_to_get
   - patient: А там всё нормально?
     intent: I-13
     needs_general_parse: true
-    say: labs.no_values
+    say: [labs.no_values, medical.boundary]
     forbid: [в норме, хорош, плох, повышен]
   - patient: Нет, спасибо.
     parse: {expect: yes_no, intent: "no"}

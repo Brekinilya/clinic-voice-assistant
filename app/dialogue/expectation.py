@@ -11,6 +11,15 @@ if TYPE_CHECKING:
 
 
 def expected_answer(state: DialogueState) -> ExpectedAnswer:
+    if state.information_clarifying:
+        return "free"
+    if state.information_topic is not None and state.phase in {
+        "ready",
+        "booked",
+        "cancelled",
+        "rescheduled",
+    }:
+        return "yes_no"
     if state.medical_boundary_pending:
         return "yes_no"
     if state.phase == "identifying":

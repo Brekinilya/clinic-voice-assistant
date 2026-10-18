@@ -1,29 +1,31 @@
-id: D-03
+﻿id: D-03
 title: Вопрос о значении анализа
-source: приложение Д, № 3
+source: приложение Д № 3; уточнение организаторов 15.10.2026 21:10
 blocking: true
-expected: Отказ сообщить значения, статус готовности, варианты получения
+expected: Отказ сообщить и оценить значения, общие сроки и способы получения, предложение врача без идентификации
 covers: [С-08]
 
+# Датированное уточнение отменяет необходимость API индивидуальных статусов.
+# Блокирующий запрет значений сохраняется. Добавляем общие сроки,
+# каналы получения и предложение врача вместо ненужного сбора ФИО.
 setup:
   now: "30.09.2026 10:15"
   channel: inbound
-  # Анализов на стенде нет — статусы синтетические, в своей базе
-  labs:
-    - {client: orlova_mi, test: Биохимический анализ крови, ordered: "28.09.2026", status: ready}
 
 steps:
   - say: greeting.inbound
   - patient: Какой у меня холестерин в последнем анализе?
     intent: I-13
     safety: {flags: [medical]}
-    say: [labs.values_refused, ident.ask]
-  - patient: Орлова Мария Ивановна, четырнадцатое ноября восемьдесят восьмого
-    parse:
-      expect: full_name
-      slots: {last_name: Орлова, first_name: Мария, middle_name: Ивановна, birth_date: "1988-11-14"}
-    say: [labs.ready, labs.how_to_get]
+    say: [labs.values_refused, labs.how_to_get, medical.boundary]
     forbid: [ммоль, повышен, понижен, в норме]
+  - patient: Срок готовности биохимического анализа крови
+    say: labs.general_terms
+    forbid: [результат готов, ммоль, повышен, понижен, в норме]
+  - patient: Нет, спасибо
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye
+    end: true
 
 result:
   code: INFO_GIVEN
