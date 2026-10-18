@@ -55,9 +55,19 @@ async def test_asr_exception_has_a_bounded_failure_route():
     )
     try:
         await answered(call)
+        # Первый сбой — один переспрос с таймером тишины, не непонимание пациента
         await call.feed(phrase(10))
-        await until(lambda: call.closing, timeout=0.6)
+        await until(lambda: len(channel.said()) > 1, timeout=0.6)
+        assert "не удалось разобрать" in channel.said()[-1]
+        assert not call.closing and call._misunderstandings == 0
+        assert call._watch is not None and not call._watch.done()
+        await until(lambda: not call.speaking())
+        # Второй подряд — технический выход R-06, а не бесконечное «повторите»
+        await call.feed(phrase(10))
+        await until(lambda: channel.of("end"), timeout=1)
         assert channel.of("transcript")[-1]["status"] == "failed"
+        assert channel.of("end")[-1]["route"] == "R-06"
+        assert channel.of("end")[-1]["cause"] == "asr_failed"
         assert not call.dialogue.turns
     finally:
         await call.close()

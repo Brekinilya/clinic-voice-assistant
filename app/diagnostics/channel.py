@@ -17,7 +17,8 @@ class ObservedChannel:
             "speak": ("text", "sample_rate"),
             "stop": (),
             "timing": ("asr_ms", "dialog_ms", "tts_ms", "total_ms", "since_speech_ms"),
-            "end": ("reason", "route", "priority"),
+            "end": ("reason", "route", "priority", "cause"),
+            "question": ("kind",),
         }
         if kind in fields:
             self.recorder.emit(
