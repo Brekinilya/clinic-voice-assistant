@@ -11,6 +11,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.mis.models import (
+    COMMENT_LIMIT,
     Client,
     Doctor,
     Visit,
@@ -132,6 +133,30 @@ class MisEmulator:
                     if item_id not in items:
                         return self.error(404)
                     return httpx.Response(200, json=items[item_id].model_dump(mode="json"))
+                if len(path) == 2 and path[0] == "clients" and request.method == "PATCH":
+                    item_id = int(path[1])
+                    if item_id not in self.clients[token]:
+                        return self.error(404)
+                    payload = json.loads(request.content)
+                    # Как стенд: ФИО и дата рождения — ключ пациента, их не меняют
+                    if not payload or set(payload) - {"middle_name", "comment"}:
+                        return self.error(400)
+                    comment = payload.get("comment", self.clients[token][item_id].comment)
+                    if comment is not None and (
+                        not isinstance(comment, str) or len(comment) > COMMENT_LIMIT
+                    ):
+                        return self.error(400)
+                    client = self.clients[token][item_id].model_copy(
+                        update={k: v for k, v in payload.items() if k in ("middle_name", "comment")}
+                    )
+                    self.clients[token][item_id] = client
+                    self.patch_count += 1
+                    failure, self.next_failure = self.next_failure, None
+                    if failure == "lost_response":
+                        raise httpx.ReadTimeout("ответ потерян", request=request)
+                    if failure == "server_error":
+                        return self.error(500)
+                    return httpx.Response(200, json=client.model_dump(mode="json"))
                 if len(path) == 2 and path[0] == "visits" and request.method == "PATCH":
                     item_id = int(path[1])
                     if item_id not in self.records[token]:

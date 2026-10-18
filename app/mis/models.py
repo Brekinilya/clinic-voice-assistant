@@ -121,6 +121,23 @@ class VisitCreate(MisModel):
     scheduled_at: MisDateTime
 
 
+COMMENT_LIMIT = 1000
+
+
+class ClientComment(MisModel):
+    """Тело PATCH /clients/{id}: комментарий заменяется целиком, null его стирает."""
+
+    comment: str = Field(max_length=COMMENT_LIMIT, repr=False)
+
+    def body(self) -> dict:
+        if any(
+            ord(c) <= 8 or c in "" or 14 <= ord(c) <= 31 or 127 <= ord(c) <= 159
+            for c in self.comment
+        ):
+            raise ValueError("комментарий содержит управляющие символы")
+        return {"comment": self.comment}
+
+
 class VisitChange(MisModel):
     doctor_id: MisId | None = None
     scheduled_at: MisDateTime | None = None
