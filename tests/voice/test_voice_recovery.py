@@ -299,8 +299,12 @@ async def test_hangup_while_dialogue_works_discards_late_reply_and_closes_once()
 
 async def test_hangup_during_synthesis_sends_no_audio_afterwards():
     class SlowSynthesizer(Synthesizer):
+        started = False
+
         def synthesize(self, speech):
             if speech.startswith("Долгий"):
+                # Отмечаем начало до задержки: отбой должен прийти, пока синтез идёт
+                self.started = True
                 time.sleep(0.2)
             return super().synthesize(speech)
 
@@ -309,7 +313,7 @@ async def test_hangup_during_synthesis_sends_no_audio_afterwards():
     call, channel = session(dialogue, Recognizer({7: "Запишите"}), synthesizer, partial_ms=5000)
     await answered(call)
     await call.feed(phrase(7))
-    await until(lambda: any(s.startswith("Долгий") for s in synthesizer.spoken))
+    await until(lambda: synthesizer.started)
     audio = len(channel.audio)
     await call.close()
     await asyncio.sleep(0.3)
