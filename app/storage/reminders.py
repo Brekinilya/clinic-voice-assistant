@@ -78,6 +78,15 @@ class PostgresReminderStore:
             )
             return [_job(row) for row in rows]
 
+    async def list_jobs(self, call_day=None, state=None, limit=50):
+        query = select(jobs).order_by(jobs.c.scheduled_at, jobs.c.visit_id).limit(limit)
+        if call_day is not None:
+            query = query.where(jobs.c.call_day == call_day)
+        if state is not None:
+            query = query.where(jobs.c.state == state)
+        async with self.engine.connect() as connection:
+            return [_job(row) for row in await connection.execute(query)]
+
     async def claim(self, job_id, owner, now, lease):
         try:
             async with self.engine.begin() as connection:

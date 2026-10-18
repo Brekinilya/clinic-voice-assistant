@@ -49,6 +49,14 @@ class MemoryReminderStore:
         ]
         return sorted(ready, key=lambda j: (j.next_at, j.scheduled_at))[:limit]
 
+    async def list_jobs(self, call_day=None, state=None, limit=50) -> list[ReminderJob]:
+        items = [
+            j
+            for j in self.jobs.values()
+            if (call_day is None or j.call_day == call_day) and (state is None or j.state == state)
+        ]
+        return sorted(items, key=lambda j: (j.scheduled_at, j.visit_id))[:limit]
+
     async def claim(
         self, job_id: str, owner: str, now: datetime, lease: timedelta
     ) -> ReminderAttempt | None:
