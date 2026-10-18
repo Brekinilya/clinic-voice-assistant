@@ -6,6 +6,7 @@ from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
 from app.cancellation.service import CancellationService
+from app.diagnostics.recorder import emit
 from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
@@ -249,6 +250,7 @@ class BookingConversation:
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
+        emit("nlu.parsed", **result.model_dump(mode="json", exclude={"call_id", "turn_id"}))
         decision = self.safety.evaluate(state.call_id, turn, result.flags)
         transfer = route_for(decision)
         if transfer:

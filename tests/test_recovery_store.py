@@ -1,4 +1,4 @@
-"""Миграция 6→7 сохраняет операцию; очередь и старые владельцы проверены в БД."""
+"""Миграция с версии 6 сохраняет операцию; очередь и старые владельцы проверены в БД."""
 
 import asyncio
 from datetime import timedelta
@@ -11,7 +11,7 @@ from app.demo import DemoClock, DemoSchedule
 from app.recovery.models import Outcome, OwnershipLost
 from app.storage.booking import PostgresBookingStore, migrate
 from app.storage.recovery import PostgresRecoveryStore
-from app.storage.schema import recovery_operations, schema_versions
+from app.storage.schema import SCHEMA_VERSION, recovery_operations, schema_versions
 
 
 @pytest.mark.postgres
@@ -39,7 +39,9 @@ async def test_migration_from_six_keeps_unknown_operation_and_backfills_once(pg_
     assert await queue.seed(clock.now()) == 1
     assert await queue.seed(clock.now()) == 0
     async with pg_blank_engine.connect() as connection:
-        assert (await connection.execute(select(schema_versions.c.version))).scalar_one() == 7
+        assert (
+            await connection.execute(select(schema_versions.c.version))
+        ).scalar_one() == SCHEMA_VERSION
         assert len((await connection.execute(select(recovery_operations))).all()) == 1
 
 

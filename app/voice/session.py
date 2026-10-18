@@ -3,7 +3,7 @@
 Каждая фраза пациента — новая реплика с номером turn_id. Заговорил во время ответа — синтез
 останавливается, очередь звука у клиента сбрасывается, номер растёт (перебивание). Промежуточная
 расшифровка уходит в диалог с is_final=False: на красный флаг ассистент отвечает, не дожидаясь
-конца фразы. Звук и текст разговора шлюз не сохраняет и не пишет в журнал.
+конца фразы. Звук не сохраняется; тексты доступны только в явно включённой диагностике.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Protocol
 
+from app.diagnostics.channel import ObservedChannel
 from app.dialogue.models import Turn
 from app.nlu.parsers.answers import parse_answer
 from app.voice.audibility import audibility_answer
@@ -93,7 +94,8 @@ class CallSession:
         wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self.call_id = call_id
-        self.channel = channel
+        debug = getattr(dialogue, "debug", None)
+        self.channel = ObservedChannel(channel, debug, call_id) if debug is not None else channel
         self.dialogue = dialogue
         self.vad = vad
         self.recognizer = recognizer
@@ -183,6 +185,8 @@ class CallSession:
         return self.now() < self._playback_end + PLAYBACK_MARGIN_S
 
     async def close(self) -> None:
+        if not self.ended and getattr(self.dialogue, "debug", None) is not None:
+            self.dialogue.debug.emit(self.call_id, None, "voice.closed", reason="channel_closed")
         self.ended = True
         self.finished.set()
         cancelled = []

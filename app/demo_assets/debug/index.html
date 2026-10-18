@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Диагностика звонков · Регистратура</title><link rel="stylesheet" href="/debug/panel.css">
+<script defer src="/debug/panel.js"></script></head>
+<body>
+<header><a href="/chat" class="brand">Регистратура<span>Панель команды</span></a><span id="connection" role="status">Подключаем журнал…</span></header>
+<div class="layout"><aside><div class="side-title"><h1>Звонки</h1><button id="refresh" title="Обновить список">↻</button></div>
+<p class="muted">События за последний час</p><nav id="calls" aria-label="Последние звонки"></nav>
+<p class="help">Позвоните на <b>021</b> и выберите звонок в списке. Здесь также видны разговоры в текстовом чате.</p>
+</aside>
+<main><div class="heading"><div><p class="eyebrow">ЧТО ПРОИСХОДИТ В РАЗГОВОРЕ</p><h2 id="title">Выберите звонок</h2><p id="subtitle" class="muted">Распознавание → понимание → сценарий → МИС → ответ</p></div>
+<label class="follow"><input id="follow" type="checkbox" checked> Следить за новыми событиями</label></div>
+<div id="notice" class="notice">Текст ASR показывает результат распознавания, а не точную запись слов человека. Отправка реплики на синтез не доказывает, что её услышали в гарнитуре.</div>
+<div id="stats" class="stats"></div><div id="timeline" aria-live="polite"><div class="empty">Здесь появится история выбранного звонка.<br>Она поможет отличить ошибку распознавания от ошибки сценария.</div></div>
+<footer>Журнал только для наблюдения. Просмотр не расходует лимит МИС и не меняет записи пациентов. Аудио не сохраняется.</footer>
+</main></div></body></html>
