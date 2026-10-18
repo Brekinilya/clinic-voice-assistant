@@ -8,11 +8,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.access import TeamAccess
+from app.api.debug import router as debug_router
 from app.api.demo import chat_router
 from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
 from app.api.health import router as health_router
 from app.bootstrap import build_runtime
+from app.diagnostics.bootstrap import open_diagnostics
 from app.dialogue.bootstrap import open_dialogue_backend
 from app.dialogue.service import DialogueService
 from app.ports import Clock, Database
@@ -43,6 +45,9 @@ def create_app(
                     application.state.dialogue = await resources.enter_async_context(
                         factory(selected_settings, runtime.clock)
                     )
+                    application.state.diagnostics = await resources.enter_async_context(
+                        open_diagnostics(selected_settings, application.state.dialogue)
+                    )
                 yield
         finally:
             try:
@@ -51,6 +56,8 @@ def create_app(
                 del application.state.runtime
                 if hasattr(application.state, "dialogue"):
                     del application.state.dialogue
+                if hasattr(application.state, "diagnostics"):
+                    del application.state.diagnostics
 
     application = FastAPI(
         title="Голосовой ассистент регистратуры",
@@ -59,6 +66,8 @@ def create_app(
         lifespan=lifespan,
     )
     application.include_router(health_router)
+    if selected_settings.debug_panel_enabled:
+        application.include_router(debug_router)
     if selected_settings.web_access_enabled:
         application.add_middleware(
             TeamAccess,

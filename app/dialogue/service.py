@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from app.booking.models import ActionState, BookingError
 from app.booking.service import BookingService
+from app.diagnostics.recorder import emit, observe, opt_out
 from app.dialogue.failures import mis_failure
 from app.dialogue.input import CommandInterpreter, InputInterpreter, Operation
 from app.dialogue.models import (
@@ -50,6 +51,7 @@ class DialogueService:
         self.conversation = conversation
         self.mis_turn_wait_s = mis_turn_wait_s
         self.mis_wait_limit_s = mis_wait_limit_s
+        self.debug = None
 
     def _digest(self, call_id: str, turn: Turn) -> str:
         # ФИО и дата рождения не сохраняются в журнале команд даже в виде обычного SHA256.
@@ -60,6 +62,17 @@ class DialogueService:
         ).hexdigest()
 
     async def handle(self, call_id: str, turn: Turn) -> Reply:
+        with observe(self.debug, call_id, turn.turn_id):
+            emit("dialogue.input", text=turn.text, final=turn.is_final)
+            result = await self._handle(call_id, turn)
+            if self.debug is not None:
+                emit(
+                    "dialogue.reply",
+                    **result.model_dump(mode="json", exclude={"call_id", "turn_id"}),
+                )
+            return result
+
+    async def _handle(self, call_id: str, turn: Turn) -> Reply:
         digest = self._digest(call_id, turn)
         if self.safety is not None:
             current = await self.store.observe(call_id, turn.turn_id, digest)
@@ -77,6 +90,13 @@ class DialogueService:
                     ):
                         raise ValueError("решение safety не соответствует реплике")
                     transfer = route_for(decision)
+                    if "no_recording" in decision.flags:
+                        opt_out()
+                    if self.debug is not None:
+                        emit(
+                            "safety.checked",
+                            **decision.model_dump(mode="json", exclude={"call_id", "turn_id"}),
+                        )
                 except Exception:
                     # При неисправном проверяющем компоненте запрещаем дальнейшие действия.
                     current = await self.store.preempt(
@@ -118,7 +138,8 @@ class DialogueService:
             with self._mis_demand(call_id, state, granted.append):
                 state, result = await self._process(state, turn)
             state, result = await self._settle_wait(state, turn, result, progressed=bool(granted))
-        except Exception:
+        except Exception as error:
+            emit("dialogue.error", error=type(error).__name__)
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
             await self._release_call(call_id)
             self.booking.clear_call_cache(call_id)
@@ -210,6 +231,10 @@ class DialogueService:
     async def input_started(self, call_id: str, turn_id: int) -> Reply:
         event = InputStart(turn_id=turn_id)
         state = await self.store.start_input(call_id, event.turn_id)
+        if self.debug is not None:
+            self.debug.emit(
+                call_id, turn_id, "dialogue.input_started", input_epoch=state.input_epoch
+            )
         if state.phase == Phase.HANDOFF:
             return handoff_reply(state, event.turn_id)
         return reply(
@@ -230,6 +255,8 @@ class DialogueService:
         # Повтор end снова пытается снять оставшиеся брони, если прежняя попытка прервалась.
         await self._release_call(call_id)
         self.booking.clear_call_cache(call_id)
+        if self.debug is not None:
+            self.debug.emit(call_id, None, "dialogue.ended", phase=state.phase)
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
 
     async def _release_call(self, call_id: str) -> None:
@@ -239,6 +266,14 @@ class DialogueService:
             await self.booking.store.release_call_holds(call_id)
 
     async def _process(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
+        emit(
+            "dialogue.state",
+            phase=state.phase,
+            purpose=state.purpose,
+            input_epoch=state.input_epoch,
+            version=state.version,
+            misunderstandings=state.misunderstandings,
+        )
         command = (
             None if self.conversation is not None else await self.interpreter.interpret(state, turn)
         )

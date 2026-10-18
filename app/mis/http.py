@@ -17,6 +17,7 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.diagnostics.recorder import trace_mis_request
 from app.mis.budget import current_demand, immediate
 from app.mis.models import (
     Client,
@@ -164,7 +165,10 @@ class HttpMedicalSystem:
                     # Не вернули место — окно просто будет считать его занятым до истечения.
                     pass
 
+    @trace_mis_request
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        from app.diagnostics.recorder import emit, resource_path
+
         write = method != "GET"
         retried = False
         while True:
@@ -191,7 +195,9 @@ class HttpMedicalSystem:
                     from app.recovery.ownership import before_mutation
 
                     await before_mutation()
+                emit("mis.sent", method=method, resource=resource_path(path))
                 response = await self._client.request(method, path, **kwargs)
+                emit("mis.response", status=response.status_code)
             except httpx.TransportError:
                 error = MisOutcomeUnknown if write else MisUnavailable
                 raise error("TRANSPORT_FAILURE") from None
@@ -222,6 +228,13 @@ class HttpMedicalSystem:
         try:
             return model.model_validate(response.json())
         except (ValidationError, ValueError):
+            from app.diagnostics.recorder import emit
+
+            emit(
+                "mis.error",
+                code="INVALID_RESPONSE",
+                error="MisOutcomeUnknown" if write else "MisUnavailable",
+            )
             error = MisOutcomeUnknown if write else MisUnavailable
             raise error("INVALID_RESPONSE") from None
 

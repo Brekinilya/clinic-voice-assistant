@@ -1,6 +1,7 @@
-"""Единая схема backend; версия 7 добавляет журнал восстановления операций."""
+"""Единая схема backend; версия 8 добавляет зашифрованный журнал диагностики."""
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
@@ -10,12 +11,27 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
+debug_events = Table(
+    "backend_debug_events",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("call_id", String(128), nullable=False),
+    Column("turn_id", Integer),
+    Column("kind", String(64), nullable=False),
+    Column("producer", String(12), nullable=False),
+    Column("source", String(8), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("payload", Text, nullable=False),
+)
+Index("backend_debug_call", debug_events.c.call_id, debug_events.c.id)
+Index("backend_debug_expiry", debug_events.c.created_at)
 recovery_operations = Table(
     "backend_recovery_operations",
     metadata,
