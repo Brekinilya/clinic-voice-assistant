@@ -14,7 +14,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 import httpx
 from pydantic import AliasChoices, Field, SecretStr
@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 SILENCE_GAP_S = 0.1
 # Раздел 7.5: сколько ждать ответа регистратора по приоритету перевода
 OPERATOR_TIMEOUT_S = {"P1": 20, "P2": 30, "P3": 90}
+# Сколько ждать ответа пациента на исходящее напоминание
+OUTBOUND_RING_S = 30
 # Причины Q.850, при которых регистратор был досягаем, но не взял трубку
 NOT_ANSWERED = {16, 17, 18, 19, 21}
 
@@ -86,6 +88,7 @@ class Ari:
 
     def __init__(self, settings: TelephonySettings, http: httpx.AsyncClient | None = None):
         self.settings = settings
+        self.connected = asyncio.Event()
         auth = (settings.ari_user, settings.ari_password.get_secret_value())
         self.http = http or httpx.AsyncClient(
             base_url=f"{settings.ari_url.rstrip('/')}/ari/", auth=auth, timeout=5
@@ -140,7 +143,11 @@ class Ari:
             port = (variable or {}).get("value")
         return channel["id"], int(port) if port else None
 
-    async def originate(self, endpoint: str, args: list[str], timeout: int) -> str:
+    async def originate(
+        self, endpoint: str, args: list[str], timeout: int, channel_id: str | None = None
+    ) -> str:
+        # Свой channelId: после сбоя процесса звонок можно найти в АТС по попытке
+        extra = {"channelId": channel_id} if channel_id else {}
         channel = await self._call(
             "POST",
             "channels",
@@ -148,6 +155,7 @@ class Ari:
             app=self.settings.app,
             appArgs=",".join(args),
             timeout=timeout,
+            **extra,
         )
         return channel["id"]
 
@@ -161,8 +169,12 @@ class Ari:
             f"{url}/ari/events?app={self.settings.app}",
             additional_headers={"Authorization": header},
         ) as socket:
-            async for message in socket:
-                yield json.loads(message)
+            self.connected.set()
+            try:
+                async for message in socket:
+                    yield json.loads(message)
+            finally:
+                self.connected.clear()
 
     async def aclose(self) -> None:
         await self.http.aclose()
@@ -215,6 +227,31 @@ class PhoneChannel:
 
 
 SessionFactory = Callable[[str, PhoneChannel], object]
+# Исходящий звонок: контекст напоминания, признак автоответчика и куда сообщить исход разговора
+OutboundFactory = Callable[[str, PhoneChannel, object, bool, Callable], object]
+
+
+class OutboundEvents(Protocol):
+    """Исполнитель напоминаний: ему шлюз сообщает ответ абонента и исход попытки."""
+
+    async def answered(self, attempt_id: str) -> None: ...
+    async def finished(
+        self,
+        attempt_id: str,
+        result: str,
+        reason: str | None = None,
+        mis_status: str | None = None,
+    ) -> bool: ...
+
+
+@dataclass
+class Outgoing:
+    attempt_id: str
+    context: object
+    channel: str | None = None
+    answered: bool = False
+
+
 TransferSink = Callable[[TransferResult], Awaitable[None] | None]
 # Реплика по шаблону: PCM и его частота
 Say = Callable[[str], Awaitable[tuple[bytes, int]]]
@@ -229,9 +266,16 @@ class Telephony:
         say: Say,
         resample: Callable[[bytes, int, int], bytes],
         on_transfer: TransferSink | None = None,
+        outbound: OutboundFactory | None = None,
+        reminders: OutboundEvents | None = None,
     ):
         self.ari = ari
         self.on_transfer = on_transfer
+        self.outbound = outbound
+        self.reminders = reminders
+        # Исходящие вызовы по номеру попытки и по каналу
+        self._outgoing: dict[str, Outgoing] = {}
+        self._outgoing_channels: dict[str, Outgoing] = {}
         self.settings = settings
         self.sessions = sessions
         self.say = say
@@ -273,9 +317,68 @@ class Telephony:
             if call is not None:
                 await self._operator_answered(call, channel)
             return
+        if args[:1] == ["outbound"]:
+            await self._outbound_answered(channel, args[1:])
+            return
         await self._incoming(channel)
 
-    async def _incoming(self, caller: str) -> None:
+    async def call_out(
+        self, attempt_id: str, endpoint: str, context: object, channel_id: str | None = None
+    ) -> None:
+        """Исходящее напоминание. Исход придёт исполнителю через reminders."""
+        from app.reminders.ports import DialRejected
+
+        if self.outbound is None or self.reminders is None:
+            raise DialRejected()
+        outgoing = Outgoing(attempt_id, context)
+        outgoing.channel = channel_id
+        self._outgoing[attempt_id] = outgoing
+        if channel_id:
+            self._outgoing_channels[channel_id] = outgoing
+        try:
+            outgoing.channel = await self.ari.originate(
+                endpoint, ["outbound", attempt_id], OUTBOUND_RING_S, channel_id
+            )
+        except AriError as error:
+            # Только явный отказ 4xx означает, что звонка точно не было.
+            # 5xx/потерянный ответ оставляют попытку dialing до unknown/manual.
+            if any(str(error).endswith(": " + str(code)) for code in (400, 401, 403, 404, 422)):
+                self._outgoing.pop(attempt_id, None)
+                if channel_id:
+                    self._outgoing_channels.pop(channel_id, None)
+                raise DialRejected() from None
+            raise
+        self._outgoing_channels[outgoing.channel] = outgoing
+
+    async def _outbound_answered(self, channel: str, args: list[str]) -> None:
+        outgoing = self._outgoing.get(args[0]) if args else None
+        if outgoing is None or outgoing.answered or channel in self.calls:
+            # Чужой или повторный StasisStart: звонок не наш
+            await self.ari.hangup(channel)
+            return
+        outgoing.answered = True
+        outgoing.channel = channel
+        self._outgoing_channels[channel] = outgoing
+        if await self.reminders.answered(outgoing.attempt_id) is False:
+            await self.ari.hangup(channel)
+            return
+        # Asterisk кладёт результат AMD() третьим аргументом, если dialplan его запускал
+        machine = args[1:2] == ["MACHINE"]
+
+        async def done(outcome: str | None, mis_status: str | None = None) -> None:
+            await self.reminders.finished(
+                outgoing.attempt_id, outcome or "INCOMPLETE", None, mis_status
+            )
+
+        await self._incoming(
+            channel,
+            lambda call_id, phone: self.outbound(call_id, phone, outgoing.context, machine, done),
+            answer=False,
+        )
+
+    async def _incoming(
+        self, caller: str, sessions: SessionFactory | None = None, answer: bool = True
+    ) -> None:
         if not self._ports:
             log.error("нет свободных портов RTP")
             await self.ari.hangup(caller)
@@ -290,7 +393,8 @@ class Telephony:
         call.rtp = await open_endpoint(
             call.port, lambda pcm: audio.put_nowait(upsample(pcm)), codec, self.settings.media_bind
         )
-        await self.ari.answer(caller)
+        if answer:
+            await self.ari.answer(caller)
         call.media, rtp_port = await self.ari.external_media(
             f"{self.settings.media_host}:{call.port}"
         )
@@ -300,7 +404,7 @@ class Telephony:
         call.bridge = await self.ari.bridge()
         await self.ari.add(call.bridge, caller, call.media)
 
-        call.session = self.sessions(caller, PhoneChannel(self, call))
+        call.session = (sessions or self.sessions)(caller, PhoneChannel(self, call))
 
         async def listen() -> None:
             # Пока пациент молчит, Asterisk может не слать RTP совсем. Без кадров тишины шлюз
@@ -397,6 +501,16 @@ class Telephony:
         await self.ari.hangup(call.caller)
 
     async def _gone(self, channel: str, cause: int | None = None) -> None:
+        outgoing = self._outgoing_channels.pop(channel, None)
+        if outgoing is not None:
+            self._outgoing.pop(outgoing.attempt_id, None)
+            if not outgoing.answered:
+                # Не взяли трубку или не дозвонились: разговора не было
+                result = "NO_ANSWER" if cause is None or cause in NOT_ANSWERED else "FAILED"
+                await self.reminders.finished(
+                    outgoing.attempt_id, result, f"q850_{cause}" if cause else None
+                )
+                return
         if channel in self._operators:
             call = self._operators.pop(channel)
             if call.connected:

@@ -34,8 +34,11 @@ class SocketChannel:
             await self.socket.send_bytes(data)
 
 
-def open_session(state, call_id: str, channel) -> CallSession:
-    """Звонок шлюза на моделях и диалоге приложения: из браузера и из телефонии одинаково."""
+def open_session(state, call_id: str, channel, **outbound) -> CallSession:
+    """Звонок шлюза на моделях и диалоге приложения: из браузера и из телефонии одинаково.
+
+    outbound — исходящее напоминание: контекст, признак автоответчика и приёмник исхода.
+    """
     runtime = getattr(state, "runtime", None)
     clock = getattr(runtime, "clock", None) or ClinicClock()
     engines = state.voice
@@ -49,6 +52,7 @@ def open_session(state, call_id: str, channel) -> CallSession:
         today=lambda: clock.now().date(),
         settings=getattr(state, "voice_settings", None),
         runtime=getattr(state, "voice_runtime", None),
+        **outbound,
     )
 
 

@@ -153,11 +153,78 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         say=say,
         resample=resample,
         on_transfer=transfer_result,
+        outbound=lambda call_id, channel, context, machine, done: open_session(
+            app.state,
+            call_id,
+            channel,
+            outbound=context,
+            machine=machine,
+            on_outcome=done,
+        ),
     )
+    from app.reminders.settings import ReminderSettings
+
+    reminders = ReminderSettings()
+    worker = None
+    if reminders.enabled:
+        from uuid import uuid4
+
+        from app.dialogue.reminder import ReminderConversation
+        from app.reminders.calendar import ClinicCalendar
+        from app.reminders.dialogue_adapter import ReminderActionAdapter
+        from app.reminders.executor import ReminderExecutor
+        from app.reminders.marks import ReminderMarks
+        from app.storage.dialogue import PostgresDialogueStore
+        from app.storage.reminders import PostgresReminderStore
+
+        service = app.state.dialogue
+        if not isinstance(service.store, PostgresDialogueStore) or service.conversation is None:
+            await ari.aclose()
+            raise RuntimeError("для обзвона нужны PostgreSQL и настоящий диалог")
+        clock = service.booking.clock
+        store = PostgresReminderStore(service.store.engine)
+        owner = "voice-" + uuid4().hex
+        marks = ReminderMarks(
+            service.booking.mis, store, clock, owner=owner, require_dialogue_guard=True
+        )
+        executor = ReminderExecutor(
+            store,
+            service.booking.mis,
+            ClinicCalendar.load(),
+            clock,
+            line,
+            owner=owner,
+            allowed_endpoints=reminders.allowed_endpoints,
+            marks=marks,
+        )
+        service.reminders = ReminderConversation(
+            service.conversation, ReminderActionAdapter(executor, marks, store, clock)
+        )
+        line.reminders = executor
+        app.state.reminder_executor = executor
+
+        async def run_reminders():
+            import logging
+
+            while True:
+                try:
+                    # Входящий разговор не прерываем ради фонового обзвона.
+                    if ari.connected.is_set() and (executor.active is not None or not line.calls):
+                        await executor.tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logging.getLogger(__name__).error("ошибка фонового обзвона", exc_info=False)
+                await asyncio.sleep(15)
+
+        worker = asyncio.create_task(run_reminders())
     listener = asyncio.create_task(line.run())
     try:
         yield
     finally:
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
         listener.cancel()
         await line.close()
         await ari.aclose()
