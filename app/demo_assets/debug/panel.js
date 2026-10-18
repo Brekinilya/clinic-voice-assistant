@@ -17,6 +17,18 @@ const answer = {
 }
 ;
 let selected = null, cursor = 0, all = [], busy = false, generation = 0, lastTurn = null;
+const questions = {
+  goal:"Что нужно сделать",
+  patient_identity:"ФИО и дата рождения",birth_date:"Дата рождения",
+  slot_choice:"Выбор времени",visit_choice:"Выбор существующей записи",
+  booking_confirmation:"Подтверждение записи",cancellation_confirmation:"Подтверждение отмены",
+  move_confirmation:"Подтверждение переноса",move_finish_confirmation:"Завершение переноса",
+  cancel_or_move:"Перенести или отменить",move_source:"Исходная запись для переноса",
+  new_booking:"Нужна ли новая запись",visit_owner:"Пациент звонит о своих записях",
+  visit_next_page:"Следующая страница записей",more_help:"Нужна ли ещё помощь",
+  information_details:"Уточнение справочного вопроса",medical_booking:"Предложение терапевта",
+  specialty:"Выбор специальности",preferences:"День и время"
+};
 const node = (tag, cls, text) => {
   const n=document.createElement(tag);
   if(cls)n.className=cls;
@@ -102,6 +114,7 @@ function describe(e){
     body=(d.utterances||[]).join("\n");
     cls="assistant";
     chips=[phases[d.phase]||d.phase,"ожидаем: "+(answer[d.expect]||d.expect)];
+    if(d.question)body+="\nАктивный вопрос: "+(questions[d.question.key]||d.question.key);
     if(d.code)chips.push(d.code);
     if(d.visit_id)chips.push("запись МИС №"+d.visit_id);
     if(d.retry_at)body+="\nПовторное обращение возможно: "+time(d.retry_at);

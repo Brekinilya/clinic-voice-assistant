@@ -9,7 +9,7 @@ from app.booking.models import BookingModel, Slot
 from app.booking.preferences import SlotPreferences
 from app.cancellation.models import CancelProposal
 from app.contracts import ExpectedAnswer
-from app.dialogue.expectation import expected_answer
+from app.dialogue.expectation import ActiveQuestion, active_question, expected_answer
 from app.mis.models import MisId
 from app.rescheduling.models import MoveProposal
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
@@ -147,6 +147,8 @@ class Reply(BookingModel):
     kind: Literal["reply", "processing", "partial"] = "reply"
     utterances: tuple[str, ...]
     expect: ExpectedAnswer = "free"
+    # Вычисляется из состояния; старые квитанции без поля остаются читаемыми.
+    question: ActiveQuestion | None = None
     options: tuple[Slot, ...] = Field(default=(), max_length=3)
     proposal: Proposal | None = None
     code: str | None = None
@@ -183,6 +185,7 @@ def reply(
         phase=state.phase,
         utterances=phrases,
         expect=expected_answer(state),
+        question=active_question(state),
         options=state.options,
         proposal=state.proposal,
         retry_at=state.retry_at,

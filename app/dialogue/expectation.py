@@ -4,38 +4,87 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, ConfigDict
+
 from app.contracts import ExpectedAnswer
 
 if TYPE_CHECKING:
     from app.dialogue.models import DialogueState
 
 
-def expected_answer(state: DialogueState) -> ExpectedAnswer:
+class ActiveQuestion(BaseModel):
+    """Смысл вопроса из состояния. Метаданные не заменяют разрешение домена."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    key: str
+    expect: ExpectedAnswer
+    proposal_id: str | None = None
+    proposal_revision: int | None = None
+    option_ids: tuple[str, ...] = ()
+
+
+def active_question(state: DialogueState) -> ActiveQuestion | None:
+    """Одна проекция для NLU, ответа и диагностики, без чтения МИС и ПДн."""
     if state.information_clarifying:
-        return "free"
+        return ActiveQuestion(key="information_details", expect="free")
     if state.information_topic is not None and state.phase in {
         "ready",
         "booked",
         "cancelled",
         "rescheduled",
     }:
-        return "yes_no"
+        return ActiveQuestion(key="more_help", expect="yes_no")
     if state.medical_boundary_pending:
-        return "yes_no"
+        return ActiveQuestion(key="medical_booking", expect="yes_no")
     if state.phase == "identifying":
-        return "birth_date" if state.identity_draft else "full_name"
-    if state.phase in {"offered", "cancel_choosing", "move_choosing", "move_offered"}:
-        return "choice"
-    if state.phase in {
-        "held",
-        "booked",
-        "verifying_owner",
-        "visits_shown",
-        "cancel_confirm",
-        "move_source",
-        "move_empty",
-        "move_confirm",
-        "move_finish_confirm",
-    }:
-        return "yes_no"
-    return "free"
+        return ActiveQuestion(
+            key="birth_date" if state.identity_draft else "patient_identity",
+            expect="birth_date" if state.identity_draft else "full_name",
+        )
+    if state.phase in {"offered", "move_offered"}:
+        return ActiveQuestion(
+            key="slot_choice",
+            expect="choice",
+            option_ids=tuple(
+                f"slot-{slot.doctor_id}-{slot.scheduled_at:%Y%m%d%H%M}" for slot in state.options
+            ),
+        )
+    if state.phase in {"cancel_choosing", "move_choosing"}:
+        return ActiveQuestion(
+            key="visit_choice",
+            expect="choice",
+            option_ids=tuple(f"visit-{item.visit_id}" for item in state.visit_items),
+        )
+    confirmations = {
+        "held": ("booking_confirmation", state.proposal),
+        "cancel_confirm": ("cancellation_confirmation", state.cancel_proposal),
+        "move_confirm": ("move_confirmation", state.move_proposal),
+        "move_finish_confirm": ("move_finish_confirmation", state.move_proposal),
+    }
+    if state.phase in confirmations:
+        key, proposal = confirmations[state.phase]
+        return ActiveQuestion(
+            key=key,
+            expect="yes_no",
+            proposal_id=proposal.action_id if proposal else None,
+            proposal_revision=proposal.revision if proposal else None,
+        )
+    questions = {
+        "ready": ("goal", "free"),
+        "identified": ("preferences" if state.specialty else "specialty", "free"),
+        "booked": ("more_help", "yes_no"),
+        "verifying_owner": ("visit_owner", "yes_no"),
+        "visits_shown": ("visit_next_page" if state.visit_has_more else "more_help", "yes_no"),
+        "cancel_offer": ("cancel_or_move", "free"),
+        "move_source": ("move_source", "yes_no"),
+        "move_empty": ("new_booking", "yes_no"),
+    }
+    if state.phase in questions:
+        key, expect = questions[state.phase]
+        return ActiveQuestion(key=key, expect=expect)
+    return None
+
+
+def expected_answer(state: DialogueState) -> ExpectedAnswer:
+    question = active_question(state)
+    return question.expect if question else "free"

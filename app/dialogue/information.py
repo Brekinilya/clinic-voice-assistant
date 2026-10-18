@@ -118,7 +118,7 @@ class InformationConversation:
         if topic == "lab_status":
             phrases += self.service.fact("lab_terms").utterances
         elif not clarifying:
-            phrases += self._continuation(state, turn)
+            phrases += self.resume_question(state, turn)
         result = reply(
             state,
             turn.turn_id,
@@ -140,7 +140,7 @@ class InformationConversation:
             }
         )
 
-    def _continuation(self, state: DialogueState, turn: Turn) -> tuple[str, ...]:
+    def resume_question(self, state: DialogueState, turn: Turn) -> tuple[str, ...]:
         if state.medical_boundary_pending:
             return ("Записать вас к терапевту?",)
         if state.phase in IDLE:
