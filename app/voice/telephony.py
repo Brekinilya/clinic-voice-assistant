@@ -14,6 +14,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Literal, Protocol
 
 import httpx
@@ -253,6 +254,7 @@ class Outgoing:
 
 
 TransferSink = Callable[[TransferResult], Awaitable[None] | None]
+TransferStartedSink = Callable[[object], Awaitable[None] | None]
 # Реплика по шаблону: PCM и его частота
 Say = Callable[[str], Awaitable[tuple[bytes, int]]]
 
@@ -266,11 +268,13 @@ class Telephony:
         say: Say,
         resample: Callable[[bytes, int, int], bytes],
         on_transfer: TransferSink | None = None,
+        on_transfer_start: TransferStartedSink | None = None,
         outbound: OutboundFactory | None = None,
         reminders: OutboundEvents | None = None,
     ):
         self.ari = ari
         self.on_transfer = on_transfer
+        self.on_transfer_start = on_transfer_start
         self.outbound = outbound
         self.reminders = reminders
         # Исходящие вызовы по номеру попытки и по каналу
@@ -433,10 +437,28 @@ class Telephony:
     async def transfer(self, call: PhoneCall, priority: str, route: str | None = None) -> None:
         call.priority = priority
         call.route = route
+        call.finishing = False
+        call.reported = False
         # Намерение перевести ещё не перевод: исход попытки сообщает transfer_result
         call.attempt = uuid.uuid4().hex
         timeout = OPERATOR_TIMEOUT_S.get(priority, OPERATOR_TIMEOUT_S["P3"])
         await self._music(call, True)
+        if self.on_transfer_start is not None:
+            event = SimpleNamespace(
+                attempt_id=call.attempt,
+                call_id=call.caller,
+                route=call.route,
+                priority=call.priority,
+            )
+            try:
+                delivered = self.on_transfer_start(event)
+                if inspect.isawaitable(delivered):
+                    await delivered
+            except Exception:
+                log.exception("failed to persist transfer request before originate")
+                await self._report(call, "failed", "handoff_journal_unavailable")
+                await self._operator_failed(call)
+                return
         try:
             call.operator = await self.ari.originate(
                 self.settings.operator_endpoint, ["operator", call.caller], timeout
@@ -498,6 +520,12 @@ class Telephony:
         pcm, rate = await self.say(template)
         call.rtp.play(self.resample(pcm, rate, call.codec.rate))
         await call.rtp.drained()
+        if call.priority in {"P2", "P3"} and call.session is not None:
+            resume = getattr(call.session, "resume_after_transfer", None)
+            if resume is not None:
+                call.finishing = False
+                if await resume("no_answer"):
+                    return
         await self.ari.hangup(call.caller)
 
     async def _gone(self, channel: str, cause: int | None = None) -> None:

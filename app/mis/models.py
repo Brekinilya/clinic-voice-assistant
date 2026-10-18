@@ -149,3 +149,30 @@ class VisitChange(MisModel):
         if not body or any(v is None for v in body.values()):
             raise ValueError("нужно хотя бы одно изменение без null")
         return body
+
+
+class EscalationCreate(MisModel):
+    """Тело POST /escalations, без выдуманных полей идемпотентности."""
+
+    client_id: MisId
+    description: str = Field(min_length=1, max_length=1000, repr=False)
+
+    def body(self) -> dict:
+        value = self.description
+        if not value.strip() or any(
+            ord(char) <= 8
+            or char in "\v\f"
+            or 14 <= ord(char) <= 31
+            or 127 <= ord(char) <= 159
+            or 0xD800 <= ord(char) <= 0xDFFF
+            for char in value
+        ):
+            raise ValueError("описание заявки содержит недопустимый текст")
+        return {"client_id": self.client_id, "description": value}
+
+
+class Escalation(MisModel):
+    id: MisId
+    client_id: MisId
+    description: str = Field(max_length=1000, repr=False)
+    created_at: MisDateTime

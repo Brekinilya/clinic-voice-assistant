@@ -50,6 +50,7 @@ class DialogueService:
         mis_turn_wait_s: float = 8.0,
         mis_wait_limit_s: int = 120,
         reminder_actions: ReminderActions | None = None,
+        handoffs=None,
     ) -> None:
         if len(hash_key) < 32:
             raise ValueError("ключ квитанций должен содержать хотя бы 32 байта")
@@ -59,6 +60,7 @@ class DialogueService:
         self.interpreter = interpreter if interpreter is not None else CommandInterpreter()
         self.safety = safety
         self.conversation = conversation
+        self.handoffs = handoffs
         self.mis_turn_wait_s = mis_turn_wait_s
         self.mis_wait_limit_s = mis_wait_limit_s
         self.debug = None
@@ -183,7 +185,8 @@ class DialogueService:
                         return claim.cached
                 return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
             if current.phase == Phase.HANDOFF:
-                return handoff_reply(current, turn.turn_id)
+                if self.handoffs is None or not await self.handoffs.has_callback_draft(call_id):
+                    return handoff_reply(current, turn.turn_id)
             if turn.turn_id >= current.observed_turn_id:
                 try:
                     decision = self.safety.evaluate(call_id, turn)
@@ -216,10 +219,14 @@ class DialogueService:
                         code="SAFETY_UNAVAILABLE",
                     )
                 if transfer is not None:
+                    if self.handoffs is not None:
+                        await self.handoffs.discard_draft(call_id)
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
                     await self._release_call(call_id)
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
+            if current.phase == Phase.HANDOFF:
+                return await self.handoffs.callback_turn(call_id, turn)
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
@@ -340,6 +347,10 @@ class DialogueService:
                 call_id, turn_id, "dialogue.input_started", input_epoch=state.input_epoch
             )
         if state.phase == Phase.HANDOFF:
+            if self.handoffs is not None:
+                await self.handoffs.callback_input_started(call_id, event.turn_id)
+                if await self.handoffs.has_callback_draft(call_id):
+                    return reply(state, event.turn_id, code="CALLBACK_INPUT_STARTED", kind="partial")
             return handoff_reply(state, event.turn_id)
         return reply(
             state,
@@ -355,6 +366,8 @@ class DialogueService:
         return await self.handle(call_id, turn)
 
     async def end(self, call_id: str) -> Reply:
+        if self.handoffs is not None:
+            await self.handoffs.discard_draft(call_id)
         state = await self.store.end(call_id)
         # Повтор end снова пытается снять оставшиеся брони, если прежняя попытка прервалась.
         await self._release_call(call_id)
@@ -362,6 +375,11 @@ class DialogueService:
         if self.debug is not None:
             self.debug.emit(call_id, None, "dialogue.ended", phase=state.phase)
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
+
+    async def start_callback(self, call_id: str, turn_id: int, outcome: str):
+        if self.handoffs is None:
+            return None
+        return await self.handoffs.start_callback(call_id, turn_id, outcome)
 
     async def _release_call(self, call_id: str) -> None:
         if self.conversation is not None:

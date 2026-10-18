@@ -13,6 +13,7 @@ from app.api.demo import chat_router
 from app.api.demo import router as demo_router
 from app.api.dialogue import router as dialogue_router
 from app.api.health import router as health_router
+from app.api.handoffs import router as handoffs_router
 from app.bootstrap import build_runtime
 from app.diagnostics.bootstrap import open_diagnostics
 from app.dialogue.bootstrap import open_dialogue_backend
@@ -74,6 +75,8 @@ def create_app(
             username=selected_settings.web_access_user,
             password=selected_settings.web_access_password.get_secret_value(),
         )
+    if selected_settings.handoffs_enabled:
+        application.include_router(handoffs_router)
     if selected_settings.backend_demo_enabled or selected_settings.dialogue_enabled:
         application.include_router(dialogue_router)
         if selected_settings.dialogue_mode == "natural":

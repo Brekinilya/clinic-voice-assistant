@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     dialogue_mode: Literal["commands", "natural"] = "commands"
     dialogue_storage: Literal["memory", "postgres"] = "memory"
     dialogue_hash_key: SecretStr = SecretStr("")
+    handoffs_enabled: bool = False
+    callback_enabled: bool = False
+    callback_endpoint: str | None = None
+    handoff_technical_client_id: int | None = Field(default=None, ge=1)
     schedule_path: Path | None = None
     schedule_index_path: Path | None = None
     schedule_access_path: Path | None = None
@@ -86,6 +90,10 @@ class Settings(BaseSettings):
             or self.schedule_index_path is None
         ):
             raise ValueError("для внешнего диалога нужны natural, postgres и SCHEDULE_INDEX_PATH")
+        if self.handoffs_enabled and (not self.dialogue_enabled or not self.web_access_enabled):
+            raise ValueError("для заявок оператору нужны DIALOGUE_ENABLED и защищённый WEB_ACCESS_ENABLED")
+        if self.callback_enabled and not self.handoffs_enabled:
+            raise ValueError("CALLBACK_ENABLED требует HANDOFFS_ENABLED")
         if (
             (self.backend_demo_enabled or self.dialogue_enabled)
             and self.dialogue_storage == "postgres"

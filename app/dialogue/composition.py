@@ -6,11 +6,13 @@ from app.dialogue.identity import IdentityDrafts
 from app.dialogue.natural import BookingConversation
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
+from app.handoffs.service import HandoffService, HandoffSettings
 from app.recovery.coordinator import OperationCoordinator
 from app.recovery.memory import MemoryRecoveryStore
 from app.rescheduling.service import RescheduleService
 from app.scheduling.index import SqliteSchedule
 from app.storage.booking import PostgresBookingStore
+from app.storage.handoffs import PostgresHandoffStore
 from app.storage.recovery import PostgresRecoveryStore
 
 
@@ -55,6 +57,21 @@ def assemble_dialogue(
         if safety is not None
         else None
     )
+    handoffs = None
+    if settings.handoffs_enabled:
+        handoff_store = PostgresHandoffStore(booking_store.engine)
+        handoffs = HandoffService(
+            handoff_store,
+            mis,
+            clock,
+            hash_key,
+            HandoffSettings(
+                enabled=True,
+                callback_enabled=settings.callback_enabled,
+                callback_endpoint=settings.callback_endpoint,
+                technical_client_id=settings.handoff_technical_client_id,
+            ),
+        )
     return DialogueService(
         booking,
         dialogue_store,
@@ -64,4 +81,5 @@ def assemble_dialogue(
         mis_turn_wait_s=settings.mis_turn_wait_s,
         mis_wait_limit_s=settings.mis_wait_limit_s,
         reminder_actions=reminder_actions,
+        handoffs=handoffs,
     )
