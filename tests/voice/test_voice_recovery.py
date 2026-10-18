@@ -1,7 +1,7 @@
 """V01: голосовые тупики. Каждый исход заканчивается репликой, таймером, переводом или концом."""
 
 import asyncio
-import time
+from threading import Event
 
 import pytest
 
@@ -298,22 +298,39 @@ async def test_hangup_while_dialogue_works_discards_late_reply_and_closes_once()
 
 
 async def test_hangup_during_synthesis_sends_no_audio_afterwards():
+    entered, release, finished = Event(), Event(), Event()
+
     class SlowSynthesizer(Synthesizer):
         def synthesize(self, speech):
             if speech.startswith("Долгий"):
-                time.sleep(0.2)
+                entered.set()
+                # spoken заполняется ПОСЛЕ синтеза. Ожидание этого списка
+                # проверяло отбой после готового ответа и гонялось с его отправкой.
+                if not release.wait(timeout=5):
+                    raise TimeoutError("тест не освободил синтез")
+                try:
+                    return super().synthesize(speech)
+                finally:
+                    finished.set()
             return super().synthesize(speech)
 
     synthesizer = SlowSynthesizer()
     dialogue = Dialogue(lambda turn: reply("Долгий ответ"))
     call, channel = session(dialogue, Recognizer({7: "Запишите"}), synthesizer, partial_ms=5000)
-    await answered(call)
-    await call.feed(phrase(7))
-    await until(lambda: any(s.startswith("Долгий") for s in synthesizer.spoken))
-    audio = len(channel.audio)
-    await call.close()
-    await asyncio.sleep(0.3)
-    assert "Долгий ответ" not in channel.said() and len(channel.audio) == audio
+    try:
+        await answered(call)
+        await call.feed(phrase(7))
+        await until(entered.is_set)
+        audio = len(channel.audio)
+        await call.close()
+        release.set()
+        await until(finished.is_set)
+        # Даём очереди завершения нативного задания обработать готовый PCM.
+        await asyncio.sleep(0)
+        assert "Долгий ответ" not in channel.said() and len(channel.audio) == audio
+    finally:
+        release.set()
+        await call.close()
 
 
 # 7. Исход перевода: одна попытка — один результат
