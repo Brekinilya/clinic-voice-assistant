@@ -263,3 +263,21 @@ async def test_full_report_contains_every_dialog_and_blocks_incomplete_acceptanc
     assert not accepted([replace(r, status="pass", findings=[]) for r in results[:-2]], "all")
     assert not accepted([replace(r, status="pass", findings=[]) for r in results[:-1]], "all")
     assert "HTTP ASGI" in document["scope"] and "unsupported" in markdown(document)
+    by_label = {result.label: result for result in results}
+    confirmed = by_label["M-10 подтверждение"]
+    confirmation = confirmed.evidence["outbound"]
+    assert confirmed.status == "pass"
+    assert confirmation["attempt_state"] == "finished"
+    assert confirmation["mark_state"] == "applied"
+    assert confirmation["client_comment_patches"] == 1
+    assert confirmation["preserved_existing_comment"]
+    assert "ReminderExecutor.tick" in confirmation["path"]
+
+    wrong_person = by_label["D-10"]
+    assert wrong_person.status == "unsupported"
+    assert [finding.code for finding in wrong_person.findings] == ["sms_delivery_T20"]
+    assert wrong_person.evidence["outbound"]["client_comment_patches"] == 0
+
+    voicemail = by_label["D-11"]
+    assert voicemail.status == "pass"
+    assert voicemail.evidence["outbound"]["voicemail_event_port"]

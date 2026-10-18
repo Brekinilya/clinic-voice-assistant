@@ -244,55 +244,13 @@
       ]
     },
     "D-10": {
-      "status": "fail",
-      "reason": "T11/T20: исходящий контекст и SMS отсутствуют",
+      "status": "unsupported",
+      "reason": "T11: неправильный адресат и отсутствие изменений проверены; доставка SMS T20 не реализована",
       "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.wrong_person",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код WRONG_PERSON",
-          "kind": "fail",
-          "step": null
-        },
         {
           "code": "sms_delivery_T20",
           "detail": "Нельзя подтвердить обязательный результат sms",
           "kind": "unsupported",
-          "step": null
-        }
-      ]
-    },
-    "D-11": {
-      "status": "fail",
-      "reason": "T11: исходящий звонок и событие автоответчика недоступны в текстовом канале",
-      "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.voicemail",
-          "kind": "unsupported",
-          "step": 1
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код VOICEMAIL",
-          "kind": "fail",
           "step": null
         }
       ]
@@ -521,150 +479,6 @@
           "code": "handoff_completion_T08_T04",
           "detail": "Запрос перевода не доказывает состоявшееся соединение",
           "kind": "unsupported",
-          "step": null
-        }
-      ]
-    },
-    "M-10 перенос": {
-      "status": "fail",
-      "reason": "T11: исходящий контекст и задания не реализованы",
-      "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.details",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "options",
-          "detail": "Предложенные даты/время не совпадают с YAML",
-          "kind": "fail",
-          "step": 3
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.offer_reschedule",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "phase:reschedule.confirm",
-          "detail": "Получено состояние identifying",
-          "kind": "fail",
-          "step": 4
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.done_moved",
-          "kind": "unsupported",
-          "step": 5
-        },
-        {
-          "code": "created_count",
-          "detail": "Ожидается 1, получено 0",
-          "kind": "fail",
-          "step": null
-        },
-        {
-          "code": "created_visit",
-          "detail": "Нет единственного ожидаемого нового визита",
-          "kind": "fail",
-          "step": null
-        },
-        {
-          "code": "cancelled_visit",
-          "detail": "Исходная запись не отменена ожидаемым образом",
-          "kind": "fail",
-          "step": null
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код RESCHEDULED",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
-    "M-10 подтверждение": {
-      "status": "fail",
-      "reason": "T11: исходящий контекст и задания не реализованы",
-      "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.details",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.confirmed",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код CONFIRMED",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
-    "M-10 не знает": {
-      "status": "unsupported",
-      "reason": "T11: исходящий контекст и задания не реализованы",
-      "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.details",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.maybe",
-          "kind": "unsupported",
-          "step": 3
-        }
-      ]
-    },
-    "M-10 отказ от звонков": {
-      "status": "fail",
-      "reason": "T11: исходящий контекст и задания не реализованы",
-      "findings": [
-        {
-          "code": "outbound_T11",
-          "detail": "Прогон реплик не проверяет originate и исходящий контекст",
-          "kind": "unsupported",
-          "step": null
-        },
-        {
-          "code": "outbound_T11",
-          "detail": "Не подключено требование: remind.opt_out",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код OPT_OUT",
-          "kind": "fail",
           "step": null
         }
       ]

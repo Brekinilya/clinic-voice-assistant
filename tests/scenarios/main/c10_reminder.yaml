@@ -10,7 +10,7 @@ setup:
   channel: outbound
   call: {purpose: reminder, client: smirnova_ov}
   visits:
-    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}
+    - {client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45", created_at: "29.09.2026 08:45"}
   slots:
     kuznetsova: ["02.10.2026 10:30", "05.10.2026 09:15", "06.10.2026 12:00"]
 
@@ -18,17 +18,22 @@ dialogs:
   - name: перенос
     steps:
       - say: remind.greeting
-      - patient: Да.
+      - patient: Да, это я.
         parse: {expect: yes_no, intent: "yes"}
         say: remind.details
       - patient: Ой, нет, завтра не получится.
         parse: {expect: yes_no, intent: "no"}
         say: remind.offer_reschedule
-        options: ["02.10.2026 10:30", "05.10.2026 09:15"]
+      - patient: Перенесите на следующую неделю.
+        say: reschedule.offer
+        options: ["05.10.2026 09:15", "06.10.2026 12:00"]
       - patient: Понедельник подойдёт.
-        parse: {expect: choice, options: ["02.10.2026 10:30", "05.10.2026 09:15"], choice_index: 2}
+        parse:
+          expect: choice
+          options: ["05.10.2026 09:15", "06.10.2026 12:00"]
+          choice_index: 1
         say: reschedule.confirm
-      - patient: Да.
+      - patient: Да, это я.
         say: remind.done_moved
         end: true
     result:
@@ -53,7 +58,7 @@ dialogs:
   - name: не знает
     steps:
       - say: remind.greeting
-      - patient: Да.
+      - patient: Да, это я.
         say: remind.details
       - patient: Пока не знаю, может быть.
         parse: {expect: yes_no, intent: maybe}

@@ -19,6 +19,7 @@ from app.mis.ports import MisError
 from app.scheduling.bootstrap import load_index, read_document, token_scope
 from app.scheduling.importer import import_workbook
 from app.scheduling.models import Catalog, ScheduleImportError
+from app.scheduling.refresh import read_status, refresh_loop, refresh_once
 from app.settings import AppMode, Settings
 from app.storage.booking import PostgresBudget
 from app.storage.schema import SCHEMA_VERSION, schema_versions
@@ -55,7 +56,9 @@ async def capture_catalog(mis, settings: Settings, clock) -> Catalog:
     )
 
 
-async def fetch_catalog(settings: Settings, destination: Path, *, replace=False):
+async def fetch_catalog(
+    settings: Settings, destination: Path, *, replace=False, budget_wait_s: int = 120
+):
     if settings.app_mode != AppMode.HACKATHON:
         raise ScheduleImportError("HACKATHON_MODE_REQUIRED")
     if destination.exists() and not replace:
@@ -75,8 +78,8 @@ async def fetch_catalog(settings: Settings, destination: Path, *, replace=False)
                 ),
             )
             clock = ClinicClock()
-            # Фоновая задача: ждёт окна за разговорами, но не дольше двух минут.
-            with demand(Priority.BACKGROUND, until=clock.now() + timedelta(seconds=120)):
+            # Фоновая задача: ждёт окна за разговорами, но не дольше заданного срока.
+            with demand(Priority.BACKGROUND, until=clock.now() + timedelta(seconds=budget_wait_s)):
                 catalog = await capture_catalog(mis, settings, clock)
         publish_catalog(destination, catalog, replace=replace)
         return {"mode": catalog.mode, "doctors": len(catalog.doctors)}
@@ -98,6 +101,22 @@ def main(argv=None) -> int:
     importer.add_argument("--valid-hours", type=int, default=24)
     check = commands.add_parser("check", help="проверить актуальность и область индекса")
     check.add_argument("path", type=Path)
+    refresh = commands.add_parser("refresh", help="один безопасный цикл обновления индекса")
+    refresh_loop_command = commands.add_parser(
+        "refresh-loop", help="фоновая служба обновления индекса до истечения срока"
+    )
+    for command in (refresh, refresh_loop_command):
+        command.add_argument("--workbook", type=Path, required=True)
+        command.add_argument("--index", type=Path, default=None)
+        command.add_argument("--catalog", type=Path, default=None)
+        command.add_argument("--valid-hours", type=int, default=24)
+        command.add_argument("--budget-wait-s", type=int, default=120)
+    refresh_loop_command.add_argument("--margin-s", type=float, default=7200)
+    refresh_loop_command.add_argument("--retry-s", type=float, default=900)
+    refresh_status = commands.add_parser(
+        "refresh-status", help="технический статус обновления индекса без секретов"
+    )
+    refresh_status.add_argument("--index", type=Path, default=None)
     find = commands.add_parser(
         "find", help="найти свободные слоты без подтверждения допуска пациента"
     )
@@ -111,6 +130,48 @@ def main(argv=None) -> int:
         settings, clock = Settings(), ClinicClock()
         if args.command == "fetch-doctors":
             result = asyncio.run(fetch_catalog(settings, args.output, replace=args.replace))
+        elif args.command in {"refresh", "refresh-loop", "refresh-status"}:
+            index_path = args.index or settings.schedule_index_path
+            if index_path is None:
+                raise ScheduleImportError("SCHEDULE_INDEX_REQUIRED")
+            if args.command == "refresh-status":
+                result = read_status(index_path)
+            else:
+                fetch = None
+                if args.catalog is None:
+
+                    async def fetch(destination: Path):
+                        return await fetch_catalog(
+                            settings, destination, replace=True, budget_wait_s=args.budget_wait_s
+                        )
+
+                if args.command == "refresh":
+                    result = asyncio.run(
+                        refresh_once(
+                            settings,
+                            clock,
+                            workbook_path=args.workbook,
+                            index_path=index_path,
+                            fetch_catalog_to=fetch,
+                            catalog_path=args.catalog,
+                            valid_hours=args.valid_hours,
+                        )
+                    )
+                else:
+                    asyncio.run(
+                        refresh_loop(
+                            settings,
+                            clock,
+                            workbook_path=args.workbook,
+                            index_path=index_path,
+                            fetch_catalog_to=fetch,
+                            catalog_path=args.catalog,
+                            valid_hours=args.valid_hours,
+                            margin_s=args.margin_s,
+                            retry_s=args.retry_s,
+                        )
+                    )
+                    result = read_status(index_path)
         elif args.command == "import-xlsx":
             catalog = read_document(args.catalog, Catalog)
             # Проверка области до чтения книги: учебные ID не переносятся на стенд.

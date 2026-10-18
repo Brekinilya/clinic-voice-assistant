@@ -52,5 +52,29 @@ services:
         condition: service_healthy
     init: true
     restart: unless-stopped
+  # Обновитель индекса расписания: кандидат строится и проверяется рядом с рабочим
+  # файлом и публикуется атомарно; приложение видит новое поколение без рестарта.
+  # Книга ожидается как data/schedule.xlsx, индекс задаёт SCHEDULE_INDEX_PATH из .env.
+  schedule-updater:
+    # Обновитель должен иметь право создавать/переименовывать файлы в data.
+    # На ВМ задать UID/GID владельца этого каталога; остальные сервисы остаются UID10001.
+    user: "${SCHEDULE_UPDATER_UID:-10001}:${SCHEDULE_UPDATER_GID:-10001}"
+    build:
+      context: ../..
+    env_file: ../../.env
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      TELEPHONY_ENABLED: "false"
+    volumes:
+      - ../../data:/app/data
+    command: ["python", "-m", "app.scheduling.cli", "refresh-loop", "--workbook", "data/schedule.xlsx"]
+    healthcheck:
+      disable: true
+    depends_on:
+      database:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
 volumes:
   postgres-data:

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -27,36 +28,55 @@ class SqliteSchedule:
         base_url: str | None = None,
         token_scope: str | None = None,
         facts: tuple[AccessFact, ...] = (),
+        reload_interval_s: float = 30.0,
     ):
+        if reload_interval_s < 0:
+            raise ValueError("интервал проверки поколения индекса не может быть отрицательным")
         self.clock = clock
         self._patients = {}
-        self._db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-        self._db.row_factory = sqlite3.Row
+        self._path = path.resolve()
+        self._mode = mode
+        self._base_url = base_url
+        self._token_scope = token_scope
+        self._facts_input = facts
+        self._reload_interval = timedelta(seconds=reload_interval_s)
+        self._reload_lock = threading.Lock()
+        self._retired: list[sqlite3.Connection] = []
+        # Код последней неудавшейся подмены поколения; рабочий снимок при этом сохранён.
+        self.reload_error: str | None = None
+        snapshot = self._load_snapshot()
+        self._apply(snapshot)
+        self._identity = snapshot["identity"]
+        self._next_reload_at = self.clock.now() + self._reload_interval
+        self._check_current()
+
+    def _load_snapshot(self):
+        """Открыть файл индекса и полностью проверить его как новое поколение."""
+        identity = self._file_identity()
+        db = sqlite3.connect(self._path.as_uri() + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
         try:
-            if self._db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            if db.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise ScheduleImportError("UNSUPPORTED_INDEX")
-            record = self._db.execute("SELECT data FROM metadata WHERE id=1").fetchone()
+            record = db.execute("SELECT data FROM metadata WHERE id=1").fetchone()
             metadata = json.loads(record[0])
-            self.catalog = Catalog.model_validate(metadata["catalog"])
-            self.report = ImportReport.model_validate(metadata["report"])
+            catalog = Catalog.model_validate(metadata["catalog"])
+            report = ImportReport.model_validate(metadata["report"])
             if (
-                self.report.mode != self.catalog.mode
-                or hashlib.sha256(self.catalog.model_dump_json().encode()).hexdigest()
-                != self.report.catalog_sha256
+                report.mode != catalog.mode
+                or hashlib.sha256(catalog.model_dump_json().encode()).hexdigest()
+                != report.catalog_sha256
             ):
                 raise ScheduleImportError("INDEX_CATALOG_MISMATCH")
-            self.imported_at = datetime.fromisoformat(metadata["imported_at"])
-            self.expires_at = datetime.fromisoformat(metadata["expires_at"])
-            if (
-                self.imported_at.tzinfo is None
-                or self.expires_at.tzinfo is None
-                or self.expires_at <= self.imported_at
-            ):
+            imported_at = datetime.fromisoformat(metadata["imported_at"])
+            expires_at = datetime.fromisoformat(metadata["expires_at"])
+            if imported_at.tzinfo is None or expires_at.tzinfo is None or expires_at <= imported_at:
                 raise ScheduleImportError("INVALID_INDEX_TIME")
-            self.check_scope(mode, base_url, token_scope)
-            self._doctors = {row["id"]: row for row in self._db.execute("SELECT * FROM doctors")}
-            expected = {d.id: d for d in self.catalog.doctors}
-            for identifier, row in self._doctors.items():
+            if not self._scope_matches(catalog, self._mode, self._base_url, self._token_scope):
+                raise ScheduleImportError("INDEX_SCOPE_MISMATCH")
+            doctors = {row["id"]: row for row in db.execute("SELECT * FROM doctors")}
+            expected = {d.id: d for d in catalog.doctors}
+            for identifier, row in doctors.items():
                 doctor = expected.get(identifier)
                 if (
                     doctor is None
@@ -67,42 +87,118 @@ class SqliteSchedule:
                     or row["patient_group"] not in PATIENT_GROUPS
                 ):
                     raise ScheduleImportError("INDEX_DOCTOR_MISMATCH")
-            if len(self._doctors) != self.report.doctors:
+            if len(doctors) != report.doctors:
                 raise ScheduleImportError("INDEX_DOCTOR_MISMATCH")
-            self.facts = self._validate_facts(facts)
-            self.fingerprint = self.report.workbook_sha256
-            self._check_current()
+            snapshot = {
+                "db": db,
+                "catalog": catalog,
+                "report": report,
+                "imported_at": imported_at,
+                "expires_at": expires_at,
+                "doctors": doctors,
+                "facts": self._validate_facts(self._facts_input, doctors),
+                "fingerprint": report.workbook_sha256,
+                "identity": identity,
+            }
+            self._validate_current(imported_at, expires_at, report)
+            if identity is None or self._file_identity() != identity:
+                raise ScheduleImportError("INDEX_CHANGED_DURING_OPEN")
+            return snapshot
         except Exception:
-            self._db.close()
+            db.close()
             raise
+
+    def _apply(self, snapshot):
+        self._db = snapshot["db"]
+        self.catalog = snapshot["catalog"]
+        self.report = snapshot["report"]
+        self.imported_at = snapshot["imported_at"]
+        self.expires_at = snapshot["expires_at"]
+        self._doctors = snapshot["doctors"]
+        self.facts = snapshot["facts"]
+        self.fingerprint = snapshot["fingerprint"]
+
+    def _file_identity(self):
+        try:
+            info = self._path.stat()
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+    def _maybe_reload(self):
+        """Перейти на опубликованное новое поколение файла, если оно уже появилось.
+
+        Проверка по управляемым часам не чаще reload_interval_s; истёкший снимок
+        проверяется на каждом запросе, чтобы процесс ожил сразу после публикации.
+        Начатый поиск завершается на прежнем снимке: его соединение закрывается
+        отложенно. Невалидное поколение рабочее не подменяет.
+        """
+        now = self.clock.now()
+        if now < self._next_reload_at and now < self.expires_at:
+            return
+        if not self._reload_lock.acquire(blocking=False):
+            return
+        try:
+            self._next_reload_at = now + self._reload_interval
+            identity = self._file_identity()
+            if identity is None or identity == self._identity:
+                return
+            try:
+                snapshot = self._load_snapshot()
+            except ScheduleImportError as error:
+                self.reload_error = str(error)
+                return
+            except Exception:
+                self.reload_error = "INDEX_RELOAD_FAILED"
+                return
+            for retired in self._retired:
+                retired.close()
+            self._retired = [self._db]
+            self._apply(snapshot)
+            self._identity = snapshot["identity"]
+            self.reload_error = None
+        finally:
+            self._reload_lock.release()
 
     def close(self):
         self._db.close()
+        for retired in self._retired:
+            retired.close()
+        self._retired = []
+
+    @staticmethod
+    def _scope_matches(catalog, mode: str, base_url: str | None, token_scope: str | None) -> bool:
+        return not (
+            catalog.mode != mode
+            or (
+                mode == "hackathon"
+                and (
+                    catalog.base_url.rstrip("/") != (base_url or "").rstrip("/")
+                    or catalog.token_scope != token_scope
+                )
+            )
+        )
 
     def check_scope(self, mode: str, base_url: str | None, token_scope: str | None):
-        if self.catalog.mode != mode or (
-            mode == "hackathon"
-            and (
-                self.catalog.base_url.rstrip("/") != (base_url or "").rstrip("/")
-                or self.catalog.token_scope != token_scope
-            )
-        ):
+        if not self._scope_matches(self.catalog, mode, base_url, token_scope):
             raise ScheduleImportError("INDEX_SCOPE_MISMATCH")
 
-    def _check_current(self):
+    def _validate_current(self, imported_at, expires_at, report):
         now = self.clock.now()
         if (
-            not self.imported_at <= now < self.expires_at
-            or not self.report.date_from
-            <= now.astimezone(CLINIC_TIMEZONE).date()
-            <= self.report.date_to
+            not imported_at <= now < expires_at
+            or not report.date_from <= now.astimezone(CLINIC_TIMEZONE).date() <= report.date_to
         ):
             raise ScheduleImportError("SCHEDULE_NOT_CURRENT")
 
-    def _validate_facts(self, facts):
+    def _check_current(self):
+        self._maybe_reload()
+        self._validate_current(self.imported_at, self.expires_at, self.report)
+
+    def _validate_facts(self, facts, doctors):
         values = {}
         for fact in facts:
-            if fact.doctor_id not in self._doctors:
+            if fact.doctor_id not in doctors:
                 raise ScheduleImportError("ACCESS_UNKNOWN_DOCTOR")
             values.setdefault((fact.client_id, fact.doctor_id), []).append(fact)
         for group in values.values():
@@ -113,6 +209,7 @@ class SqliteSchedule:
 
     @property
     def doctors(self):
+        self._maybe_reload()
         return tuple(d for d in self.catalog.doctors if d.id in self._doctors)
 
     def specialties_for(self, specialty: str) -> tuple[str, ...]:
