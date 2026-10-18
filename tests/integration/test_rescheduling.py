@@ -272,13 +272,24 @@ async def test_known_local_booking_can_be_moved_then_cancelled(move_engine):
 @pytest.mark.parametrize(
     "text", ["Вы робот?", "Не записывайте разговор", "Какую таблетку принять?"]
 )
-async def test_other_question_does_not_make_yes_a_transfer_confirmation(move_engine, text):
+async def test_other_question_yes_answers_only_the_repeated_explicit_question(move_engine, text):
     async with pipeline(SETUP, pg_engine=move_engine) as (client, _, emulator, *_):
-        await prepare(client)
-        await turn(client, 5, text)
-        await turn(client, 6, "Да")
+        prepared = await prepare(client)
+        result = await turn(client, 5, text)
         assert emulator.write_count == emulator.patch_count == 0
-        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        if text == "Какую таблетку принять?":
+            # «Да» на предложение терапевта не подтверждает прежний перенос.
+            assert result["question"]["key"] == "medical_booking"
+            await turn(client, 6, "Да")
+            assert emulator.write_count == emulator.patch_count == 0
+            assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        else:
+            # Служебная реплика теперь перечитывает ВСЁ предложение переноса,
+            # поэтому новое «да» относится к этому явному вопросу.
+            assert result["question"] == prepared["question"]
+            assert result["utterances"][-len(prepared["utterances"]) :] == prepared["utterances"]
+            assert (await turn(client, 6, "Да"))["code"] == "RESCHEDULED"
+            assert emulator.write_count == emulator.patch_count == 1
 
 
 async def test_other_visit_is_unchanged_when_one_of_two_is_moved(move_engine):

@@ -5,9 +5,68 @@ from app.contracts import DialogOption, NluContext, NluRequest, NluResult, Publi
 from app.dialogue.doctors import DoctorNames
 from app.dialogue.expectation import expected_answer
 from app.dialogue.models import DialogueState, Phase, Turn
+from app.mis.models import name_key
 from app.mis.ports import MedicalSystem
+from app.nlu.lexicon import tokenize
 from app.nlu.service import RulesNlu
 from app.ports import Clock
+
+IDENTITY_WORDS = frozenset(
+    {
+        "я",
+        "меня",
+        "зовут",
+        "это",
+        "пациент",
+        "пациентка",
+        "другой",
+        "другая",
+        "нет",
+        "да",
+        "пожалуйста",
+        "фамилия",
+        "имя",
+        "отчество",
+        "дата",
+        "рождения",
+        "родился",
+        "родилась",
+        "год",
+        "года",
+        "году",
+        "г",
+        "правильно",
+        "исправляю",
+    }
+)
+
+
+def explicit_identity(parser: RulesNlu, request: NluRequest, doctor_names) -> NluResult | None:
+    """Полное ФИО — явное исправление личности, а не дата приёма.
+
+    Узкая граница: три имени и только слова представления/даты. Просьба «к врачу
+    Иванову Ивану Ивановичу на пятницу» остаётся выбором врача, не сменой пациента.
+    """
+    if request.expect in {"full_name", "birth_date"} or len(tokenize(request.text)) < 3:
+        return None
+    candidate = parser.parse(request.model_copy(update={"expect": "full_name"}))
+    fields = ("last_name", "first_name", "middle_name")
+    if not all(getattr(candidate.slots, field) for field in fields):
+        return None
+    allowed = set(IDENTITY_WORDS)
+    for field in (*fields, "birth_date"):
+        allowed.update(tokenize(candidate.evidence.get(field, "")))
+    if any(word not in allowed and not word.isdigit() for word in tokenize(request.text)):
+        return None
+    full_name = name_key(" ".join(getattr(candidate.slots, field) for field in fields))
+    introduced = bool(set(tokenize(request.text)) & {"меня", "зовут", "пациент", "пациентка"})
+    if (
+        candidate.slots.birth_date is None
+        and not introduced
+        and full_name in {name_key(name) for name in doctor_names}
+    ):
+        return None
+    return candidate
 
 
 class RulesInput:
@@ -65,6 +124,9 @@ class RulesInput:
             options=options,
             context=context,
         )
+        identity = explicit_identity(parser, request, names.values())
+        if identity is not None:
+            return identity
         result = parser.parse(request)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("NLU вернул другую реплику")

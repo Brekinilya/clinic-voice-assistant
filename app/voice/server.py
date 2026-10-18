@@ -132,6 +132,19 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
             synthesizer.synthesize, speech, timeout=app.state.voice_settings.tts_timeout_s
         )
 
+    debug = getattr(app.state.dialogue, "debug", None)
+
+    def transfer_result(result) -> None:
+        # До T08 исход перевода виден в панели; заявку по нему создаёт диалог, не шлюз
+        if debug is not None:
+            debug.emit(
+                result.call_id,
+                None,
+                "voice.transfer_result",
+                source="SIP",
+                **{k: v for k, v in vars(result).items() if k != "call_id"},
+            )
+
     ari = Ari(settings)
     line = Telephony(
         ari,
@@ -139,6 +152,7 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         sessions=lambda call_id, channel: open_session(app.state, call_id, channel),
         say=say,
         resample=resample,
+        on_transfer=transfer_result,
     )
     listener = asyncio.create_task(line.run())
     try:

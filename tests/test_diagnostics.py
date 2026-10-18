@@ -95,6 +95,13 @@ async def test_trace_follows_real_dialogue_and_mis_without_changing_result():
             kinds = [e["kind"] for e in events]
             assert "nlu.parsed" in kinds and "mis.sent" in kinds
             assert "dialogue.state" in kinds and "safety.checked" in kinds
+            identity_question = next(
+                e["data"]["question"]
+                for e in events
+                if e["kind"] == "dialogue.reply" and e["turn_id"] == 1
+            )
+            assert identity_question["key"] == "patient_identity"
+            assert identity_question["expect"] == result["expect"] == "full_name"
             assert not emulator.records["demo"]
             assert any(e["data"].get("text", "").startswith("Смирнова") for e in events)
             assert not any("Смирнова" in row["payload"] for row in recorder.store.rows)

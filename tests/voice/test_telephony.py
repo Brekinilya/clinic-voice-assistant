@@ -98,6 +98,14 @@ async def line():
     await telephony.close()
 
 
+async def settled(condition, timeout: float = 2.0):
+    for _ in range(int(timeout / 0.01)):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    assert condition()
+
+
 def start(channel, *args):
     return {"type": "StasisStart", "channel": {"id": channel}, "args": list(args)}
 
@@ -212,5 +220,5 @@ async def test_registrar_does_not_answer(line, priority, template, timeout):
     await line.finish(call, {"reason": "transfer", "priority": priority})
     assert line.ari.calls[-1][-1] == timeout
     await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
+    await settled(lambda: line.ari.calls[-1] == ("hangup", "caller-1"))
     assert line.said == [template]
-    assert line.ari.calls[-1] == ("hangup", "caller-1")

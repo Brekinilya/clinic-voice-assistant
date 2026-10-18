@@ -5,7 +5,9 @@ from typing import Literal
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
+from app.cancellation.models import CancelState
 from app.cancellation.service import CancellationService
+from app.contracts import NluResult, SafetyDecision
 from app.diagnostics.recorder import emit
 from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.doctors import DoctorNames
@@ -27,6 +29,7 @@ from app.mis.ports import MisError
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
 from app.scheduling.matching import profile_key
+from app.visits.models import VisitQuery
 from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
 
@@ -100,45 +103,13 @@ class BookingConversation:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
             )
-        if (
-            self.rescheduling
-            and state.move_proposal
-            and set(decision.flags) & {"robot", "no_recording"}
-        ):
-            action = await self.rescheduling.service.store.get(state.move_proposal.action_id)
-            if action.state == MoveState.HELD:
-                await self.rescheduling.service.store.release_call(state.call_id)
-                state = state.model_copy(
-                    update={
-                        "phase": Phase.MOVE_OFFERED,
-                        "move_proposal": None,
-                        "authorization": None,
-                    }
-                )
-            else:
-                state = state.model_copy(
-                    update={"phase": Phase.MOVE_PENDING, "authorization": None}
-                )
         if "medical" in decision.flags or medical_followup:
             state, result = await self.medical.question(state, turn)
             return state, self.information.laboratory_boundary(
                 result, turn, contextual=medical_followup
             )
-        if "robot" in decision.flags:
-            return state, reply(
-                state,
-                turn.turn_id,
-                "Я виртуальный помощник регистратуры. Могу помочь с записью или подготовить запрос сотруднику.",
-                code="ROBOT_DISCLOSED",
-            )
-        if "no_recording" in decision.flags:
-            state = state.model_copy(update={"recording_opt_out": True, "authorization": None})
-            return state, reply(
-                state,
-                turn.turn_id,
-                "Пожелание не записывать разговор сохранено. Продолжим запись к врачу?",
-                code="RECORDING_OPT_OUT",
-            )
+        if decision.flags & {"robot", "no_recording"}:
+            return await self.service_question(state, turn, decision.flags)
         if state.medical_boundary_pending and not state.information_clarifying:
             answer = self.information.short_answer(turn.text)
             if answer == "no":
@@ -146,6 +117,94 @@ class BookingConversation:
             if answer == "repeat":
                 return self.medical.prompt(state, turn)
         return await self.information.step(state, turn)
+
+    async def service_question(
+        self, state: DialogueState, turn: Turn, flags: frozenset[str]
+    ) -> tuple[DialogueState, Reply]:
+        """Служебный ответ не создаёт нового вопроса согласия и не продлевает бронь."""
+        state = state.model_copy(update={"authorization": None})
+        if self.rescheduling and state.move_proposal:
+            action = await self.rescheduling.service.store.get(state.move_proposal.action_id)
+            if action.state != MoveState.HELD:
+                state = state.model_copy(update={"phase": Phase.MOVE_PENDING})
+        phrases = []
+        if "robot" in flags:
+            phrases.append("Я виртуальный помощник регистратуры.")
+        if "no_recording" in flags:
+            state = state.model_copy(update={"recording_opt_out": True})
+            phrases.append("Хорошо, запись разговора отключена.")
+        continuation = (
+            ("Чем могу помочь?",)
+            if state.phase == Phase.READY and not state.medical_boundary_pending
+            else self.information.resume_question(state, turn)
+        )
+        return state, reply(
+            state,
+            turn.turn_id,
+            *phrases,
+            *continuation,
+            code="RECORDING_OPT_OUT" if "no_recording" in flags else "ROBOT_DISCLOSED",
+        )
+
+    async def reset_identity(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply | None]:
+        """Новый поиск не наследует старого пациента даже при отказе/429 МИС."""
+        pending = state.phase in {
+            Phase.RECONCILING,
+            Phase.CANCEL_RECONCILING,
+            Phase.MOVE_PENDING,
+            Phase.MOVE_FINISH_CONFIRM,
+        }
+        if state.proposal:
+            action = await self.booking.store.get(state.proposal.action_id)
+            pending |= action.state in {
+                ActionState.COMMITTING,
+                ActionState.RECONCILING,
+                ActionState.BOOKED,
+            }
+        if self.cancellation and state.cancel_proposal:
+            action = await self.cancellation.cancellation.store.get(state.cancel_proposal.action_id)
+            pending |= action.state in {CancelState.COMMITTING, CancelState.RECONCILING}
+        if self.rescheduling and state.move_proposal:
+            action = await self.rescheduling.service.store.get(state.move_proposal.action_id)
+            pending |= action.state in {
+                MoveState.CREATING,
+                MoveState.CREATE_UNKNOWN,
+                MoveState.NEW_CREATED,
+                MoveState.CANCELLING,
+                MoveState.CANCEL_UNKNOWN,
+                MoveState.MANUAL,
+            }
+        if pending:
+            # Уже отправленное изменение остаётся в журнале T06. Новый пациент
+            # не вправе продолжать его, а локальный сброс не отменяет запрос МИС.
+            return await self.transfer(state, turn, "R-16")
+        await self.release_call(state.call_id)
+        self.booking.clear_call_cache(state.call_id)
+        return state.model_copy(
+            update={
+                "client_id": None,
+                "phase": Phase.IDENTIFYING,
+                "proposal": None,
+                "cancel_proposal": None,
+                "move_proposal": None,
+                "cancel_target": None,
+                "move_target": None,
+                "authorization": None,
+                "options": (),
+                "visit_items": (),
+                "visit_cursor": None,
+                "visit_has_more": False,
+                "visit_query": VisitQuery(),
+                "visit_id": None,
+                "identity_draft": None,
+                "identity_attempts": 0,
+                "misunderstandings": 0,
+                "retry_at": None,
+                "mis_wait_since": None,
+            }
+        ), None
 
     def information_continuation(self, state: DialogueState, turn: Turn) -> tuple[str, ...]:
         """Повтор действующего вопроса только из локальных данных, без чтений МИС."""
@@ -257,21 +316,37 @@ class BookingConversation:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
         if "medical" in decision.flags or "I-13" in result.intents:
             return await self.medical.question(state, turn)
-        if "robot" in decision.flags:
+        if decision.flags & {"robot", "no_recording"}:
+            return await self.service_question(state, turn, decision.flags)
+        if state.client_id is not None and (
+            any(
+                getattr(result.slots, field) is not None
+                for field in ("last_name", "first_name", "middle_name", "birth_date")
+            )
+            or result.alternatives
+        ):
+            state, stopped = await self.reset_identity(state, turn)
+            if stopped is not None:
+                return state, stopped
+        try:
+            return await self.advance(state, turn, result, decision)
+        except MisError as error:
+            # Внешний _process видит состояние до входа в step. Ошибка нового
+            # поиска должна сохранить очищенную личность, а не старую бронь.
+            return mis_failure(state, turn, self.booking.clock.now(), error)
+        except BookingError as error:
+            if str(error) != "IDENTIFICATION_REQUIRED":
+                raise
             return state, reply(
                 state,
                 turn.turn_id,
-                "Я виртуальный помощник регистратуры. Могу помочь с записью или подготовить запрос сотруднику.",
-                code="ROBOT_DISCLOSED",
+                "Не удалось однозначно найти пациента. Назовите ФИО и дату рождения ещё раз.",
+                code="IDENTIFICATION_REQUIRED",
             )
-        if "no_recording" in decision.flags:
-            state = state.model_copy(update={"recording_opt_out": True, "authorization": None})
-            return state, reply(
-                state,
-                turn.turn_id,
-                "Пожелание не записывать разговор сохранено. Продолжим запись к врачу?",
-                code="RECORDING_OPT_OUT",
-            )
+
+    async def advance(
+        self, state: DialogueState, turn: Turn, result: NluResult, decision: SafetyDecision
+    ) -> tuple[DialogueState, Reply]:
         slots, intents = result.slots, set(result.intents)
         if state.medical_boundary_pending:
             refinements = PREFERENCE_FIELDS & slots.model_fields_set

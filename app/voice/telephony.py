@@ -8,8 +8,10 @@
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -26,6 +28,26 @@ log = logging.getLogger(__name__)
 SILENCE_GAP_S = 0.1
 # Раздел 7.5: сколько ждать ответа регистратора по приоритету перевода
 OPERATOR_TIMEOUT_S = {"P1": 20, "P2": 30, "P3": 90}
+# Причины Q.850, при которых регистратор был досягаем, но не взял трубку
+NOT_ANSWERED = {16, 17, 18, 19, 21}
+
+TransferOutcome = Literal["connected", "no_answer", "failed", "aborted"]
+
+
+@dataclass(frozen=True)
+class TransferResult:
+    """Чем кончилась одна попытка перевода. Одна попытка — один результат.
+
+    attempt_id — ключ идемпотентности для получателя (заявка T08): повтор того же события
+    транспортом не должен создать вторую заявку. reason — технический код без данных пациента.
+    """
+
+    attempt_id: str
+    call_id: str
+    route: str | None
+    priority: str
+    outcome: TransferOutcome
+    reason: str | None = None
 
 
 class TelephonySettings(BaseSettings):
@@ -156,7 +178,12 @@ class PhoneCall:
     session: object | None = None
     operator: str | None = None
     priority: str = "P3"
+    route: str | None = None
     connected: bool = False
+    # Разговор с ассистентом закончен: прощание или перевод уже начаты
+    finishing: bool = False
+    attempt: str | None = None
+    reported: bool = False
     rate: int = 24000
     codec: Codec = field(default_factory=lambda: CODECS["ulaw"])
     tasks: set[asyncio.Task] = field(default_factory=set)
@@ -188,6 +215,7 @@ class PhoneChannel:
 
 
 SessionFactory = Callable[[str, PhoneChannel], object]
+TransferSink = Callable[[TransferResult], Awaitable[None] | None]
 # Реплика по шаблону: PCM и его частота
 Say = Callable[[str], Awaitable[tuple[bytes, int]]]
 
@@ -200,8 +228,10 @@ class Telephony:
         sessions: SessionFactory,
         say: Say,
         resample: Callable[[bytes, int, int], bytes],
+        on_transfer: TransferSink | None = None,
     ):
         self.ari = ari
+        self.on_transfer = on_transfer
         self.settings = settings
         self.sessions = sessions
         self.say = say
@@ -231,7 +261,7 @@ class Telephony:
             if kind == "StasisStart":
                 await self._started(channel, event.get("args") or [])
             elif kind in ("StasisEnd", "ChannelDestroyed"):
-                await self._gone(channel)
+                await self._gone(channel, event.get("cause"))
         except Exception:
             log.exception("ошибка обработки %s", kind)
 
@@ -241,7 +271,7 @@ class Telephony:
         if args[:1] == ["operator"]:
             call = self._operators.get(channel)
             if call is not None:
-                await self._operator_answered(call)
+                await self._operator_answered(call, channel)
             return
         await self._incoming(channel)
 
@@ -286,14 +316,21 @@ class Telephony:
         await call.session.start()
 
     async def finish(self, call: PhoneCall, end: dict) -> None:
+        # Сессия шлёт end один раз; повтор события не должен второй раз звать регистратора
+        if call.finishing:
+            return
+        call.finishing = True
         await call.rtp.drained()
         if end.get("reason") == "transfer":
-            await self.transfer(call, end.get("priority") or "P3")
+            await self.transfer(call, end.get("priority") or "P3", end.get("route"))
         else:
             await self.ari.hangup(call.caller)
 
-    async def transfer(self, call: PhoneCall, priority: str) -> None:
+    async def transfer(self, call: PhoneCall, priority: str, route: str | None = None) -> None:
         call.priority = priority
+        call.route = route
+        # Намерение перевести ещё не перевод: исход попытки сообщает transfer_result
+        call.attempt = uuid.uuid4().hex
         timeout = OPERATOR_TIMEOUT_S.get(priority, OPERATOR_TIMEOUT_S["P3"])
         await self._music(call, True)
         try:
@@ -303,18 +340,51 @@ class Telephony:
         except AriError as error:
             # Обычно софтфон регистратора не в сети: это не сбой шлюза, а неотвеченный перевод
             log.warning("регистратор недоступен: %s", error)
+            await self._report(call, "failed", "originate_rejected")
             await self._operator_failed(call)
             return
         self._operators[call.operator] = call
 
-    async def _operator_answered(self, call: PhoneCall) -> None:
-        call.connected = True
+    async def _operator_answered(self, call: PhoneCall, operator: str) -> None:
+        if call.caller not in self.calls or call.operator != operator:
+            # Пациент уже положил трубку: соединять регистратора не с кем
+            self._operators.pop(operator, None)
+            await self.ari.hangup(operator)
+            return
         await self._music(call, False)
-        await self.ari.add(call.bridge, call.operator)
+        try:
+            await self.ari.add(call.bridge, call.operator)
+        except AriError:
+            log.warning("не удалось добавить регистратора в разговор")
+            self._operators.pop(operator, None)
+            await self.ari.hangup(operator)
+            await self._report(call, "failed", "bridge_rejected")
+            self.spawn(call, self._operator_failed(call))
+            return
+        call.connected = True
+        await self._report(call, "connected")
         if call.media is not None:
             await self.ari.remove(call.bridge, call.media)
             await self.ari.hangup(call.media)
         log.info("звонок %s передан регистратору", call.caller)
+
+    async def _report(self, call: PhoneCall, outcome: TransferOutcome, reason=None) -> None:
+        if call.attempt is None or call.reported:
+            return
+        call.reported = True
+        result = TransferResult(
+            call.attempt, call.caller, call.route, call.priority, outcome, reason
+        )
+        log.info("звонок %s: перевод %s %s", call.caller, outcome, reason or "")
+        if self.on_transfer is None:
+            return
+        try:
+            delivered = self.on_transfer(result)
+            if inspect.isawaitable(delivered):
+                await delivered
+        except Exception:
+            # Получатель результата не должен ломать сам звонок
+            log.exception("не удалось передать исход перевода")
 
     async def _operator_failed(self, call: PhoneCall) -> None:
         # Раздел 7.5: на P1 повторяем 103/112 и завершаем. Обратный звонок для P2 и P3 должен
@@ -326,19 +396,25 @@ class Telephony:
         await call.rtp.drained()
         await self.ari.hangup(call.caller)
 
-    async def _gone(self, channel: str) -> None:
+    async def _gone(self, channel: str, cause: int | None = None) -> None:
         if channel in self._operators:
             call = self._operators.pop(channel)
             if call.connected:
                 await self.ari.hangup(call.caller)
             elif call.caller in self.calls:
-                await self._operator_failed(call)
+                outcome = "no_answer" if cause is None or cause in NOT_ANSWERED else "failed"
+                await self._report(call, outcome, f"q850_{cause}" if cause else None)
+                # Сообщение о неответе — отдельной задачей: события ARI (отбой пациента)
+                # не должны ждать, пока оно доиграет
+                self.spawn(call, self._operator_failed(call))
             return
         call = self.calls.pop(channel, None)
         if call is not None:
             await self._close(call)
 
-    async def _close(self, call: PhoneCall) -> None:
+    async def _close(self, call: PhoneCall, reason: str = "caller_hung_up") -> None:
+        # Пациент ушёл (или шлюз остановлен), пока ждали регистратора
+        await self._report(call, "aborted", reason)
         for task in call.tasks:
             task.cancel()
         if call.session is not None:
@@ -368,7 +444,7 @@ class Telephony:
     async def close(self) -> None:
         for call in list(self.calls.values()):
             await self.ari.hangup(call.caller)
-            await self._close(call)
+            await self._close(call, "gateway_stopped")
         self.calls.clear()
 
 

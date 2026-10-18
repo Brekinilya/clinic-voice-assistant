@@ -163,6 +163,7 @@ async def test_red_flag_answered_before_phrase_ends():
         "reason": "transfer",
         "route": "R-01",
         "priority": "P1",
+        "cause": "dialogue",
     }
     await call.close()
 
