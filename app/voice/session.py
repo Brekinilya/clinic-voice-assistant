@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import StrEnum
@@ -20,6 +20,7 @@ from typing import Protocol
 from app.diagnostics.channel import ObservedChannel
 from app.dialogue.models import Turn
 from app.nlu.parsers.answers import parse_answer
+from app.reminders.models import Outcome
 from app.voice.audibility import split_audibility
 from app.voice.endpoint import FRAME_BYTES, Endpointer, EndpointSettings
 from app.voice.fallback import load_fallback
@@ -40,6 +41,8 @@ PLAYBACK_MARGIN_S = 0.3
 ASR_FAILURES_LIMIT = 2
 # После такого ответа продолжать разговор нельзя: квитанция прошлой реплики не закрыта
 INTERRUPTED = "PROCESSING_INTERRUPTED"
+# Коды, которыми диалог напоминания сообщает исход разговора
+REMINDER_OUTCOMES = frozenset(Outcome)
 
 
 class RecognitionStatus(StrEnum):
@@ -96,8 +99,17 @@ class CallSession:
         now: Callable[[], float] = time.monotonic,
         runtime: SpeechRuntime | None = None,
         wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        outbound: object | None = None,
+        machine: bool = False,
+        on_outcome: Callable[[str | None], Awaitable[None]] | None = None,
     ):
         self.call_id = call_id
+        # Исходящее напоминание: первым говорит диалог, исход С-10 уходит исполнителю
+        self.outbound = outbound
+        self.machine = machine
+        self._on_outcome = on_outcome
+        self._outcome: str | None = None
+        self._outcome_sent = False
         debug = getattr(dialogue, "debug", None)
         self.channel = ObservedChannel(channel, debug, call_id) if debug is not None else channel
         self.dialogue = dialogue
@@ -161,6 +173,9 @@ class CallSession:
         self._cause: str | None = None
 
     async def start(self) -> None:
+        if self.outbound is not None:
+            await self._start_outbound()
+            return
         await self.channel.send_json({"type": "ready", "call_id": self.call_id})
         today = self.today()
         if not await self._say(0, [self.renderer.render("greeting.inbound", today).text]):
@@ -168,6 +183,26 @@ class CallSession:
         # Если приветствие перебили шумом, переспросим коротко, а не повторим его целиком
         self._last_reply = [self.renderer.render("ask.how_can_help", today).text]
         self._watch_silence()
+
+    async def _start_outbound(self) -> None:
+        await self.channel.send_json(
+            {"type": "ready", "call_id": self.call_id, "direction": "outbound"}
+        )
+        try:
+            opening = (
+                self.dialogue.outbound_event(self.call_id, "voicemail")
+                if self.machine
+                else self.dialogue.open_outbound(self.call_id, self.outbound)
+            )
+            reply = await asyncio.wait_for(opening, self.settings.dialogue_timeout_s)
+        except Exception:
+            # Пациент взял трубку, а диалог не начался: молча кладём, попытка без исхода
+            log.error("диалог не открыл исходящий звонок")
+            self._cause = "outbound_unavailable"
+            self.closing = True
+            self._spawn(self._finish("ended"))
+            return
+        await self._deliver(0, reply)
 
     async def feed(self, pcm: bytes) -> None:
         """Звук от клиента: PCM 16 бит, 16 кГц, моно, кусками любой длины."""
@@ -210,8 +245,18 @@ class CallSession:
                 cancelled.append(task)
         await asyncio.gather(*cancelled, return_exceptions=True)
         await self._end_dialogue()
+        await self._report_outcome()
         if self._owns_runtime:
             self.runtime.close(cancel_requests=False)
+
+    async def _report_outcome(self) -> None:
+        if self._on_outcome is None or self._outcome_sent:
+            return
+        self._outcome_sent = True
+        try:
+            await self._on_outcome(self._outcome)
+        except Exception:
+            log.error("не удалось сообщить исход напоминания")
 
     async def _end_dialogue(self) -> None:
         if self._end_request is None:
@@ -525,6 +570,8 @@ class CallSession:
         self._audibility_pending = False
         transfer = getattr(reply, "transfer", None)
         phase = str(getattr(reply, "phase", "") or "")
+        if self.outbound is not None and code in REMINDER_OUTCOMES:
+            self._outcome = code
         if code == "NOT_UNDERSTOOD":
             self._misunderstandings += 1
             if self._misunderstandings >= 3:

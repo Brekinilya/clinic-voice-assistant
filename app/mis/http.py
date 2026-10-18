@@ -21,6 +21,7 @@ from app.diagnostics.recorder import trace_mis_request
 from app.mis.budget import current_demand, immediate
 from app.mis.models import (
     Client,
+    ClientComment,
     Doctor,
     Visit,
     VisitChange,
@@ -340,11 +341,12 @@ class HttpMedicalSystem:
         cached = self._client_cache.get((self._scope(), client_id))
         return cached is not None and cached[0] > self._elapsed()
 
-    async def client(self, client_id: int) -> Client:
+    async def client(self, client_id: int, *, fresh: bool = False) -> Client:
         self._id(client_id)
         key = (self._scope(), client_id)
         cached = self._client_cache.get(key)
-        if cached is not None and cached[0] > self._elapsed():
+        # Перед изменением комментария читаем его заново: чужую правку нельзя затереть
+        if not fresh and cached is not None and cached[0] > self._elapsed():
             return cached[1]
         result = self._decode(await self._request("GET", f"clients/{client_id}"), Client)
         if result.id != client_id:
@@ -428,6 +430,23 @@ class HttpMedicalSystem:
             return self._decode(response, Visit, write=True)
         finally:
             self._invalidate_visits()
+
+    async def update_client_comment(self, client_id: int, request: ClientComment) -> Client:
+        self._id(client_id)
+        body = request.body()
+        self._invalidate_clients(client_id)
+        try:
+            response = await self._request("PATCH", f"clients/{client_id}", json=body)
+            result = self._decode(response, Client, write=True)
+        finally:
+            self._invalidate_clients(client_id)
+        if result.id != client_id:
+            raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    def _invalidate_clients(self, client_id: int) -> None:
+        for key in [k for k in self._client_cache if k[1] == client_id]:
+            del self._client_cache[key]
 
     @staticmethod
     def _id(value: int) -> None:

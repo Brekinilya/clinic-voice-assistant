@@ -4,7 +4,15 @@ from contextlib import AbstractAsyncContextManager
 from datetime import date
 from typing import Protocol
 
-from app.mis.models import Client, Doctor, Visit, VisitChange, VisitCreate, VisitStatus
+from app.mis.models import (
+    Client,
+    ClientComment,
+    Doctor,
+    Visit,
+    VisitChange,
+    VisitCreate,
+    VisitStatus,
+)
 
 
 class MisError(Exception):
@@ -50,7 +58,7 @@ class MedicalSystem(Protocol):
         self, specialty: str | None = None, *, fresh: bool = False
     ) -> list[Doctor]: ...
     async def clients(self, last_name: str, first_name: str, birth_date: date) -> list[Client]: ...
-    async def client(self, client_id: int) -> Client: ...
+    async def client(self, client_id: int, *, fresh: bool = False) -> Client: ...
     async def visit(self, visit_id: int) -> Visit: ...
     async def visits(
         self,
@@ -65,3 +73,4 @@ class MedicalSystem(Protocol):
     ) -> list[Visit]: ...
     async def create_visit(self, request: VisitCreate) -> Visit: ...
     async def change_visit(self, visit_id: int, request: VisitChange) -> Visit: ...
+    async def update_client_comment(self, client_id: int, request: ClientComment) -> Client: ...
