@@ -78,6 +78,8 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
         "cancel_offer": ("cancel_or_move", "free"),
         "move_source": ("move_source", "yes_no"),
         "move_empty": ("new_booking", "yes_no"),
+        "remind_verify": ("reminder_addressee", "yes_no"),
+        "remind_details": ("reminder_attendance", "yes_no"),
     }
     if state.phase in questions:
         key, expect = questions[state.phase]

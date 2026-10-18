@@ -10,6 +10,7 @@ from app.booking.preferences import SlotPreferences
 from app.cancellation.models import CancelProposal
 from app.contracts import ExpectedAnswer
 from app.dialogue.expectation import ActiveQuestion, active_question, expected_answer
+from app.dialogue.outbound import ReminderResult
 from app.mis.models import MisId
 from app.rescheduling.models import MoveProposal
 from app.visits.models import VisitCursor, VisitQuery, VisitSummary
@@ -45,6 +46,8 @@ class Phase(StrEnum):
     MOVE_FINISH_CONFIRM = "move_finish_confirm"
     MOVE_PENDING = "move_pending"
     RESCHEDULED = "rescheduled"
+    REMIND_VERIFY = "remind_verify"
+    REMIND_DETAILS = "remind_details"
 
 
 class Turn(BookingModel):
@@ -149,6 +152,7 @@ class Reply(BookingModel):
     expect: ExpectedAnswer = "free"
     # Вычисляется из состояния; старые квитанции без поля остаются читаемыми.
     question: ActiveQuestion | None = None
+    reminder_result: ReminderResult | None = None
     options: tuple[Slot, ...] = Field(default=(), max_length=3)
     proposal: Proposal | None = None
     code: str | None = None

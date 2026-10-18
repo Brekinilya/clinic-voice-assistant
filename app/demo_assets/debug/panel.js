@@ -27,7 +27,8 @@ const questions = {
   new_booking:"Нужна ли новая запись",visit_owner:"Пациент звонит о своих записях",
   visit_next_page:"Следующая страница записей",more_help:"Нужна ли ещё помощь",
   information_details:"Уточнение справочного вопроса",medical_booking:"Предложение терапевта",
-  specialty:"Выбор специальности",preferences:"День и время"
+  specialty:"Выбор специальности",preferences:"День и время",
+  reminder_addressee:"Проверка адресата напоминания",reminder_attendance:"Подтверждение посещения"
 };
 const node = (tag, cls, text) => {
   const n=document.createElement(tag);
