@@ -15,6 +15,28 @@ NEGATIVE = re.compile(
 )
 
 
+WORD = re.compile(r"[а-яёa-z0-9]+", re.I)
+# Связка между ответом шлюзу и командой: «да, слышу, но отмените запись»
+JOINERS = {"но", "а", "и", "только", "так", "вот"}
+
+
+def split_audibility(text: str) -> tuple[Literal["yes", "no"] | None, str]:
+    """Ответ на «Вы меня слышите?» в начале фразы и всё, что сказано после него.
+
+    Остаток — новая реплика для диалога; сам ответ шлюзу согласием на действие не считается.
+    """
+    words = list(WORD.finditer(text))
+    for size in range(len(words), 0, -1):
+        answer = audibility_answer(" ".join(w.group() for w in words[:size]))
+        if answer is None:
+            continue
+        rest = words[size:]
+        while rest and normalize(rest[0].group()) in JOINERS:
+            rest = rest[1:]
+        return answer, text[rest[0].start() :].strip() if rest else ""
+    return None, text
+
+
 def audibility_answer(text: str) -> Literal["yes", "no"] | None:
     words = " ".join(re.findall(r"[а-яa-z0-9]+", normalize(text)))
     # Только целая фраза: «да, но отмените запись» остаётся новой командой.

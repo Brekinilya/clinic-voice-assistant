@@ -151,6 +151,15 @@ function describe(e){
     case "voice.end":title="Шлюз завершает разговор";
     body=d.reason||"Завершение";
     if(d.route)body+=" · "+d.route;
+    if(d.cause)chips.push(d.cause);
+    break;
+    case "voice.question":title=d.kind==="audibility"?"Шлюз спросил: «Вы меня слышите?»":"Шлюз предложил сотрудника";
+    body="Ответ на этот вопрос не подтверждает действие диалога";
+    break;
+    case "voice.transfer_result":title="Исход перевода";
+    body=[d.outcome,d.route,d.priority].filter(Boolean).join(" · ");
+    cls=d.outcome==="connected"?"":"error";
+    if(d.reason)chips.push(d.reason);
     break;
     case "privacy.opt_out":title="Пациент отказался от сохранения текста";
     body="История диагностики этого звонка очищена";

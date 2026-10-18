@@ -20,7 +20,7 @@ from typing import Protocol
 from app.diagnostics.channel import ObservedChannel
 from app.dialogue.models import Turn
 from app.nlu.parsers.answers import parse_answer
-from app.voice.audibility import audibility_answer
+from app.voice.audibility import split_audibility
 from app.voice.endpoint import FRAME_BYTES, Endpointer, EndpointSettings
 from app.voice.fallback import load_fallback
 from app.voice.render import Renderer, default_renderer
@@ -36,6 +36,10 @@ GLUE = bytes(FRAME_BYTES * 6)
 DICTATION = re.compile(r"фамили|дат\w* рождения|полис|номер телефона|продиктуйте", re.I)
 # Клиент начинает играть звук чуть позже, чем шлюз его отправил
 PLAYBACK_MARGIN_S = 0.3
+# Столько сбоев распознавания подряд допустимо: дальше это неисправность, а не шум на линии
+ASR_FAILURES_LIMIT = 2
+# После такого ответа продолжать разговор нельзя: квитанция прошлой реплики не закрыта
+INTERRUPTED = "PROCESSING_INTERRUPTED"
 
 
 class RecognitionStatus(StrEnum):
@@ -145,12 +149,16 @@ class CallSession:
         self._speech_deadline: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         self._end_request: asyncio.Task | None = None
+        # Непонимание подряд: пустой ASR и NOT_UNDERSTOOD диалога считаются вместе (R-05)
         self._misunderstandings = 0
+        self._asr_failures = 0
         self._operator_offered = False
         self._audibility_pending = False
         self._question_before_operator: list[str] = []
         self._pending_transfer: dict | None = None
         self._fallback_used = False
+        # Почему разговор закончился переводом или выходом — для панели, без текстов
+        self._cause: str | None = None
 
     async def start(self) -> None:
         await self.channel.send_json({"type": "ready", "call_id": self.call_id})
@@ -224,6 +232,8 @@ class CallSession:
         self._cancel(self._partial)
         self._cancel(self._speech_deadline)
         self._resume_at = None
+        # Причина сбоя вытесненной реплики к новой не относится
+        self._cause = None
         self.turn_id += 1
         try:
             # До ASR и вне очереди итоговых реплик отзываем прежнее «да».
@@ -233,7 +243,7 @@ class CallSession:
             )
         except Exception:
             log.error("диалог не подтвердил начало новой речи")
-            await self._deliver(self.turn_id, None)
+            await self._deliver(self.turn_id, None, cause="input_started")
             return
         self._next_partial_ms = self.settings.partial_ms
         self._speech_deadline = asyncio.create_task(self._speech_timeout(self.turn_id))
@@ -301,9 +311,14 @@ class CallSession:
         )
         if turn in self._answered:
             return
-        if result.status in {RecognitionStatus.FAILED, RecognitionStatus.TIMED_OUT}:
-            await self._deliver(turn, None)
+        if result.status == RecognitionStatus.TIMED_OUT:
+            # Нативный поток модели всё ещё занят: переспрос лишь спрятал бы зависание
+            await self._deliver(turn, None, cause="asr_timeout")
             return
+        if result.status == RecognitionStatus.FAILED:
+            await self._asr_failed(turn)
+            return
+        self._asr_failures = 0
         if result.status == RecognitionStatus.SILENCE:
             await self._unheard(turn)
             return
@@ -317,7 +332,7 @@ class CallSession:
                 timeout=self.settings.asr_timeout_s + self.settings.dialogue_timeout_s,
             )
             if not done:
-                await self._deliver(turn, None)
+                await self._deliver(turn, None, cause="partial_timeout")
                 return
         if turn != self.turn_id or self.ended or self.closing or turn in self._answered:
             return
@@ -328,20 +343,23 @@ class CallSession:
             if turn != self.turn_id or self.ended or self.closing or turn in self._answered:
                 return
             if safety is None:
-                await self._deliver(turn, None)
+                await self._deliver(turn, None, cause="dialogue_unavailable")
                 return
             if safety is not None and getattr(safety, "kind", "reply") != "partial":
                 await self._deliver(turn, safety)
                 return
         if self._audibility_pending:
             self._audibility_pending = False
-            answer = audibility_answer(text)
-            if answer is not None:
+            answer, rest = split_audibility(text)
+            if answer is not None and rest:
+                # «Да, слышу, отмените запись»: «да» ответило шлюзу, команда идёт в диалог
+                text = rest
+            elif answer is not None:
                 # Ответили на вопрос шлюза, а не подтвердили прежнюю бронь.
                 # Реплику нельзя склеивать со следующим ответом во время синтеза.
+                # Счёт непонимания не трогаем: иначе тишина обнуляла бы путь к R-05.
                 self._asked_turn = turn
                 self._answered.add(turn)
-                self._misunderstandings = 0
                 phrases = list(self._last_reply)
                 if answer == "no":
                     phrases.insert(0, "Попробую повторить.")
@@ -358,15 +376,15 @@ class CallSession:
                 await self._recognition_transfer(turn)
                 return
             if answer == "no":
+                # Отказ не обнуляет счёт: следующее непонимание — третье, и это перевод R-05.
+                # Иначе предложение оператора повторялось бы по кругу.
                 self._asked_turn = turn
                 self._answered.add(turn)
-                self._misunderstandings = 0
-                await self._say(
-                    turn,
-                    self._question_before_operator
-                    or [self.renderer.render("ask.how_can_help", self.today()).text],
-                )
-                self._watch_silence()
+                self._last_reply = self._question_before_operator or [
+                    self.renderer.render("ask.how_can_help", self.today()).text
+                ]
+                if await self._say(turn, self._last_reply):
+                    self._watch_silence()
                 return
         self._asked_turn = turn
         reply = await self._ask(turn, text)
@@ -386,6 +404,7 @@ class CallSession:
         try:
             request = self.runtime.request(self._handle(turn, text, final=True))
         except InferenceBusy:
+            self._cause = "dialogue_busy"
             await self._end_dialogue()
             return None
         started = self.now()
@@ -400,6 +419,7 @@ class CallSession:
                 {request}, timeout=max(0, self.settings.dialogue_timeout_s - (self.now() - started))
             )
         if not done:
+            self._cause = "dialogue_timeout"
             await self._end_dialogue()
             return None
         # Ход диалога не отменяем: прерванная обработка оставила бы реплику незавершённой
@@ -428,6 +448,7 @@ class CallSession:
             return None
 
     async def _recognition_transfer(self, turn: int) -> None:
+        self._cause = "not_understood"
         await self._deliver(
             turn,
             SimpleNamespace(
@@ -438,6 +459,23 @@ class CallSession:
             ),
         )
 
+    async def _asr_failed(self, turn: int) -> None:
+        # Сбой движка — не непонимание пациента: один переспрос, повторный сбой подряд — R-06
+        self._asr_failures += 1
+        if self._asr_failures >= ASR_FAILURES_LIMIT:
+            await self._deliver(turn, None, cause="asr_failed")
+            return
+        self._asked_turn = turn
+        self._answered.add(turn)
+        if await self._say(turn, [self.renderer.render("reask.first", self.today()).text]):
+            self._watch_silence()
+
+    async def _offer_operator(self, turn: int) -> str:
+        self._operator_offered = True
+        self._question_before_operator = list(self._last_reply)
+        await self.channel.send_json({"type": "question", "turn_id": turn, "kind": "operator"})
+        return self.renderer.render("reask.offer_operator", self.today()).text
+
     async def _unheard(self, turn: int) -> None:
         if self.ended or self.closing or turn != self.turn_id:
             return
@@ -446,9 +484,9 @@ class CallSession:
             await self._recognition_transfer(turn)
             return
         if self._misunderstandings == 2:
-            self._operator_offered = True
-            self._question_before_operator = list(self._last_reply)
-            phrase = self.renderer.render("reask.offer_operator", self.today()).text
+            phrase = await self._offer_operator(turn)
+            # На «Вы меня слышите?» повторяем именно этот вопрос
+            self._last_reply = [phrase]
         elif self._barged_in and self._last_reply:
             phrase = self._last_reply[-1]
         else:
@@ -457,13 +495,24 @@ class CallSession:
             self._watch_silence()
 
     async def _deliver(
-        self, turn: int, reply: object | None, timing: dict | None = None, detected: float = 0.0
+        self,
+        turn: int,
+        reply: object | None,
+        timing: dict | None = None,
+        detected: float = 0.0,
+        *,
+        cause: str | None = None,
     ) -> None:
         # Уже переводим или прощаемся — второй ответ не нужен
         if turn != self.turn_id or self.ended or self.closing:
             return
-        if reply is None:
-            # Раздел 7.3, R-06: система не отвечает — к регистратору
+        code = getattr(reply, "code", None)
+        if reply is None or code == INTERRUPTED:
+            # Раздел 7.3, R-06: система не отвечает — к регистратору. Прерванная обработка —
+            # тоже тупик: на каждую следующую реплику диалог ответил бы тем же.
+            if reply is not None:
+                cause = "interrupted"
+            self._cause = cause or self._cause or "dialogue_unavailable"
             text = self.renderer.render("transfer.mis_down", self.today()).text
             self.closing = True
             self._pending_transfer = {"route": "R-06", "priority": "P3"}
@@ -476,16 +525,13 @@ class CallSession:
         self._audibility_pending = False
         transfer = getattr(reply, "transfer", None)
         phase = str(getattr(reply, "phase", "") or "")
-        code = getattr(reply, "code", None)
         if code == "NOT_UNDERSTOOD":
             self._misunderstandings += 1
             if self._misunderstandings >= 3:
                 await self._recognition_transfer(turn)
                 return
             if self._misunderstandings == 2:
-                self._operator_offered = True
-                self._question_before_operator = list(self._last_reply)
-                utterances = [self.renderer.render("reask.offer_operator", self.today()).text]
+                utterances = [await self._offer_operator(turn)]
         elif code != "ASR_NOT_UNDERSTOOD":
             self._misunderstandings = 0
         self._resume_at = self._mis_resume(reply) if code == "WAIT_MIS" else None
@@ -528,6 +574,7 @@ class CallSession:
         if transfer is not None:
             route = getattr(transfer, "route", None)
             priority = getattr(transfer, "priority", None)
+            self._cause = self._cause or "dialogue"
             self._spawn(self._finish("transfer", {"route": route, "priority": priority}))
         elif self.closing:
             self._spawn(self._finish("ended", delay=self.settings.goodbye_hangup_s))
@@ -578,6 +625,7 @@ class CallSession:
         if self.ended or self._fallback_used:
             return
         self._fallback_used = True
+        self._cause = code
         self.closing = True
         self._interruptible = False
         self._cancel(self._watch)
@@ -682,6 +730,9 @@ class CallSession:
             text = self.renderer.render(template, self.today()).text
             if template == "silence.first":
                 self._audibility_pending = True
+                await self.channel.send_json(
+                    {"type": "question", "turn_id": self.turn_id, "kind": "audibility"}
+                )
             if not await self._say(self.turn_id, [text]):
                 return
         self.closing = True
@@ -692,7 +743,8 @@ class CallSession:
         if self.ended:
             return
         self.ended = True
-        await self.channel.send_json({"type": "end", "reason": reason, **(extra or {})})
+        cause = {"cause": self._cause} if self._cause else {}
+        await self.channel.send_json({"type": "end", "reason": reason, **(extra or {}), **cause})
         self.finished.set()
 
     async def _sleep_until(self, moment: float) -> None:
