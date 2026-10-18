@@ -10,6 +10,7 @@ from app.dialogue.cancellation import CancellationConversation
 from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
 from app.dialogue.identity import IdentityDrafts
+from app.dialogue.information import InformationConversation
 from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
 from app.dialogue.nlu_adapter import RulesInput
@@ -20,6 +21,7 @@ from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
+from app.information.catalog import information_service
 from app.mis.ports import MisError
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
@@ -52,6 +54,9 @@ class BookingConversation:
             cancellation.operations = booking.operations
         self.rooms = rooms
         self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
+        self.information = InformationConversation(
+            information_service(), self.presenter, store, self.information_continuation
+        )
         self.input = (
             nlu if nlu is not None else RulesInput(booking.mis, booking.clock, booking.schedule)
         )
@@ -89,6 +94,11 @@ class BookingConversation:
         self, state: DialogueState, turn: Turn
     ) -> tuple[DialogueState, Reply] | None:
         decision = self.safety.evaluate(state.call_id, turn)
+        medical_followup = self.information.medical_followup(state, turn)
+        if decision.flags & {"medical", "robot", "no_recording"} or medical_followup:
+            state = state.model_copy(
+                update={"information_topic": None, "information_clarifying": False}
+            )
         if (
             self.rescheduling
             and state.move_proposal
@@ -108,8 +118,11 @@ class BookingConversation:
                 state = state.model_copy(
                     update={"phase": Phase.MOVE_PENDING, "authorization": None}
                 )
-        if "medical" in decision.flags:
-            return await self.medical.question(state, turn)
+        if "medical" in decision.flags or medical_followup:
+            state, result = await self.medical.question(state, turn)
+            return state, self.information.laboratory_boundary(
+                result, turn, contextual=medical_followup
+            )
         if "robot" in decision.flags:
             return state, reply(
                 state,
@@ -125,7 +138,44 @@ class BookingConversation:
                 "Пожелание не записывать разговор сохранено. Продолжим запись к врачу?",
                 code="RECORDING_OPT_OUT",
             )
-        return None
+        if state.medical_boundary_pending and not state.information_clarifying:
+            answer = self.information.short_answer(turn.text)
+            if answer == "no":
+                return await self.medical.decline(state, turn)
+            if answer == "repeat":
+                return self.medical.prompt(state, turn)
+        return await self.information.step(state, turn)
+
+    def information_continuation(self, state: DialogueState, turn: Turn) -> tuple[str, ...]:
+        """Повтор действующего вопроса только из локальных данных, без чтений МИС."""
+        if state.phase == Phase.HELD and state.proposal is not None:
+            room = (
+                self.rooms.room(state.proposal.slot.doctor_id, state.proposal.slot.scheduled_at)
+                if self.rooms
+                else None
+            )
+            return self.presenter.confirmation(
+                state.proposal.slot, state.proposal.doctor_name, room
+            )
+        if state.phase == Phase.CANCEL_CONFIRM and self.cancellation and state.cancel_proposal:
+            return self.cancellation.confirmation(state, turn)[1].utterances
+        if (
+            state.phase in {Phase.MOVE_CONFIRM, Phase.MOVE_FINISH_CONFIRM}
+            and self.rescheduling
+            and state.move_proposal
+        ):
+            return self.rescheduling.confirmation(state, turn)[1].utterances
+        if state.phase == Phase.CANCEL_OFFER and state.cancel_target:
+            return (
+                CancellationConversation.visit_phrase(state.cancel_target),
+                "Могу перенести запись вместо отмены. Перенести или отменить?",
+            )
+        if state.phase == Phase.MOVE_SOURCE and state.move_target:
+            return (
+                CancellationConversation.visit_phrase(state.move_target),
+                "Эту запись переносим? Укажите новый день или время.",
+            )
+        return ()
 
     async def transfer(
         self,
@@ -192,6 +242,10 @@ class BookingConversation:
         return state, reply(state, turn.turn_id, *phrases)
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
+        # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
+        state = state.model_copy(
+            update={"information_topic": None, "information_clarifying": False}
+        )
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")

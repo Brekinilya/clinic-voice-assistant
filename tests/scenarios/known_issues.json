@@ -33,42 +33,6 @@
         }
       ]
     },
-    "D-03": {
-      "status": "fail",
-      "reason": "T09: справочный сценарий анализов не завершён",
-      "findings": [
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.values_refused",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "phase:ident.ask",
-          "detail": "Получено состояние ready",
-          "kind": "fail",
-          "step": 2
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.ready",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.how_to_get",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код INFO_GIVEN",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
     "D-04": {
       "status": "fail",
       "reason": "T20: отсутствует подтверждённая доставка SMS",
@@ -519,54 +483,6 @@
         }
       ]
     },
-    "M-08": {
-      "status": "fail",
-      "reason": "T09: FAQ сроков анализов не завершён; лабораторный API не требуется",
-      "findings": [
-        {
-          "code": "phase:ident.ask",
-          "detail": "Получено состояние handoff",
-          "kind": "fail",
-          "step": 2
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.ready",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.pending",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.how_to_get",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "labs_status_source_T09",
-          "detail": "Не подключено требование: labs.no_values",
-          "kind": "unsupported",
-          "step": 4
-        },
-        {
-          "code": "phase:closing.goodbye",
-          "detail": "Получено состояние handoff",
-          "kind": "fail",
-          "step": 5
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код INFO_GIVEN",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
     "M-09 цена из справочника": {
       "status": "fail",
       "reason": "T09: платный справочный маршрут не завершён; оплату не разрабатываем",
@@ -834,36 +750,6 @@
           "detail": "Не подключено требование: ident.relation",
           "kind": "unsupported",
           "step": 3
-        }
-      ]
-    },
-    "M-13": {
-      "status": "fail",
-      "reason": "T09: справка о прикреплении не завершена",
-      "findings": [
-        {
-          "code": "faq_T09",
-          "detail": "Не подключено требование: attach.how",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "faq_T09",
-          "detail": "Не подключено требование: attach.before",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "phase:closing.goodbye",
-          "detail": "Получено состояние handoff",
-          "kind": "fail",
-          "step": 4
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код INFO_GIVEN",
-          "kind": "fail",
-          "step": null
         }
       ]
     },

@@ -70,6 +70,52 @@ TEXT_REQUIREMENTS = {
     "reask.offer_operator": r"оператор|сотрудник|регистратор",
 }
 
+# Проверяем и происхождение, и содержание; одного INFO_GIVEN недостаточно.
+INFORMATION_EXPECTATIONS = {
+    "attach.how": (
+        "attachment",
+        (r"Госуслуг", r"окне номер один", r"паспорт", r"полис", r"СНИЛС", r"трех рабочих дней"),
+    ),
+    "attach.before": (
+        "before_attachment",
+        (r"Неотложную и экстренную помощь", r"после прикрепления", r"платно"),
+    ),
+}
+
+LABORATORY_EXPECTATIONS = {
+    "labs.ask_type": (
+        {"INFORMATION_REQUIRED", "INFO_UNAVAILABLE"},
+        ("lab_terms", "lab_status"),
+        (r"какое именно исследование",),
+    ),
+    "labs.general_terms": (
+        {"INFO_GIVEN"},
+        ("lab:",),
+        (r"обычный срок", r"рабочи", r"не проверяю|не подтверждение"),
+    ),
+    "labs.how_to_get": (
+        {"INFO_GIVEN", "MEDICAL_BOUNDARY"},
+        ("lab_collection", "lab_values"),
+        (
+            r"Госуслуг",
+            r"окне номер три",
+            r"лечащего врача",
+            r"двенадцати до девятнадцати",
+            r"по будням",
+        ),
+    ),
+    "labs.values_refused": (
+        {"MEDICAL_BOUNDARY"},
+        ("lab_values",),
+        (r"значений результатов я не вижу", r"не могу их оценивать", r"Записать вас к терапевту"),
+    ),
+    "labs.no_values": (
+        {"MEDICAL_BOUNDARY"},
+        ("lab_values",),
+        (r"значений результатов я не вижу", r"не могу их оценивать", r"Записать вас к терапевту"),
+    ),
+}
+
 
 @dataclass
 class Finding:
@@ -173,7 +219,35 @@ def verify_step(result, number, step, response):
         result.add("slot_weekdays", "Предложен запрещённый день недели", step=number)
     for name in templates(step):
         gap = next((value for prefix, value in GAPS.items() if name.startswith(prefix)), None)
-        if gap:
+        if name in LABORATORY_EXPECTATIONS:
+            codes, topics, required = LABORATORY_EXPECTATIONS[name]
+            if (
+                response.code not in codes
+                or response.information is None
+                or not response.information.topic.startswith(topics)
+                or not response.information.sections
+                or not all(re.search(pattern, text, re.IGNORECASE) for pattern in required)
+            ):
+                result.add(
+                    "information:" + name,
+                    "Не подтверждена требуемая лабораторная справка",
+                    step=number,
+                )
+            continue
+        if name in INFORMATION_EXPECTATIONS:
+            topic, required = INFORMATION_EXPECTATIONS[name]
+            if (
+                response.code != "INFO_GIVEN"
+                or response.information is None
+                or response.information.topic != topic
+                or not response.information.sections
+                or not all(re.search(pattern, text, re.IGNORECASE) for pattern in required)
+            ):
+                result.add(
+                    "information:" + name, "Не подтверждена требуемая общая справка", step=number
+                )
+            continue
+        elif gap:
             result.add(gap, "Не подключено требование: " + name, "unsupported", number)
             continue
         if name in PHASES:
@@ -346,6 +420,15 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         "identified": state["client_id"] is not None,
                     }
                 )
+                if (
+                    reply.information is not None
+                    and len(runtime.emulator.requests) != requests_before
+                ):
+                    result.add(
+                        "information_mis_request",
+                        "Общая справка потребовала запросов к МИС",
+                        step=number,
+                    )
                 mutations_after = (
                     runtime.emulator.write_count,
                     runtime.emulator.patch_count,

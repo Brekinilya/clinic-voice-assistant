@@ -112,6 +112,9 @@ class DialogueState(BookingModel):
     misunderstandings: int = 0
     recording_opt_out: bool = False
     medical_boundary_pending: bool = False
+    # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.
+    information_topic: str | None = None
+    information_clarifying: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     purpose: Literal["booking", "visits", "cancel", "reschedule"] = "booking"
@@ -127,6 +130,13 @@ class DialogueState(BookingModel):
     visit_items: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     visit_cursor: VisitCursor | None = None
     visit_has_more: bool = False
+
+
+class InformationReference(BookingModel):
+    document: str
+    version: str
+    topic: str
+    sections: tuple[str, ...]
 
 
 class Reply(BookingModel):
@@ -149,6 +159,7 @@ class Reply(BookingModel):
     has_more_visits: bool = False
     cancel_proposal: CancelProposal | None = None
     move_proposal: MoveProposal | None = None
+    information: InformationReference | None = None
 
     @field_validator("utterances")
     @classmethod

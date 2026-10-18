@@ -5,7 +5,16 @@ from datetime import datetime, time
 
 from app.contracts import SafetyDecision
 from app.nlu.dictionaries import load_flags, load_red_flags
-from app.nlu.lexicon import Hit
+from app.nlu.lexicon import Hit, Pattern, tokenize
+
+# Вопрос о часах работы — справка, а не просьба перевести звонок.
+# Явная просьба сотрудника сохраняет приоритет и в той же фразе с вопросом о графике.
+OPERATOR_HOURS = Pattern.parse(
+    "оператор|регистратура|регистратор + когда|скольки|режим|график|час|время|=ли + работать|открываться|закрываться|доступный"
+)
+OPERATOR_REQUEST = Pattern.parse(
+    "соединить|соединять|переключить|переключать|позвать|дать|перевести|поговорить|говорить|нужный|хотеть|надо|живой"
+)
 
 FLAGS = (
     "red_a",
@@ -49,6 +58,9 @@ class SafetyVerdict:
 
 def check(text: str, final: bool = True, operators_on_duty: bool = True) -> SafetyVerdict:
     hits = tuple(load_red_flags().find(text)) + tuple(load_flags().find(text))
+    tokens = tokenize(text)
+    if OPERATOR_HOURS.find(tokens, 24) and not OPERATOR_REQUEST.find(tokens, 24):
+        hits = tuple(hit for hit in hits if hit.key != "operator")
     flags = frozenset(hit.key.split(".")[0] for hit in hits)
     return SafetyVerdict(flags, _rule(flags, hits, operators_on_duty), final, hits)
 
