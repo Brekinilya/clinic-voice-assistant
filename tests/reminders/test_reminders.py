@@ -14,11 +14,48 @@ from app.reminders.executor import LEASE, ReminderExecutor
 from app.reminders.marks import ReminderMarks, confirmation_line, confirmed_in
 from app.reminders.memory import MemoryReminderStore
 from app.reminders.models import Contact, ReminderJob
+from app.reminders.planner import ReminderPlanner
 from app.reminders.ports import DialRejected
 from app.storage.reminders import PostgresReminderStore
 
 PHONE = "PJSIP/phone-021@gateway"
 CALENDAR = ClinicCalendar(frozenset({date(2026, 11, 4)}))
+
+
+async def test_unknown_originate_expires_to_manual_instead_of_being_renewed(stand):
+    await ready(stand)
+
+    async def uncertain(*args):
+        stand.dialer.calls.append(args)
+        raise TimeoutError()
+
+    stand.dialer.call_out = uncertain
+    await stand.executor.tick()
+    attempt_id = stand.dialer.calls[0][0]
+    assert stand.executor.active is None
+    stand.clock.value += timedelta(seconds=61)
+    await stand.executor.tick()
+    attempt = await stand.store.attempt(attempt_id)
+    assert attempt.state == "unknown"
+    assert (await stand.store.job(attempt.job_id)).state == "manual"
+    assert len(stand.dialer.calls) == 1
+
+
+async def test_friday_selection_reads_one_date_range():
+    class Mis:
+        def __init__(self):
+            self.calls = []
+
+        async def visits(self, **query):
+            self.calls.append(query)
+            return []
+
+    mis = Mis()
+    planner = ReminderPlanner(mis, MemoryReminderStore(), CALENDAR, Clock(at(16, 10)))
+    assert await planner.plan(date(2026, 10, 16)) == 0
+    assert len(mis.calls) == 1
+    assert mis.calls[0]["date_from"] == date(2026, 10, 17)
+    assert mis.calls[0]["date_to"] == date(2026, 10, 19)
 
 
 def at(day: int, hour: int, minute: int = 0, month: int = 10) -> datetime:

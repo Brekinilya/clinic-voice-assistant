@@ -12,19 +12,21 @@ PATCH заменяет комментарий целиком: строку до�
 import asyncio
 import logging
 from datetime import timedelta
+from uuid import uuid4
 
 from app.dialogue.outbound import OutboundContext
 from app.mis.budget import Priority, demand
 from app.mis.models import COMMENT_LIMIT, ClientComment, VisitStatus, format_date, format_datetime
 from app.mis.ports import MedicalSystem, MisError, MisOutcomeUnknown
 from app.ports import Clock
+from app.recovery.models import OwnershipLost
 from app.reminders.models import MARK_CHECK_AFTER, MARK_CHECKS, MisStatus, ReminderMark
 from app.reminders.ports import ReminderStore
 
 log = logging.getLogger(__name__)
 
 OPT_OUT = "Отказ от обзвона"
-LOCK_TTL = timedelta(seconds=30)
+LOCK_TTL = timedelta(seconds=120)
 LOCK_TRIES = 10
 
 
@@ -64,25 +66,40 @@ def appended(comment: str | None, line: str) -> str | None:
 class ReminderMarks:
     """Действия, которые диалог напоминания вызывает на «да, приду» и «не звоните мне»."""
 
-    def __init__(self, mis: MedicalSystem, store: ReminderStore, clock: Clock, *, owner: str):
+    def __init__(
+        self,
+        mis: MedicalSystem,
+        store: ReminderStore,
+        clock: Clock,
+        *,
+        owner: str,
+        require_dialogue_guard: bool = False,
+    ):
         self.mis = mis
         self.store = store
         self.clock = clock
         self.owner = owner
+        self.require_dialogue_guard = require_dialogue_guard
 
-    async def confirm(self, context: OutboundContext) -> MisStatus:
+    async def confirm(self, context: OutboundContext, approval=None) -> MisStatus:
+        if self.require_dialogue_guard and approval is None:
+            raise OwnershipLost()
         visit = context.visit
         # Локальный факт первым: второй звонок по этой записи не состоится даже без МИС
-        await self.store.mark_confirmed(visit.visit_id, self.clock.now())
+        await self.store.mark_confirmed(
+            visit.visit_id, self.clock.now(), visit.scheduled_at, visit.doctor_id
+        )
         mark = self._mark(context, "confirm", confirmation_line(visit.visit_id, visit.scheduled_at))
-        return await self._apply(mark, context, check_visit=True)
+        return await self._apply(mark, context, check_visit=True, approval=approval)
 
-    async def opt_out(self, context: OutboundContext) -> MisStatus:
+    async def opt_out(self, context: OutboundContext, approval=None) -> MisStatus:
+        if self.require_dialogue_guard and approval is None:
+            raise OwnershipLost()
         now = self.clock.now()
         # Локальный запрет сразу: будущие задания прекращаются даже при недоступной МИС
         await self.store.opt_out(context.client_id, now)
         mark = self._mark(context, "opt_out", f"{OPT_OUT} {format_date(now.date())}")
-        return await self._apply(mark, context, check_visit=False)
+        return await self._apply(mark, context, check_visit=False, approval=approval)
 
     async def reconcile(self) -> int:
         """Сверка неизвестных отметок — только чтение. Возвращает число разобранных."""
@@ -101,8 +118,14 @@ class ReminderMarks:
             elif checks >= MARK_CHECKS:
                 changes = {"state": "manual", "checks": checks, "reason": "not_visible"}
             else:
-                changes = {"checks": checks, "next_check_at": now + MARK_CHECK_AFTER}
-            moved = await self.store.move_mark(mark.id, {"unknown"}, updated_at=now, **changes)
+                changes = {
+                    "state": "unknown",
+                    "checks": checks,
+                    "next_check_at": now + MARK_CHECK_AFTER,
+                }
+            moved = await self.store.move_mark(
+                mark.id, {"unknown", "sending"}, updated_at=now, **changes
+            )
             if moved is not None and moved.state != "unknown":
                 settled += 1
         return settled
@@ -118,19 +141,28 @@ class ReminderMarks:
             updated_at=self.clock.now(),
         )
 
-    async def _apply(self, mark: ReminderMark, context, *, check_visit: bool) -> MisStatus:
+    async def _apply(
+        self, mark: ReminderMark, context, *, check_visit: bool, approval=None
+    ) -> MisStatus:
         mark = await self.store.prepare_mark(mark)
         if mark.state != "prepared":
             # Повтор доставки результата: используем уже существующую запись журнала
             return mark.mis_status
-        if not await self._lock(mark.client_id):
-            return await self._manual(mark, "client_locked")
-        try:
-            return await self._write(mark, context, check_visit)
-        finally:
-            await self.store.unlock_client(mark.client_id, self.owner)
+        # Бюджет ждём до блокировки клиента и чтения комментария. Между GET и PATCH
+        # ожидания окна уже нет, а guard атомарно сверяется с журналом sending.
+        with demand(Priority.COMMIT):
+            async with self.mis.prepaid(3 if check_visit else 2, keep_for_write=1):
+                owner = "mark-" + uuid4().hex
+                if not await self._lock(mark.client_id, owner):
+                    return await self._manual(mark, "client_locked")
+                try:
+                    return await self._write(mark, context, check_visit, owner, approval)
+                finally:
+                    await self.store.unlock_client(mark.client_id, owner)
 
-    async def _write(self, mark: ReminderMark, context, check_visit: bool) -> MisStatus:
+    async def _write(
+        self, mark: ReminderMark, context, check_visit: bool, owner, approval
+    ) -> MisStatus:
         try:
             with demand(Priority.COMMIT):
                 if check_visit and not await self._visit_is_current(context):
@@ -146,12 +178,7 @@ class ReminderMarks:
             return await self._manual(mark, "comment_too_long")
         if not await self.store.guard(context.attempt_id, context.fence, self.clock.now()):
             return await self._manual(mark, "attempt_not_current")
-        if (
-            await self.store.move_mark(
-                mark.id, {"prepared"}, state="sending", updated_at=self.clock.now()
-            )
-            is None
-        ):
+        if await self.store.start_mark(mark.id, context, self.clock.now(), owner, approval) is None:
             return (await self.store.mark(mark.id)).mis_status
         try:
             with demand(Priority.COMMIT):
@@ -194,9 +221,9 @@ class ReminderMarks:
             and visit.doctor.id == expected.doctor_id
         )
 
-    async def _lock(self, client_id: int) -> bool:
+    async def _lock(self, client_id: int, owner) -> bool:
         for _ in range(LOCK_TRIES):
-            if await self.store.lock_client(client_id, self.owner, self.clock.now(), LOCK_TTL):
+            if await self.store.lock_client(client_id, owner, self.clock.now(), LOCK_TTL):
                 return True
             await asyncio.sleep(0.2)
         return False

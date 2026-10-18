@@ -88,6 +88,7 @@ class Ari:
 
     def __init__(self, settings: TelephonySettings, http: httpx.AsyncClient | None = None):
         self.settings = settings
+        self.connected = asyncio.Event()
         auth = (settings.ari_user, settings.ari_password.get_secret_value())
         self.http = http or httpx.AsyncClient(
             base_url=f"{settings.ari_url.rstrip('/')}/ari/", auth=auth, timeout=5
@@ -168,8 +169,12 @@ class Ari:
             f"{url}/ari/events?app={self.settings.app}",
             additional_headers={"Authorization": header},
         ) as socket:
-            async for message in socket:
-                yield json.loads(message)
+            self.connected.set()
+            try:
+                async for message in socket:
+                    yield json.loads(message)
+            finally:
+                self.connected.clear()
 
     async def aclose(self) -> None:
         await self.http.aclose()
@@ -326,15 +331,23 @@ class Telephony:
         if self.outbound is None or self.reminders is None:
             raise DialRejected()
         outgoing = Outgoing(attempt_id, context)
+        outgoing.channel = channel_id
         self._outgoing[attempt_id] = outgoing
+        if channel_id:
+            self._outgoing_channels[channel_id] = outgoing
         try:
             outgoing.channel = await self.ari.originate(
                 endpoint, ["outbound", attempt_id], OUTBOUND_RING_S, channel_id
             )
         except AriError as error:
-            self._outgoing.pop(attempt_id, None)
-            log.warning("исходящий вызов отклонён: %s", error)
-            raise DialRejected() from None
+            # Только явный отказ 4xx означает, что звонка точно не было.
+            # 5xx/потерянный ответ оставляют попытку dialing до unknown/manual.
+            if any(str(error).endswith(": " + str(code)) for code in (400, 401, 403, 404, 422)):
+                self._outgoing.pop(attempt_id, None)
+                if channel_id:
+                    self._outgoing_channels.pop(channel_id, None)
+                raise DialRejected() from None
+            raise
         self._outgoing_channels[outgoing.channel] = outgoing
 
     async def _outbound_answered(self, channel: str, args: list[str]) -> None:
@@ -346,7 +359,9 @@ class Telephony:
         outgoing.answered = True
         outgoing.channel = channel
         self._outgoing_channels[channel] = outgoing
-        await self.reminders.answered(outgoing.attempt_id)
+        if await self.reminders.answered(outgoing.attempt_id) is False:
+            await self.ari.hangup(channel)
+            return
         # Asterisk кладёт результат AMD() третьим аргументом, если dialplan его запускал
         machine = args[1:2] == ["MACHINE"]
 

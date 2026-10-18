@@ -47,7 +47,7 @@ class AttemptResult(StrEnum):
 
 # После этих исходов разговора второй попытки нет
 FINAL = frozenset(Outcome) - {Outcome.NO_ANSWER}
-RETRYABLE = frozenset({AttemptResult.NO_ANSWER, AttemptResult.FAILED, AttemptResult.INCOMPLETE})
+RETRYABLE = frozenset({AttemptResult.NO_ANSWER, AttemptResult.FAILED})
 # Пациента не застали: регламент требует SMS-напоминания
 NEEDS_SMS = frozenset({Outcome.NO_ANSWER, Outcome.WRONG_PERSON})
 
@@ -152,6 +152,15 @@ def after_attempt(
     mis_status: str | None = None,
 ) -> dict:
     """Новое состояние задания после попытки. retry_window_end — конец окна дня звонка."""
+    if result == AttemptResult.INCOMPLETE:
+        # Ответивший пациент мог подтвердить операцию до обрыва. Без сверки повторять нельзя.
+        return {
+            "state": "manual",
+            "outcome": Outcome.ESCALATED,
+            "mis_status": "manual",
+            "reason": reason or "interrupted_conversation",
+            "next_at": now,
+        }
     if result in FINAL:
         # Пациент ответил, но запись в МИС не установлена: решает человек, повторного звонка нет
         return {

@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 debug_events = Table(
     "backend_debug_events",
@@ -313,6 +313,8 @@ reminder_confirmations = Table(
     "reminder_confirmations",
     metadata,
     Column("visit_id", Integer, primary_key=True),
+    Column("doctor_id", Integer, primary_key=True),
+    Column("scheduled_at", DateTime(timezone=True), primary_key=True),
     Column("confirmed_at", DateTime(timezone=True), nullable=False),
 )
 # Журнал отметок в комментарии клиента: только наша строка, без прежнего текста комментария

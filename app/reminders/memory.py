@@ -3,6 +3,7 @@
 import asyncio
 from datetime import date, datetime, timedelta
 
+from app.dialogue.reminder_guard import check_reminder_guard
 from app.recovery.models import OwnershipLost
 from app.reminders.models import (
     AttemptResult,
@@ -20,11 +21,12 @@ def channel_for(attempt_id: str) -> str:
 
 
 class MemoryReminderStore:
-    def __init__(self) -> None:
+    def __init__(self, guard_reader=None) -> None:
+        self.guard_reader = guard_reader
         self.jobs: dict[str, ReminderJob] = {}
         self.attempts: dict[str, ReminderAttempt] = {}
         self.contacts: dict[int, Contact] = {}
-        self.confirmations: dict[int, datetime] = {}
+        self.confirmations: dict[tuple, datetime] = {}
         self.marks: dict[str, ReminderMark] = {}
         self.locks: dict[int, tuple[str, datetime]] = {}
         self.days: set[date] = set()
@@ -182,11 +184,16 @@ class MemoryReminderStore:
         if contact is not None and contact.opt_out_at is None:
             self.contacts[client_id] = contact.model_copy(update={"opt_out_at": now})
 
-    async def confirmed(self, visit_id: int) -> bool:
-        return visit_id in self.confirmations
+    async def confirmed(self, visit_id: int, scheduled_at=None, doctor_id=None) -> bool:
+        return any(
+            key[0] == visit_id and (scheduled_at is None or key[1:] == (scheduled_at, doctor_id))
+            for key in self.confirmations
+        )
 
-    async def mark_confirmed(self, visit_id: int, now: datetime) -> None:
-        self.confirmations.setdefault(visit_id, now)
+    async def mark_confirmed(
+        self, visit_id: int, now: datetime, scheduled_at=None, doctor_id=None
+    ) -> None:
+        self.confirmations.setdefault((visit_id, scheduled_at or now, doctor_id or 0), now)
 
     async def prepare_mark(self, mark: ReminderMark) -> ReminderMark:
         """Первая запись журнала; повтор с тем же id возвращает уже существующую."""
@@ -196,6 +203,43 @@ class MemoryReminderStore:
     async def mark(self, mark_id: str) -> ReminderMark | None:
         return self.marks.get(mark_id)
 
+    async def start_mark(self, mark_id, context, now, owner, approval=None):
+        async with self._lock:
+            mark = self.marks[mark_id]
+            if approval is not None:
+                if self.guard_reader is None:
+                    raise OwnershipLost()
+                state = await self.guard_reader.inspect(approval.call_id)
+                check_reminder_guard(state.model_dump(mode="json"), approval, context, mark.kind)
+            attempt = self.attempts.get(context.attempt_id)
+            lock = self.locks.get(context.client_id)
+            if any(
+                m.id != mark_id
+                and m.client_id == context.client_id
+                and (
+                    m.state in {"sending", "unknown"}
+                    or m.state == "manual"
+                    and m.reason in {"not_visible", "sending_interrupted", "not_in_response"}
+                )
+                for m in self.marks.values()
+            ):
+                raise OwnershipLost()
+            if (
+                attempt is None
+                or attempt.fence != context.fence
+                or attempt.state not in ACTIVE
+                or attempt.lease_until <= now
+                or lock is None
+                or lock[0] != owner
+                or lock[1] <= now
+            ):
+                raise OwnershipLost()
+            if mark.state != "prepared":
+                return None
+            mark = mark.model_copy(update={"state": "sending", "updated_at": now})
+            self.marks[mark_id] = mark
+            return mark
+
     async def move_mark(self, mark_id: str, expected: set[str], **changes) -> ReminderMark | None:
         """Сменить состояние, только если оно всё ещё одно из ожидаемых."""
         async with self._lock:
@@ -204,17 +248,42 @@ class MemoryReminderStore:
                 return None
             mark = mark.model_copy(update=changes)
             self.marks[mark_id] = mark
+            attempt = self.attempts.get(mark.attempt_id)
+            if mark.state in {"applied", "manual"} and attempt is not None:
+                if attempt.mis_status == "pending":
+                    self.attempts[attempt.id] = attempt.model_copy(
+                        update={"mis_status": mark.state}
+                    )
+                job = self.jobs[attempt.job_id]
+                if job.mis_status == "pending" and job.outcome in {"CONFIRMED", "OPT_OUT"}:
+                    self.jobs[job.id] = job.model_copy(
+                        update={
+                            "mis_status": mark.state,
+                            "state": "done" if mark.state == "applied" else "manual",
+                        }
+                    )
             return mark
 
     async def marks_to_check(self, now: datetime) -> list[ReminderMark]:
         return [
             m
             for m in self.marks.values()
-            if m.state == "unknown" and m.next_check_at is not None and m.next_check_at <= now
+            if (m.state == "unknown" and m.next_check_at is not None and m.next_check_at <= now)
+            or (m.state == "sending" and m.updated_at + timedelta(minutes=2) <= now)
         ]
 
     async def lock_client(self, client_id, owner, now, ttl) -> bool:
         async with self._lock:
+            if any(
+                m.client_id == client_id
+                and (
+                    m.state in {"sending", "unknown"}
+                    or m.state == "manual"
+                    and m.reason in {"not_visible", "sending_interrupted", "not_in_response"}
+                )
+                for m in self.marks.values()
+            ):
+                return False
             held = self.locks.get(client_id)
             if held is not None and held[0] != owner and held[1] > now:
                 return False

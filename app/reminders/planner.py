@@ -39,10 +39,12 @@ class ReminderPlanner:
         visits = []
         # Фоновое чтение не вытесняет живые разговоры (T05): ждёт окна не дольше 90 секунд
         with demand(Priority.BACKGROUND, until=now + timedelta(seconds=90)):
-            for day in self.calendar.visit_days(call_day):
-                visits += await self.mis.visits(
-                    status=VisitStatus.PLANNED, date_from=day, date_to=day
+            visit_days = self.calendar.visit_days(call_day)
+            if visit_days:
+                visits = await self.mis.visits(
+                    status=VisitStatus.PLANNED, date_from=min(visit_days), date_to=max(visit_days)
                 )
+                visits = [v for v in visits if v.scheduled_at.date() in visit_days]
         created = 0
         for visit in visits:
             if visit.scheduled_at <= now:
@@ -73,6 +75,6 @@ class ReminderPlanner:
             return "no_contact"
         if contact.opt_out_at is not None:
             return "opt_out"
-        if await self.store.confirmed(job.visit_id):
+        if await self.store.confirmed(job.visit_id, job.scheduled_at, job.doctor_id):
             return "already_confirmed"
         return None

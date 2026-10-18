@@ -4,10 +4,13 @@
 исполнителей за одну попытку решают уникальные индексы: проигравший получает None.
 """
 
+from datetime import timedelta
+
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
+from app.dialogue.reminder_guard import check_reminder_guard
 from app.recovery.models import OwnershipLost
 from app.reminders.memory import channel_for
 from app.reminders.models import (
@@ -17,6 +20,7 @@ from app.reminders.models import (
     ReminderJob,
     ReminderMark,
 )
+from app.storage.schema import dialogue_sessions
 from app.storage.schema import reminder_attempts as attempts
 from app.storage.schema import reminder_client_locks as locks
 from app.storage.schema import reminder_confirmations as confirmations
@@ -261,18 +265,27 @@ class PostgresReminderStore:
                 .values(opt_out_at=now)
             )
 
-    async def confirmed(self, visit_id):
+    async def confirmed(self, visit_id, scheduled_at=None, doctor_id=None):
         async with self.engine.connect() as connection:
-            row = await connection.execute(
-                select(confirmations.c.visit_id).where(confirmations.c.visit_id == visit_id)
-            )
+            query = select(confirmations.c.visit_id).where(confirmations.c.visit_id == visit_id)
+            if scheduled_at is not None:
+                query = query.where(
+                    confirmations.c.scheduled_at == scheduled_at,
+                    confirmations.c.doctor_id == doctor_id,
+                )
+            row = await connection.execute(query.limit(1))
             return row.first() is not None
 
-    async def mark_confirmed(self, visit_id, now):
+    async def mark_confirmed(self, visit_id, now, scheduled_at=None, doctor_id=None):
         async with self.engine.begin() as connection:
             await connection.execute(
                 insert(confirmations)
-                .values(visit_id=visit_id, confirmed_at=now)
+                .values(
+                    visit_id=visit_id,
+                    confirmed_at=now,
+                    scheduled_at=scheduled_at or now,
+                    doctor_id=doctor_id or 0,
+                )
                 .on_conflict_do_nothing()
             )
 
@@ -290,6 +303,66 @@ class PostgresReminderStore:
             row = (await connection.execute(select(marks).where(marks.c.id == mark_id))).first()
             return None if row is None else _mark(row)
 
+    async def start_mark(self, mark_id, context, now, owner, approval=None):
+        async with self.engine.begin() as connection:
+            if approval is not None:
+                state = (
+                    await connection.execute(
+                        select(dialogue_sessions.c.state)
+                        .where(dialogue_sessions.c.call_id == approval.call_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                check_reminder_guard(state, approval, context, mark_id.split(":", 1)[0])
+            attempt = (
+                await connection.execute(
+                    select(attempts).where(attempts.c.id == context.attempt_id).with_for_update()
+                )
+            ).first()
+            lock = (
+                await connection.execute(
+                    select(locks).where(locks.c.client_id == context.client_id).with_for_update()
+                )
+            ).first()
+            unresolved = await connection.scalar(
+                select(marks.c.id)
+                .where(
+                    marks.c.client_id == context.client_id,
+                    marks.c.id != mark_id,
+                    or_(
+                        marks.c.state.in_(["sending", "unknown"]),
+                        and_(
+                            marks.c.state == "manual",
+                            marks.c.reason.in_(
+                                ["not_visible", "sending_interrupted", "not_in_response"]
+                            ),
+                        ),
+                    ),
+                )
+                .limit(1)
+            )
+            if unresolved is not None:
+                raise OwnershipLost()
+            if (
+                attempt is None
+                or attempt.fence != context.fence
+                or attempt.state not in ACTIVE
+                or attempt.lease_until <= now
+                or lock is None
+                or lock.owner != owner
+                or lock.until <= now
+            ):
+                raise OwnershipLost()
+            row = (
+                await connection.execute(
+                    update(marks)
+                    .where(marks.c.id == mark_id, marks.c.state == "prepared")
+                    .values(state="sending", updated_at=now)
+                    .returning(*marks.c)
+                )
+            ).first()
+            return None if row is None else _mark(row)
+
     async def move_mark(self, mark_id, expected, **changes):
         async with self.engine.begin() as connection:
             row = (
@@ -300,17 +373,68 @@ class PostgresReminderStore:
                     .returning(*marks.c)
                 )
             ).first()
+            if row is not None and row.state in {"applied", "manual"}:
+                attempt = (
+                    await connection.execute(
+                        select(attempts).where(attempts.c.id == row.attempt_id)
+                    )
+                ).first()
+                if attempt is not None:
+                    await connection.execute(
+                        update(attempts)
+                        .where(attempts.c.id == attempt.id, attempts.c.mis_status == "pending")
+                        .values(mis_status=row.state)
+                    )
+                    await connection.execute(
+                        update(jobs)
+                        .where(
+                            jobs.c.id == attempt.job_id,
+                            jobs.c.mis_status == "pending",
+                            jobs.c.outcome.in_(["CONFIRMED", "OPT_OUT"]),
+                        )
+                        .values(
+                            mis_status=row.state,
+                            state="done" if row.state == "applied" else "manual",
+                        )
+                    )
             return None if row is None else _mark(row)
 
     async def marks_to_check(self, now):
         async with self.engine.connect() as connection:
             rows = await connection.execute(
-                select(marks).where(marks.c.state == "unknown", marks.c.next_check_at <= now)
+                select(marks).where(
+                    or_(
+                        and_(marks.c.state == "unknown", marks.c.next_check_at <= now),
+                        and_(
+                            marks.c.state == "sending",
+                            marks.c.updated_at <= now - timedelta(minutes=2),
+                        ),
+                    )
+                )
             )
             return [_mark(row) for row in rows]
 
     async def lock_client(self, client_id, owner, now, ttl):
         async with self.engine.begin() as connection:
+            # Не начинаем новый PATCH поверх неизвестного прежнего, даже после истечения TTL.
+            unresolved = await connection.scalar(
+                select(marks.c.id)
+                .where(
+                    marks.c.client_id == client_id,
+                    or_(
+                        marks.c.state.in_(["sending", "unknown"]),
+                        and_(
+                            marks.c.state == "manual",
+                            marks.c.reason.in_(
+                                ["not_visible", "sending_interrupted", "not_in_response"]
+                            ),
+                        ),
+                    ),
+                )
+                .limit(1)
+            )
+            if unresolved is not None:
+                return False
             row = (
                 await connection.execute(
                     insert(locks)

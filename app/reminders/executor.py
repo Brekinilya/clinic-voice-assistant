@@ -64,11 +64,11 @@ class ReminderExecutor:
         async with self._lock:
             now = self.clock.now()
             await self._recover(now)
-            if self.marks is not None:
-                await self.marks.reconcile()
             if self.active is not None:
                 await self._renew(now)
                 return
+            if self.marks is not None:
+                await self.marks.reconcile()
             if not self.calendar.is_open(now):
                 return
             await self.planner.plan(now.date())
@@ -87,11 +87,14 @@ class ReminderExecutor:
                 log.exception("ошибка исполнителя напоминаний")
             await asyncio.sleep(interval_s)
 
-    async def answered(self, attempt_id: str) -> None:
+    async def answered(self, attempt_id: str) -> bool:
         try:
             await self.store.advance(attempt_id, self.owner, "answered", self.clock.now(), LEASE)
+            self.active = attempt_id
+            return True
         except OwnershipLost:
             log.warning("попытка %s уже не наша", attempt_id)
+            return False
 
     async def guard(self, attempt_id: str, fence: int) -> bool:
         """Для диалога: контекст звонка всё ещё относится к действующей попытке."""
@@ -131,6 +134,9 @@ class ReminderExecutor:
 
     async def _start(self, job, attempt) -> None:
         now = self.clock.now()
+        if job.call_day != now.date():
+            await self.finished(attempt.id, AttemptResult.SKIPPED, "call_day_passed")
+            return
         try:
             with demand(Priority.BACKGROUND, until=now + MIS_WAIT):
                 visit = await self.mis.visit(job.visit_id)
@@ -174,10 +180,15 @@ class ReminderExecutor:
             await self.dialer.call_out(attempt.id, contact.endpoint, context, attempt.channel_id)
         except DialRejected:
             await self.finished(attempt.id, AttemptResult.FAILED, "originate_rejected")
+        except Exception:
+            # Originate мог пройти. Не продлеваем неизвестную попытку бесконечно:
+            # её lease истечёт, восстановление даст manual без нового звонка.
+            self.active = None
+            self._emit("reminder.originate_unknown", attempt_id=attempt.id)
 
     async def _skip_reason(self, job, comment: str | None) -> str | None:
         if confirmed_in(comment, job.visit_id, job.scheduled_at) or await self.store.confirmed(
-            job.visit_id
+            job.visit_id, job.scheduled_at, job.doctor_id
         ):
             return "already_confirmed"
         contact = await self.store.contact(job.client_id)
