@@ -17,3 +17,6 @@ docs
 
 logs
 ai.env
+
+# Пароль ARI и включение T11 голосового процесса
+deploy/voice/voice.env

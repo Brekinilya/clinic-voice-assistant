@@ -27,3 +27,6 @@ Thumbs.db
 *.pyc
 ai.env
 logs/*.log
+
+# Пароль ARI и включение T11 голосового процесса
+deploy/voice/voice.env
