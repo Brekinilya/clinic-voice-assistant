@@ -25,6 +25,7 @@ from pathlib import Path
 import websockets
 
 from app.voice.engines import SileroSynthesizer, resample
+from bench.voice.metrics import memory_mib
 
 ROOT = Path(__file__).resolve().parents[2]
 RATE = 16000
@@ -175,8 +176,7 @@ class Stats(threading.Thread):
             ).stdout.split()
             if out:
                 cpu = float(out[0].rstrip("%"))
-                value, unit = out[1][:-3], out[1][-3:]
-                self.samples.append((cpu, float(value) * (1024 if unit == "GiB" else 1)))
+                self.samples.append((cpu, memory_mib(out[1])))
             self.done.wait(2)
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 from app.voice.settings import VoiceSettings
+from bench.voice.metrics import memory_mib
 
 ROOT = Path(__file__).resolve().parents[2]
 RECIPE = ROOT / "deploy" / "voice"
@@ -39,3 +40,9 @@ def test_compose_keeps_voice_local_and_on_the_backend_network():
     assert (ROOT / voice["build"]["dockerfile"]).is_file()
     assert compose["networks"]["clinic"] == {"external": True, "name": "clinic-vm_default"}
     assert voice["environment"]["WEB_ACCESS_ENABLED"] == "true"
+
+
+def test_load_monitor_parses_docker_memory_units():
+    assert memory_mib("40.44MiB") == 40.44
+    assert memory_mib("1.25GiB") == 1280
+    assert memory_mib("512B") == 512 / (1024 * 1024)
