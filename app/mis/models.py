@@ -78,6 +78,9 @@ MisDateTime = Annotated[
 Name = Annotated[str, Field(strict=True), AfterValidator(normalize_name)]
 
 
+COMMENT_LIMIT = 1000
+
+
 class MisModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -97,6 +100,50 @@ class Client(MisModel):
     birth_date: MisDate = Field(repr=False)
     comment: str | None = Field(repr=False)
     created_at: MisDateTime
+
+
+def valid_text(value: str, *, nonempty: bool = True) -> bool:
+    """Как стенд: перевод строки и табуляция можно, прочие управляющие и суррогаты — нет."""
+    if nonempty and not value.strip():
+        return False
+    return not any(
+        (ord(c) < 32 and c not in "\t\n\r") or 127 <= ord(c) <= 159 or 0xD800 <= ord(c) <= 0xDFFF
+        for c in value
+    )
+
+
+class ClientCreate(MisModel):
+    """Регистрация клиента. Ключ — фамилия, имя и дата рождения: повтор отдаёт ту же карточку."""
+
+    last_name: Name = Field(repr=False)
+    first_name: Name = Field(repr=False)
+    middle_name: str | None = Field(default=None, repr=False)
+    birth_date: MisDate = Field(repr=False)
+    comment: str | None = Field(default=None, max_length=COMMENT_LIMIT, repr=False)
+
+
+ESCALATION_LIMIT = 1000
+
+
+class Escalation(MisModel):
+    """Заявка на соединение со специалистом. Стенд её не меняет и соединение не отслеживает."""
+
+    id: MisId
+    client_id: MisId = Field(repr=False)
+    description: str = Field(max_length=ESCALATION_LIMIT, repr=False)
+    created_at: MisDateTime
+
+
+class EscalationCreate(MisModel):
+    """Ключа уникальности у стенда нет: повтор того же тела создаёт вторую заявку."""
+
+    client_id: MisId = Field(repr=False)
+    description: str = Field(min_length=1, max_length=ESCALATION_LIMIT, repr=False)
+
+    def body(self) -> dict:
+        if not valid_text(self.description):
+            raise ValueError("описание заявки пустое или содержит управляющие символы")
+        return {"client_id": self.client_id, "description": self.description}
 
 
 class VisitStatus(StrEnum):
@@ -119,9 +166,6 @@ class VisitCreate(MisModel):
     client_id: MisId = Field(repr=False)
     doctor_id: MisId
     scheduled_at: MisDateTime
-
-
-COMMENT_LIMIT = 1000
 
 
 class ClientComment(MisModel):

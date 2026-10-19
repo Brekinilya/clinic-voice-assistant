@@ -12,14 +12,18 @@ from pydantic import ValidationError
 
 from app.mis.models import (
     COMMENT_LIMIT,
+    ESCALATION_LIMIT,
     Client,
+    ClientCreate,
     Doctor,
+    Escalation,
     Visit,
     VisitChange,
     VisitCreate,
     VisitStatus,
     normalize_name,
     parse_date,
+    valid_text,
 )
 from app.ports import Clock
 
@@ -48,6 +52,8 @@ class MisEmulator:
             token: {item.id: item for item in items} for token, items in clients.items()
         }
         self.records: dict[str, dict[int, Visit]] = {token: {} for token in clients}
+        self.escalations: dict[str, dict[int, Escalation]] = {token: {} for token in clients}
+        self.escalation_count = 0
         self.write_count = 0
         self.patch_count = 0
         self.next_failure: str | None = None
@@ -87,6 +93,49 @@ class MisEmulator:
             try:
                 if len(path) == 1 and request.method == "GET":
                     return self._list(path[0], token, query)
+                if path == ["escalations"] and request.method == "POST":
+                    payload = json.loads(request.content)
+                    client_id, text = payload.get("client_id"), payload.get("description")
+                    # Чужой или несуществующий клиент — 400: это значение поля, а не адрес
+                    if (
+                        type(client_id) is not int
+                        or client_id not in self.clients[token]
+                        or not isinstance(text, str)
+                        or len(text) > ESCALATION_LIMIT
+                        or not valid_text(text)
+                    ):
+                        return self.error(400)
+                    item = Escalation(
+                        id=max(self.escalations[token], default=0) + 1,
+                        client_id=client_id,
+                        description=text,
+                        created_at=self.clock.now().replace(second=0, microsecond=0),
+                    )
+                    self.escalations[token][item.id] = item
+                    self.escalation_count += 1
+                    failure, self.next_failure = self.next_failure, None
+                    if failure == "lost_response":
+                        raise httpx.ReadTimeout("ответ потерян", request=request)
+                    if failure == "server_error":
+                        return self.error(500)
+                    return httpx.Response(201, json=item.model_dump(mode="json"))
+                if path == ["clients"] and request.method == "POST":
+                    data = ClientCreate.model_validate(json.loads(request.content))
+                    key = (data.last_name, data.first_name, data.birth_date)
+                    for known in self.clients[token].values():
+                        if (known.last_name, known.first_name, known.birth_date) == key:
+                            return httpx.Response(200, json=known.model_dump(mode="json"))
+                    client = Client(
+                        id=max(self.clients[token], default=0) + 1,
+                        last_name=data.last_name,
+                        first_name=data.first_name,
+                        middle_name=data.middle_name,
+                        birth_date=data.birth_date,
+                        comment=data.comment,
+                        created_at=self.clock.now().replace(second=0, microsecond=0),
+                    )
+                    self.clients[token][client.id] = client
+                    return httpx.Response(201, json=client.model_dump(mode="json"))
                 if path == ["visits"] and request.method == "POST":
                     payload = json.loads(request.content)
                     data = VisitCreate.model_validate(
@@ -128,6 +177,8 @@ class MisEmulator:
                         if path[0] == "clients"
                         else self.records[token]
                         if path[0] == "visits"
+                        else self.escalations[token]
+                        if path[0] == "escalations"
                         else {}
                     )
                     if item_id not in items:
@@ -241,6 +292,14 @@ class MisEmulator:
             if query.get("birth_date", "").strip():
                 values = [v for v in values if v.birth_date == parse_date(query["birth_date"])]
             values.sort(key=lambda v: v.id)
+        elif resource == "escalations":
+            values = list(self.escalations[token].values())
+            if "client_id" in query:
+                if int(query["client_id"]) not in self.clients[token]:
+                    return self.error(404)
+                values = [v for v in values if v.client_id == int(query["client_id"])]
+            # Как стенд: от новых к старым, при равном времени — по убыванию id
+            values.sort(key=lambda v: (v.created_at, v.id), reverse=True)
         elif resource == "visits":
             values = list(self.records[token].values())
             for key, known in (("client_id", self.clients[token]), ("doctor_id", self.doctors)):

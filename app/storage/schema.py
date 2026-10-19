@@ -344,3 +344,29 @@ reminder_client_locks = Table(
     Column("owner", String(128), nullable=False),
     Column("until", DateTime(timezone=True), nullable=False),
 )
+# Журнал заявок на соединение со специалистом (T08). Текст карточки не хранится:
+# только маркер в описании и отпечаток — по ним сверяется неизвестный исход POST.
+escalation_requests = Table(
+    "escalation_requests",
+    metadata,
+    Column("id", String(200), primary_key=True),
+    Column("call_id", String(128), nullable=False),
+    Column("route", String(8), nullable=False),
+    Column("priority", String(2), nullable=False),
+    Column("client_id", Integer),
+    Column("technical", Boolean, nullable=False),
+    Column("marker", String(32), nullable=False),
+    Column("length", Integer, nullable=False),
+    Column("digest", String(64), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("escalation_id", Integer),
+    Column("checks", Integer, nullable=False),
+    Column("reason", String(64)),
+    Column("next_check_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("state IN ('prepared','sending','applied','unknown','manual')"),
+    CheckConstraint("priority IN ('P1','P2','P3')"),
+    CheckConstraint("(state = 'applied') = (escalation_id IS NOT NULL)"),
+)
+Index("escalation_check", escalation_requests.c.state, escalation_requests.c.next_check_at)

@@ -22,7 +22,10 @@ from app.mis.budget import current_demand, immediate
 from app.mis.models import (
     Client,
     ClientComment,
+    ClientCreate,
     Doctor,
+    Escalation,
+    EscalationCreate,
     Visit,
     VisitChange,
     VisitCreate,
@@ -52,6 +55,8 @@ FRESHNESS_S = {
     "clients": 300,
     # Занятость и записи — только в пределах звонка; перед записью читаются заново.
     "visits": 90,
+    # Сверка неизвестного POST заявки читает список заново, без продолжения старого чтения
+    "escalations": 60,
 }
 RETRY_AFTER_MAX_S = 600
 
@@ -442,6 +447,37 @@ class HttpMedicalSystem:
             self._invalidate_clients(client_id)
         if result.id != client_id:
             raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    async def create_client(self, request: ClientCreate) -> Client:
+        # 201 — создан, 200 — карточка с этим ключом уже была: оба исхода дают клиента
+        response = await self._request(
+            "POST", "clients", json=request.model_dump(mode="json", exclude_none=True)
+        )
+        return self._decode(response, Client, write=True)
+
+    async def create_escalation(self, request: EscalationCreate) -> Escalation:
+        body = request.body()
+        response = await self._request("POST", "escalations", json=body)
+        result = self._decode(response, Escalation, write=True)
+        if result.client_id != request.client_id or result.description != request.description:
+            raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    async def escalations(self, *, client_id: int | None = None) -> list[Escalation]:
+        params = {}
+        if client_id is not None:
+            self._id(client_id)
+            params["client_id"] = client_id
+        return await self._list("escalations", Escalation, params, resume=False)
+
+    async def escalation(self, escalation_id: int) -> Escalation:
+        self._id(escalation_id)
+        result = self._decode(
+            await self._request("GET", f"escalations/{escalation_id}"), Escalation
+        )
+        if result.id != escalation_id:
+            raise MisUnavailable("INVALID_RESPONSE")
         return result
 
     def _invalidate_clients(self, client_id: int) -> None:
