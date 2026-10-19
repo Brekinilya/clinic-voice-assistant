@@ -11,7 +11,8 @@ from app.cancellation.service import CancellationService
 from app.contracts import NluResult, SafetyDecision
 from app.diagnostics.recorder import emit
 from app.dialogue.cancellation import CancellationConversation
-from app.dialogue.cross_scenario import CrossScenario, classify as classify_cross_scenario
+from app.dialogue.cross_scenario import CrossScenario
+from app.dialogue.cross_scenario import classify as classify_cross_scenario
 from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
 from app.dialogue.identity import IdentityDrafts

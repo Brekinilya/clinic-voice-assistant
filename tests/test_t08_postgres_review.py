@@ -189,7 +189,7 @@ async def test_postgres_http_replay_of_final_callback_turn_returns_one_task(pg_e
         b"x" * 32,
         HandoffSettings(enabled=True, callback_enabled=True),
     )
-    state = await _preempt_after_turns(dialogue_store, call)
+    await _preempt_after_turns(dialogue_store, call)
     event = SimpleNamespace(
         attempt_id=f"{call}-attempt", call_id=call, route="R-08", priority="P3"
     )

@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app.api.handoffs import TextRequestInput
 from app.clock import CLINIC_TIMEZONE
 from app.dialogue.memory import MemoryDialogueStore
-from app.dialogue.models import Phase, TransferRequest, Turn, reply
+from app.dialogue.models import TransferRequest, Turn, reply
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
 from app.handoffs.calendar import CalendarUnavailable, callback_deadline, is_open_day
@@ -18,10 +18,10 @@ from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.models import CallbackDraft, MisDeliveryState
 from app.handoffs.ports import HandoffConflict
 from app.handoffs.service import HandoffService, HandoffSettings, parse_preferred_time
+from app.main import create_app
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Escalation, EscalationCreate
 from app.mis.ports import MisError, MisOutcomeUnknown
-from app.main import create_app
 from app.settings import Settings
 
 

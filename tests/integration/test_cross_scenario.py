@@ -1,7 +1,7 @@
 from app.dialogue.models import Reply
 from tests.scenarios.context_matrix import patient_steps
-from tests.scenarios.scenario_plan import load_scenarios
 from tests.scenarios.runtime import ScenarioRuntime
+from tests.scenarios.scenario_plan import load_scenarios
 
 
 def dialog_by_label(label):
