@@ -130,9 +130,21 @@ class CallbackDraft(BookingModel):
     input_epoch: int = Field(default=0, ge=0)
     # Повтор доставки одного input_started не отзывает согласие повторно.
     started_turn_id: int = Field(default=0, ge=0)
+    # Наблюдение финальной фразы отзывает согласие, не выдавая себя за input_started.
+    observed_turn_id: int = Field(default=0, ge=0)
     last_turn_id: int = Field(default=0, ge=0)
     invalid_turns: int = Field(default=0, ge=0, le=3)
     version: int = Field(default=1, ge=1)
+
+
+def callback_final_turn_is_next(draft: CallbackDraft, turn_id: int) -> bool:
+    """Accept only the next final, or one successor that supersedes an in-flight final."""
+    watermark = max(draft.last_turn_id, draft.started_turn_id)
+    if turn_id <= max(watermark, draft.observed_turn_id):
+        return False
+    return turn_id == watermark + 1 or (
+        draft.observed_turn_id == watermark + 1 and turn_id == draft.observed_turn_id + 1
+    )
 
 
 class CallbackTask(BookingModel):

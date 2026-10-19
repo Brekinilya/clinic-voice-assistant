@@ -4,7 +4,7 @@ import asyncio
 import base64
 import hashlib
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -94,11 +94,18 @@ class HandoffService:
         saved = await self.store.create_request(request)
         return saved
 
-    async def create_text_request(self, route: str, priority: str, summary: str) -> HandoffRequest:
+    async def create_text_request(
+        self, route: str, priority: str, summary: str, *, call_id: str | None = None
+    ) -> HandoffRequest:
         """Создаёт карточку текста без телефонной попытки и без подтверждения связи."""
         clean = re.sub(r"[\x00-\x1f\x7f]+", " ", summary)
         return await self.ensure_request(
-            uuid4().hex, route, priority, None, source="text", summary_override=clean
+            call_id or uuid4().hex,
+            route,
+            priority,
+            None,
+            source="text",
+            summary_override=clean,
         )
 
     async def transfer_started(self, event, dialogue_state=None) -> None:
@@ -268,6 +275,9 @@ class HandoffService:
     async def callback_input_started(self, call_id: str, turn_id: int) -> None:
         await self.store.advance_callback_input(call_id, turn_id)
 
+    async def callback_final_observed(self, call_id: str, turn_id: int) -> None:
+        await self.store.observe_callback_final(call_id, turn_id)
+
     async def has_callback_draft(self, call_id: str) -> bool:
         request = await self.store.request_for_call(call_id)
         return bool(request and await self.store.get_callback_draft(request.request_id))
@@ -284,7 +294,7 @@ class HandoffService:
             )
         task = await self.store.get_callback_task_by_request(request.request_id)
         if task is not None:
-            if turn.turn_id < task.consent_turn_id:
+            if turn.turn_id != task.consent_turn_id:
                 return self._callback_reply(
                     call_id,
                     turn.turn_id,
@@ -309,6 +319,13 @@ class HandoffService:
             )
         if turn.turn_id <= draft.last_turn_id:
             return self._callback_prompt(call_id, turn.turn_id, draft)
+        if turn.turn_id < draft.started_turn_id:
+            return self._callback_reply(
+                call_id,
+                turn.turn_id,
+                ("Реплика устарела. Повторите ответ после сигнала.",),
+                code="CALLBACK_STALE",
+            )
         if turn.turn_id != draft.last_turn_id + 1:
             return self._callback_reply(
                 call_id,
@@ -1143,10 +1160,10 @@ def parse_preferred_time(text: str, now: datetime) -> datetime | None:
     times = parse_times(text, bare=True)
     if "date_from" not in dates or "time_from" not in times:
         return None
-    day = dates["date_from"][0]
-    at = times["time_from"][0]
     try:
+        day = date.fromisoformat(dates["date_from"][0])
+        at = time.fromisoformat(times["time_from"][0])
         result = datetime.combine(day, at, CLINIC_TIMEZONE)
-    except (TypeError, ValueError):
+    except (IndexError, TypeError, ValueError):
         return None
     return result if result > now else None

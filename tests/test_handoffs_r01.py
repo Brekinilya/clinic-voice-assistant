@@ -9,11 +9,11 @@ from pydantic import ValidationError
 from app.api.handoffs import TextRequestInput
 from app.clock import CLINIC_TIMEZONE
 from app.dialogue.models import Turn
-from app.handoffs.calendar import CalendarUnavailable, callback_deadline
+from app.handoffs.calendar import CalendarUnavailable, callback_deadline, is_open_day
 from app.handoffs.memory import MemoryHandoffStore
-from app.handoffs.models import MisDeliveryState
+from app.handoffs.models import CallbackDraft, MisDeliveryState
 from app.handoffs.ports import HandoffConflict
-from app.handoffs.service import HandoffService, HandoffSettings
+from app.handoffs.service import HandoffService, HandoffSettings, parse_preferred_time
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Escalation, EscalationCreate
 from app.mis.ports import MisError, MisOutcomeUnknown
@@ -54,6 +54,21 @@ def test_callback_deadline_uses_saturday_sunday_holiday_and_clinic_hours():
     assert callback_deadline(at(2026, 10, 19, 19, 50), "P2") == at(2026, 10, 20, 10)
 
 
+def test_callback_calendar_marks_2026_victory_day_and_transferred_day_closed():
+    assert not is_open_day(datetime(2026, 5, 9).date())
+    assert not is_open_day(datetime(2026, 5, 11).date())
+    assert callback_deadline(
+        datetime(2026, 5, 8, 20, 10, tzinfo=CLINIC_TIMEZONE), "P3"
+    ) == datetime(2026, 5, 12, 10, tzinfo=CLINIC_TIMEZONE)
+
+
+def test_parse_preferred_time_converts_parser_iso_values():
+    now = datetime(2026, 10, 19, 10, tzinfo=CLINIC_TIMEZONE)
+    assert parse_preferred_time("завтра в 15:00", now) == datetime(
+        2026, 10, 20, 15, tzinfo=CLINIC_TIMEZONE
+    )
+
+
 def test_callback_deadline_refuses_dates_outside_verified_coverage():
     with pytest.raises(CalendarUnavailable):
         callback_deadline(datetime(2027, 1, 1, 10, tzinfo=CLINIC_TIMEZONE), "P3")
@@ -83,6 +98,68 @@ async def prepared_callback(*, priority="P3", technical_client_id=None):
     await service.callback_turn(event.call_id, Turn(turn_id=4, text="в ближайшее время"))
     request = await store.request_for_call(event.call_id)
     return service, store, clock, event, request
+
+
+@pytest.mark.asyncio
+async def test_final_observation_has_its_own_watermark_and_is_idempotent():
+    service, store, _, event, request = await prepared_callback()
+    draft = await store.get_callback_draft(request.request_id)
+    assert draft is not None
+
+    await service.callback_final_observed(event.call_id, 5)
+    observed = await store.get_callback_draft(request.request_id)
+    assert observed is not None
+    assert observed.last_turn_id == 4
+    assert observed.started_turn_id == 0
+    assert observed.observed_turn_id == 5
+    assert observed.input_epoch == draft.input_epoch + 1
+
+    # Поздняя доставка input_started для уже увиденного final не меняет CAS-эпоху.
+    await service.callback_input_started(event.call_id, 5)
+    repeated = await store.get_callback_draft(request.request_id)
+    assert repeated == observed
+
+
+@pytest.mark.asyncio
+async def test_preferred_callback_time_after_sla_requires_explicit_confirmation():
+    service, store, clock, event, request = await prepared_callback()
+    clock.value = datetime(2026, 10, 19, 19, 50, tzinfo=CLINIC_TIMEZONE)
+    # Recompute the offer after closing: the P3 deadline is tomorrow at 10:00.
+    await store.delete_callback_draft(request.request_id)
+    request = await store.get_request(request.request_id)
+    await service.start_callback(event.call_id, 5, "no_answer")
+    await service.callback_turn(event.call_id, Turn(turn_id=6, text="да"))
+    await service.callback_turn(event.call_id, Turn(turn_id=7, text="79991234567"))
+
+    result = await service.callback_turn(event.call_id, Turn(turn_id=8, text="завтра в 15:00"))
+    draft = await store.get_callback_draft(request.request_id)
+
+    assert draft is not None and draft.preferred_at == datetime(
+        2026, 10, 20, 15, tzinfo=CLINIC_TIMEZONE
+    )
+    assert draft.deadline == datetime(2026, 10, 20, 10, tzinfo=CLINIC_TIMEZONE)
+    assert any("позже норматива" in text for text in result.utterances)
+    assert any("Подтвердите ожидание" in text for text in result.utterances)
+    assert await store.get_callback_task_by_request(request.request_id) is None
+
+    confirmed = await service.callback_turn(event.call_id, Turn(turn_id=9, text="да"))
+    task = await store.get_callback_task_by_request(request.request_id)
+    assert confirmed.code == "CALLBACK_QUEUED"
+    assert task is not None and task.preferred_at == draft.preferred_at
+
+
+def test_callback_draft_without_observed_turn_is_backward_compatible():
+    draft = CallbackDraft.model_validate(
+        {
+            "request_id": "a" * 32,
+            "stage": "offer",
+            "last_turn_id": 1,
+            "deadline": "2026-10-19T10:30:00+04:00",
+            "summary": "Вопрос пациента",
+        }
+    )
+    assert draft.started_turn_id == 0
+    assert draft.observed_turn_id == 0
 
 
 @pytest.mark.asyncio
@@ -230,6 +307,127 @@ async def test_uncertain_mis_reconciliation_with_marker_mismatch_is_manual():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["foreign_client", "duplicate_marker"])
+async def test_uncertain_mis_reconciliation_never_applies_foreign_or_duplicate_marker(mismatch):
+    class Mis:
+        items = []
+
+        async def escalations(self, client_id, *, limit, offset):
+            return self.items
+
+    mis = Mis()
+    store, clock = MemoryHandoffStore(), Clock()
+    service = HandoffService(
+        store,
+        mis,
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, technical_client_id=999),
+    )
+    event = SimpleNamespace(
+        attempt_id=f"reconcile-{mismatch}",
+        call_id=f"reconcile-call-{mismatch}",
+        route="R-01",
+        priority="P1",
+    )
+    await service.transfer_started(event)
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+    request = await store.request_for_call(event.call_id)
+    operation = await store.get_mis_operation(request.mis_operation_id)
+    matching = Escalation(
+        id=42,
+        client_id=operation.client_id,
+        description=operation.description,
+        created_at="19.10.2026 10:00",
+    )
+    if mismatch == "foreign_client":
+        mis.items = [matching.model_copy(update={"client_id": operation.client_id + 1})]
+        expected_reason = "RECONCILE_MARKER_MISMATCH"
+    else:
+        mis.items = [matching, matching.model_copy(update={"id": 43})]
+        expected_reason = "DUPLICATE_MARKER"
+
+    await service._reconcile_mis(operation, clock.now())
+    checked = await store.get_mis_operation(operation.operation_id)
+    assert checked.state == MisDeliveryState.MANUAL
+    assert checked.reason == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_marks_paginated_result_unstable_when_new_item_shifts_pages():
+    class Mis:
+        def __init__(self):
+            self.items = []
+            self.offsets = []
+            self.inserted = False
+
+        async def escalations(self, client_id, *, limit, offset):
+            self.offsets.append(offset)
+            page = self.items[offset : offset + limit]
+            if offset == 0 and not self.inserted:
+                self.items.insert(
+                    0,
+                    Escalation(
+                        id=999,
+                        client_id=client_id,
+                        description="new item inserted between pages",
+                        created_at="19.10.2026 10:00",
+                    ),
+                )
+                self.inserted = True
+            return page
+
+    mis = Mis()
+    store, clock = MemoryHandoffStore(), Clock()
+    service = HandoffService(
+        store,
+        mis,
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, technical_client_id=999),
+    )
+    event = SimpleNamespace(
+        attempt_id="reconcile-page-shift",
+        call_id="reconcile-page-shift-call",
+        route="R-01",
+        priority="P1",
+    )
+    await service.transfer_started(event)
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+    request = await store.request_for_call(event.call_id)
+    operation = await store.get_mis_operation(request.mis_operation_id)
+    mis.items = [
+        Escalation(
+            id=index,
+            client_id=operation.client_id,
+            description=f"unrelated escalation {index}",
+            created_at="19.10.2026 10:00",
+        )
+        for index in range(1, 101)
+    ]
+    mis.items.append(
+        Escalation(
+            id=101,
+            client_id=operation.client_id,
+            description=operation.description,
+            created_at="19.10.2026 10:00",
+        )
+    )
+
+    await service._reconcile_mis(operation, clock.now())
+
+    checked = await store.get_mis_operation(operation.operation_id)
+    assert mis.offsets == [0, 50, 100]
+    assert checked.state == MisDeliveryState.MANUAL
+    assert checked.reason == "RECONCILE_INCOMPLETE"
+    assert checked.escalation_id is None
+
+
+@pytest.mark.asyncio
 async def test_expired_lease_cannot_start_and_recovery_marks_attempt_manual():
     service, store, clock, event, request = await prepared_callback()
     await service.callback_turn(event.call_id, Turn(turn_id=5, text="да"))
@@ -254,6 +452,29 @@ async def test_expired_lease_cannot_start_and_recovery_marks_attempt_manual():
 
 
 @pytest.mark.asyncio
+async def test_callback_exhausts_after_three_attempts_and_keeps_sms_pending():
+    service, store, clock, event, request = await prepared_callback()
+    await service.callback_turn(event.call_id, Turn(turn_id=5, text="да"))
+    task = await store.get_callback_task_by_request(request.request_id)
+
+    for index in range(3):
+        owner = f"operator-{index}"
+        claimed = await service.operator_claim(task.task_id, owner)
+        task, attempt = await service.operator_start_attempt(task.task_id, owner, claimed.version)
+        task = await service.operator_finish_attempt(
+            attempt.attempt_id, "no_answer", owner=owner, version=task.version
+        )
+        if index < 2:
+            clock.value += timedelta(minutes=5)
+
+    assert task.attempts == 3
+    assert task.state.value == "exhausted"
+    assert task.sms_pending is True
+    with pytest.raises(HandoffConflict):
+        await service.operator_claim(task.task_id, "operator-four")
+
+
+@pytest.mark.asyncio
 async def test_text_request_is_not_a_connected_transfer():
     store, clock = MemoryHandoffStore(), Clock()
     service = HandoffService(store, NoMis(), clock, b"x" * 32, HandoffSettings(enabled=True))
@@ -272,7 +493,7 @@ async def test_emergency_intent_is_committed_with_transfer_result():
         NoMis(),
         clock,
         b"x" * 32,
-        HandoffSettings(enabled=True, technical_client_id=999),
+        HandoffSettings(enabled=True, callback_enabled=True, technical_client_id=999),
     )
     event = SimpleNamespace(
         attempt_id="urgent-1", call_id="urgent-call", route="R-01", priority="P1"
@@ -281,12 +502,15 @@ async def test_emergency_intent_is_committed_with_transfer_result():
     await service.transfer_result(
         SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
     )
+    assert await service.start_callback(event.call_id, 1, "no_answer") is None
     request = await store.request_for_call(event.call_id)
     assert request.mis_operation_id is not None
     assert len(store.mis_operations) == 1
     operation = next(iter(store.mis_operations.values()))
     assert operation.kind == "emergency_notice"
     assert operation.client_id == 999
+    assert store.callback_drafts == {}
+    assert store.callback_tasks == {}
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,7 @@ async def input_started(call_id: CallId, body: InputStart, service: Service) -> 
 )
 async def turn(call_id: CallId, body: Turn, service: Service) -> Reply:
     try:
-        return await service.handle(call_id, body)
+        return await service.handle(call_id, body, source="text")
     except DialogueError as error:
         raise HTTPException(409, detail=str(error)) from None
     except (SQLAlchemyError, PostgresError, OSError):

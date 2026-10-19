@@ -41,7 +41,9 @@ def system():
 @pytest.mark.asyncio
 async def test_patient_text_operator_request_creates_local_card():
     dialogue, handoffs = system()
-    reply = await dialogue.handle("text-review", Turn(turn_id=1, text="соедините с оператором"))
+    reply = await dialogue.handle(
+        "text-review", Turn(turn_id=1, text="соедините с оператором"), source="text"
+    )
     assert reply.phase == Phase.HANDOFF
     # В текстовом канале событие ARI transfer_started не придёт.
     assert await handoffs.store.request_for_call("text-review") is not None
@@ -51,6 +53,7 @@ async def test_patient_text_operator_request_creates_local_card():
 async def test_declined_callback_persists_terminal_dialogue_state():
     dialogue, handoffs = system()
     call = "terminal-review"
+    await dialogue.store.claim(call, 1, "handoff-seed")
     await dialogue.store.preempt(call, 1, TransferRequest(route="R-08", priority="P3"))
     event = SimpleNamespace(
         attempt_id="terminal-attempt", call_id=call, route="R-08", priority="P3"

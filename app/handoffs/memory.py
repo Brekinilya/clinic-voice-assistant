@@ -13,6 +13,7 @@ from app.handoffs.models import (
     MisOperation,
     TransferAttempt,
     TransferState,
+    callback_final_turn_is_next,
 )
 from app.handoffs.ports import HandoffConflict
 
@@ -235,13 +236,37 @@ class MemoryHandoffStore:
             if request_id is None:
                 return None
             draft = self.callback_drafts.get(request_id)
-            if draft is None or turn_id <= max(draft.last_turn_id, draft.started_turn_id):
+            if draft is None or turn_id <= max(
+                draft.last_turn_id, draft.started_turn_id, draft.observed_turn_id
+            ):
                 return draft
             updated = draft.model_copy(
                 update={
                     "input_epoch": draft.input_epoch + 1,
                     "started_turn_id": turn_id,
                     "last_turn_id": turn_id - 1,
+                    "version": draft.version + 1,
+                }
+            )
+            self.callback_drafts[request_id] = updated
+            return updated
+
+    async def observe_callback_final(self, call_id, turn_id):
+        async with self._lock:
+            request_id = self.calls.get(call_id)
+            if request_id is None:
+                return None
+            draft = self.callback_drafts.get(request_id)
+            if draft is None or not callback_final_turn_is_next(draft, turn_id):
+                return draft
+            watermark = max(draft.last_turn_id, draft.started_turn_id)
+            updated = draft.model_copy(
+                update={
+                    "input_epoch": draft.input_epoch + 1,
+                    "observed_turn_id": turn_id,
+                    "last_turn_id": max(draft.last_turn_id, turn_id - 1)
+                    if turn_id > watermark + 1
+                    else draft.last_turn_id,
                     "version": draft.version + 1,
                 }
             )

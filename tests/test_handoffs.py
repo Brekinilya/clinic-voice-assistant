@@ -2,6 +2,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from app.clock import CLINIC_TIMEZONE
 from app.dialogue.models import Turn
@@ -30,6 +31,18 @@ def test_escalation_payload_rejects_non_openapi_control_characters():
     request = EscalationCreate(client_id=42, description="bad\x01text")
     with pytest.raises(ValueError):
         request.body()
+
+
+def test_escalation_description_boundary_preserves_unicode_and_marker():
+    marker = "[T08:" + "a" * 32 + "]"
+    description = marker + "я" * (1000 - len(marker))
+    payload = EscalationCreate(client_id=42, description=description)
+    assert len(payload.body()["description"]) == 1000
+    assert payload.body()["description"].startswith(marker)
+    with pytest.raises(ValidationError):
+        EscalationCreate(client_id=42, description=description + "я")
+    with pytest.raises(ValidationError):
+        EscalationCreate(client_id=42, description="")
 
 
 @pytest.mark.asyncio

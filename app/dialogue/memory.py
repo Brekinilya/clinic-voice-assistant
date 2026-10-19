@@ -89,6 +89,46 @@ class MemoryDialogueStore:
             del self.pending[state.call_id]
             return not stale
 
+    async def finish_handoff_turn(self, call_id, turn_id, digest, expected_version, result):
+        async with self._lock:
+            state = self.states.get(call_id, DialogueState(call_id=call_id))
+            receipt = self.receipts.get((call_id, turn_id))
+            if receipt is not None:
+                if receipt.digest != digest:
+                    raise DialogueError("TURN_CONTENT_CONFLICT")
+                return state, receipt.reply
+            if state.phase != Phase.HANDOFF or state.version != expected_version:
+                return state, None
+            if turn_id != state.last_turn_id + 1:
+                raise DialogueError("TURN_OUT_OF_ORDER")
+            state = state.model_copy(
+                update={
+                    "phase": Phase.ENDED,
+                    "identity_draft": None,
+                    "version": state.version + 1,
+                    "last_turn_id": max(turn_id, state.last_turn_id),
+                    "pending_turn_id": None,
+                    "client_id": None,
+                    "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
+                    "options": (),
+                    "retry_at": None,
+                    "mis_wait_since": None,
+                    "authorization": None,
+                    "visit_items": (),
+                    "visit_cursor": None,
+                    "visit_has_more": False,
+                    "query_for_self": False,
+                }
+            )
+            saved_reply = result.model_copy(update={"phase": Phase.ENDED, "version": state.version})
+            self.states[call_id] = state
+            self.receipts[(call_id, turn_id)] = Receipt(digest=digest, reply=saved_reply)
+            return state, saved_reply
+
     async def end(self, call_id: str) -> DialogueState:
         async with self._lock:
             state = self.states.get(call_id, DialogueState(call_id=call_id))
@@ -197,7 +237,12 @@ class MemoryDialogueStore:
     async def preempt(self, call_id: str, turn_id: int, transfer: TransferRequest) -> DialogueState:
         async with self._lock:
             state = self.states.get(call_id, DialogueState(call_id=call_id))
-            if turn_id < state.observed_turn_id or state.phase in {Phase.ENDED, Phase.HANDOFF}:
+            if turn_id < state.observed_turn_id or state.phase == Phase.ENDED:
+                return state
+            if state.phase == Phase.HANDOFF and not (
+                transfer.priority == "P1"
+                and (state.transfer is None or state.transfer.priority != "P1")
+            ):
                 return state
             pending = self.pending.pop(call_id, None)
             state = preempt_state(state, transfer)

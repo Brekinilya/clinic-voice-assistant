@@ -2,12 +2,23 @@
 
 import asyncio
 import socket
+from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 
+from app.clock import CLINIC_TIMEZONE
+from app.dialogue.memory import MemoryDialogueStore
+from app.dialogue.safety_adapter import RulesSafety
+from app.dialogue.service import DialogueService
+from app.handoffs.memory import MemoryHandoffStore
+from app.handoffs.service import HandoffService, HandoffSettings
 from app.voice import telephony as telephony_module
 from app.voice.rtp import CODECS, RtpSender, Upsampler
-from app.voice.telephony import PhoneChannel, Telephony, TelephonySettings
+from app.voice.session import CallSession
+from app.voice.settings import VoiceSettings
+from app.voice.telephony import AriError, PhoneChannel, Telephony, TelephonySettings
+from tests.voice.fakes import Synthesizer, Vad, phrase
 
 PCM = bytes(range(256)) * 5
 
@@ -62,6 +73,26 @@ class Session:
 
     async def close(self):
         self.closed = True
+
+
+class FixedClock:
+    def now(self):
+        return datetime(2026, 10, 19, 10, tzinfo=CLINIC_TIMEZONE)
+
+
+class NoMis:
+    async def create_escalation(self, payload):
+        raise AssertionError("MIS must remain outside this fake-ARI integration")
+
+
+class SequenceRecognizer:
+    def __init__(self, texts):
+        self.texts = iter(texts)
+        self.heard = []
+
+    def transcribe(self, pcm):
+        self.heard.append(len(pcm))
+        return next(self.texts, "")
 
 
 def free_port() -> int:
@@ -211,6 +242,47 @@ async def test_transfer_connects_registrar(line):
     assert ("hangup", "caller-1") in line.ari.calls
 
 
+async def test_answered_operator_with_rejected_bridge_is_reported_failed(line, monkeypatch):
+    outcomes = []
+    original_add = line.ari.add
+    clock = FixedClock()
+    handoff_store = MemoryHandoffStore()
+    handoffs = HandoffService(
+        handoff_store,
+        NoMis(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=True),
+    )
+
+    async def reject_operator(bridge, *channels):
+        if channels == ("operator-1",):
+            raise AriError("bridge rejected")
+        await original_add(bridge, *channels)
+
+    monkeypatch.setattr(line.ari, "add", reject_operator)
+    line.on_transfer_start = handoffs.transfer_started
+
+    async def record_result(result):
+        outcomes.append(result.outcome)
+        await handoffs.transfer_result(result)
+
+    line.on_transfer = record_result
+    await line.handle(start("caller-rejected-bridge", "inbound"))
+    call = line.calls["caller-rejected-bridge"]
+    await line.transfer(call, "P2", "R-08")
+
+    await line.handle(start("operator-1", "operator", "caller-rejected-bridge"))
+    await settled(lambda: outcomes)
+
+    assert outcomes == ["failed"]
+    assert call.connected is False
+    assert ("hangup", "operator-1") in line.ari.calls
+    request = await handoff_store.request_for_call("caller-rejected-bridge")
+    assert request is not None and request.transfer_state.value == "failed"
+    assert handoff_store.mis_operations == {}
+
+
 @pytest.mark.parametrize(
     "priority, template, timeout",
     [("P1", "emergency.no_answer", 20), ("P3", "transfer.no_answer", 90)],
@@ -223,6 +295,32 @@ async def test_registrar_does_not_answer(line, priority, template, timeout):
     await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
     await settled(lambda: line.ari.calls[-1] == ("hangup", "caller-1"))
     assert line.said == [template]
+
+
+@pytest.mark.parametrize("operator_answers", [False, True])
+async def test_p3_operator_wait_repeats_status_without_ending_caller(
+    line, monkeypatch, operator_answers
+):
+    monkeypatch.setattr(telephony_module, "OPERATOR_WAIT_PROMPT_INTERVAL_S", 0.01, raising=False)
+    await line.handle(start("caller-p3", "inbound"))
+    call = line.calls["caller-p3"]
+
+    await line.transfer(call, "P3", "R-08")
+
+    await settled(lambda: line.said.count("transfer.waiting") >= 2)
+    assert ("originate", "PJSIP/operator", ("operator", "caller-p3"), 90) in line.ari.calls
+    assert ("hangup", "caller-p3") not in line.ari.calls
+
+    if operator_answers:
+        await line.handle(start("operator-1", "operator", "caller-p3"))
+        assert call.connected
+        prompts = line.said.count("transfer.waiting")
+        await asyncio.sleep(0.03)
+        assert line.said.count("transfer.waiting") == prompts
+    else:
+        await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
+        await settled(lambda: ("hangup", "caller-p3") in line.ari.calls)
+    assert line.said.count("transfer.waiting") >= 2
 
 
 async def test_journal_timeout_still_originates_once_and_duplicate_finish_is_ignored(
@@ -287,3 +385,142 @@ async def test_journal_timeout_does_not_replace_actual_connected_outcome(line, m
     await line.handle(start("operator-1", "operator", "caller-1"))
     assert call.connected
     assert outcomes == ["connected"]
+
+
+@pytest.mark.parametrize("callback_enabled", [True, False])
+async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabled, monkeypatch):
+    """Проверяет полный локальный путь ARI → CallSession → dialogue → durable callback."""
+    clock = FixedClock()
+    handoff_store = MemoryHandoffStore()
+    handoffs = HandoffService(
+        handoff_store,
+        NoMis(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=callback_enabled),
+    )
+
+    async def release_call_holds(_):
+        return None
+
+    booking = SimpleNamespace(
+        clock=clock,
+        clear_call_cache=lambda _: None,
+        store=SimpleNamespace(release_call_holds=release_call_holds),
+    )
+    dialogue = DialogueService(
+        booking,
+        MemoryDialogueStore(),
+        b"x" * 32,
+        safety=RulesSafety(clock),
+        handoffs=handoffs,
+    )
+    recognizer = SequenceRecognizer(
+        (
+            "соедините с оператором",
+            "да",
+            "79991234567",
+            "завтра в 15:00",
+            "да",
+        )
+    )
+    sessions = []
+
+    def new_session(call_id, channel):
+        session = CallSession(
+            call_id,
+            channel,
+            dialogue,
+            Vad(),
+            recognizer,
+            Synthesizer(),
+            today=lambda: date(2026, 10, 19),
+            settings=VoiceSettings(
+                _env_file=None,
+                min_speech_ms=192,
+                end_silence_ms=320,
+                dictation_silence_ms=640,
+                partial_ms=5000,
+                silence_prompt_s=30,
+                goodbye_hangup_s=0.05,
+                wait_phrase_s=0.3,
+            ),
+        )
+        sessions.append(session)
+        return session
+
+    line.sessions = new_session
+    line.on_transfer_start = handoffs.transfer_started
+    line.on_transfer = handoffs.transfer_result
+    call_id = "full-t08-call"
+    original_originate = line.ari.originate
+
+    async def assert_card_precedes_dial(endpoint, args, timeout):
+        request = await handoff_store.request_for_call(call_id)
+        assert request is not None
+        assert request.transfer_state.value == "attempting"
+        assert request.identity_status == "unknown" and request.client_id is None
+        return await original_originate(endpoint, args, timeout)
+
+    monkeypatch.setattr(line.ari, "originate", assert_card_precedes_dial)
+    await line.handle(start(call_id, "inbound"))
+    session = line.calls[call_id].session
+    await settled(lambda: not session.speaking())
+
+    await session.feed(phrase(10))
+    await settled(lambda: bool(recognizer.heard))
+    assert recognizer.heard
+    await settled(lambda: "operator-1" in line._operators)
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None and request.transfer_state.value == "attempting"
+    assert request.priority == "P2"
+    assert request.identity_status == "unknown" and request.client_id is None
+    assert request.attempt_id is not None and handoff_store.mis_operations == {}
+    originate = next(call for call in line.ari.calls if call[0] == "originate")
+    assert originate[-1] == 30
+    assert ("hangup", call_id) not in line.ari.calls
+
+    await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
+    await asyncio.sleep(0.05)
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None and request.transfer_state.value == "no_answer"
+    assert session.turn_id == 2
+    if not callback_enabled:
+        await settled(lambda: "transfer.no_answer" in line.said)
+        assert line.said[-1] == "transfer.no_answer"
+        assert await handoff_store.get_callback_draft(request.request_id) is None
+        assert await handoff_store.get_callback_task_by_request(request.request_id) is None
+        await line.handle(end(call_id))
+        assert call_id not in line.calls
+        return
+
+    await settled(lambda: len(session.synthesizer.spoken) > 1)
+    assert any("согласны" in text.lower() for text in session.synthesizer.spoken), (
+        session.synthesizer.spoken,
+        session.ended,
+        await handoff_store.get_callback_draft(request.request_id),
+    )
+    assert await handoff_store.request_for_call(call_id) is not None
+
+    for words in (12, 14, 16, 18):
+        previous_recognitions = len(recognizer.heard)
+        await session.feed(phrase(words))
+        await settled(lambda: len(recognizer.heard) > previous_recognitions)
+        await settled(lambda: session._responder is not None and session._responder.done())
+        if words < 18:
+            await settled(lambda: not session.speaking())
+    await asyncio.sleep(0.05)
+    assert session.ended, (recognizer.heard, session.synthesizer.spoken)
+
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None
+    task = await handoff_store.get_callback_task_by_request(request.request_id)
+    assert task is not None, (recognizer.heard, session.synthesizer.spoken, request)
+    assert task.contact_ciphertext
+    assert task.contact_masked == "•••• 4567"
+    assert handoffs.cipher.decrypt(task.contact_ciphertext.encode()) == b"+79991234567"
+    assert session.turn_id == 6
+    assert len(sessions) == 1
+
+    await line.handle(end(call_id))
+    assert call_id not in line.calls

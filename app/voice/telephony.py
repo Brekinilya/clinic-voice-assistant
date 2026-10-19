@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 SILENCE_GAP_S = 0.1
 # Раздел 7.5: сколько ждать ответа регистратора по приоритету перевода
 OPERATOR_TIMEOUT_S = {"P1": 20, "P2": 30, "P3": 90}
+OPERATOR_WAIT_PROMPT_INTERVAL_S = 20.0
 HANDOFF_JOURNAL_TIMEOUT_S = 1.0
 # Сколько ждать ответа пациента на исходящее напоминание
 OUTBOUND_RING_S = 30
@@ -200,6 +201,8 @@ class PhoneCall:
     handoff_journaled: bool = False
     attempt: str | None = None
     reported: bool = False
+    wait_prompt_task: asyncio.Task | None = None
+    wait_prompts_active: bool = False
     rate: int = 24000
     codec: Codec = field(default_factory=lambda: CODECS["ulaw"])
     tasks: set[asyncio.Task] = field(default_factory=set)
@@ -478,8 +481,53 @@ class Telephony:
             await self._operator_failed(call)
             return
         self._operators[call.operator] = call
+        if call.priority == "P3":
+            call.wait_prompts_active = True
+            call.wait_prompt_task = self.spawn(
+                call, self._operator_wait_prompts(call, call.operator)
+            )
+
+    async def _operator_wait_prompts(self, call: PhoneCall, operator: str) -> None:
+        loop = asyncio.get_running_loop()
+        next_prompt = loop.time() + OPERATOR_WAIT_PROMPT_INTERVAL_S
+        while call.wait_prompts_active:
+            await asyncio.sleep(max(0, next_prompt - loop.time()))
+            if not self._operator_is_waiting(call, operator):
+                return
+            next_prompt += OPERATOR_WAIT_PROMPT_INTERVAL_S
+            await self._music(call, False)
+            try:
+                pcm, rate = await self.say("transfer.waiting")
+                if not self._operator_is_waiting(call, operator):
+                    return
+                call.rtp.play(self.resample(pcm, rate, call.codec.rate))
+                await call.rtp.drained()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("operator wait prompt failed")
+            finally:
+                if call.wait_prompts_active and self._operator_is_waiting(call, operator):
+                    await self._music(call, True)
+
+    def _operator_is_waiting(self, call: PhoneCall, operator: str) -> bool:
+        return (
+            call.wait_prompts_active
+            and self._operators.get(operator) is call
+            and not call.connected
+            and call.caller in self.calls
+        )
+
+    async def _stop_operator_wait_prompts(self, call: PhoneCall) -> None:
+        call.wait_prompts_active = False
+        task = call.wait_prompt_task
+        call.wait_prompt_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _operator_answered(self, call: PhoneCall, operator: str) -> None:
+        await self._stop_operator_wait_prompts(call)
         if call.caller not in self.calls or call.operator != operator:
             # Пациент уже положил трубку: соединять регистратора не с кем
             self._operators.pop(operator, None)
@@ -549,6 +597,7 @@ class Telephony:
                 return
         if channel in self._operators:
             call = self._operators.pop(channel)
+            await self._stop_operator_wait_prompts(call)
             if call.connected:
                 await self.ari.hangup(call.caller)
             elif call.caller in self.calls:
@@ -586,10 +635,11 @@ class Telephony:
         except AriError:
             log.warning("музыка ожидания недоступна")
 
-    def spawn(self, call: PhoneCall, coroutine) -> None:
+    def spawn(self, call: PhoneCall, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
         call.tasks.add(task)
         task.add_done_callback(call.tasks.discard)
+        return task
 
     async def close(self) -> None:
         for call in list(self.calls.values()):

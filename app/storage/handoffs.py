@@ -14,6 +14,7 @@ from app.handoffs.models import (
     MisOperation,
     TransferAttempt,
     TransferState,
+    callback_final_turn_is_next,
 )
 from app.handoffs.ports import HandoffConflict
 from app.storage.journal import journal_transaction
@@ -499,7 +500,7 @@ class PostgresHandoffStore:
             if row is None:
                 return None
             draft = _draft(row)
-            if turn_id <= max(draft.last_turn_id, draft.started_turn_id):
+            if turn_id <= max(draft.last_turn_id, draft.started_turn_id, draft.observed_turn_id):
                 return draft
             updated = draft.model_copy(
                 update={
@@ -517,6 +518,55 @@ class PostgresHandoffStore:
                 )
                 .values(
                     stage=updated.stage,
+                    last_turn_id=updated.last_turn_id,
+                    version=updated.version,
+                    data=_data(updated),
+                )
+            )
+            return updated
+
+    async def observe_callback_final(self, call_id, turn_id):
+        async with journal_transaction(self.engine) as connection:
+            request_row = (
+                await connection.execute(
+                    select(handoff_requests)
+                    .where(handoff_requests.c.call_id == call_id)
+                    .with_for_update()
+                )
+            ).first()
+            if request_row is None:
+                return None
+            request_id = _request(request_row).request_id
+            row = (
+                await connection.execute(
+                    select(callback_drafts)
+                    .where(callback_drafts.c.request_id == request_id)
+                    .with_for_update()
+                )
+            ).first()
+            if row is None:
+                return None
+            draft = _draft(row)
+            if not callback_final_turn_is_next(draft, turn_id):
+                return draft
+            watermark = max(draft.last_turn_id, draft.started_turn_id)
+            updated = draft.model_copy(
+                update={
+                    "input_epoch": draft.input_epoch + 1,
+                    "observed_turn_id": turn_id,
+                    "last_turn_id": max(draft.last_turn_id, turn_id - 1)
+                    if turn_id > watermark + 1
+                    else draft.last_turn_id,
+                    "version": draft.version + 1,
+                }
+            )
+            await connection.execute(
+                update(callback_drafts)
+                .where(
+                    callback_drafts.c.request_id == request_id,
+                    callback_drafts.c.version == draft.version,
+                )
+                .values(
                     last_turn_id=updated.last_turn_id,
                     version=updated.version,
                     data=_data(updated),

@@ -159,10 +159,10 @@ class DialogueService:
             hashlib.sha256,
         ).hexdigest()
 
-    async def handle(self, call_id: str, turn: Turn) -> Reply:
+    async def handle(self, call_id: str, turn: Turn, *, source: str = "phone") -> Reply:
         with observe(self.debug, call_id, turn.turn_id):
             emit("dialogue.input", text=turn.text, final=turn.is_final)
-            result = await self._handle(call_id, turn)
+            result = await self._handle(call_id, turn, source=source)
             if self.debug is not None:
                 emit(
                     "dialogue.reply",
@@ -170,25 +170,29 @@ class DialogueService:
                 )
             return result
 
-    async def _handle(self, call_id: str, turn: Turn) -> Reply:
+    async def _handle(self, call_id: str, turn: Turn, *, source: str = "phone") -> Reply:
         digest = self._digest(call_id, turn)
         if self.safety is not None:
             current = await self.store.observe(call_id, turn.turn_id, digest)
             if current.phase == Phase.ENDED:
-                if (
-                    current.reminder is not None
-                    and turn.is_final
-                    and turn.turn_id <= current.last_turn_id
-                ):
-                    claim = await self.store.claim(call_id, turn.turn_id, digest)
-                    if claim.cached is not None:
-                        return claim.cached
+                if turn.is_final and turn.turn_id <= current.last_turn_id:
+                    try:
+                        claim = await self.store.claim(call_id, turn.turn_id, digest)
+                    except DialogueError as error:
+                        if str(error) != "CALL_ENDED":
+                            raise
+                    else:
+                        if claim.cached is not None:
+                            return claim.cached
                 return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
             if current.phase == Phase.HANDOFF:
-                if self.handoffs is not None and not turn.is_final:
-                    # Промежуточная речь отзывает согласие даже без отдельного
-                    # input_started. Итоговый HTTP-ввод сохраняет строгий порядок.
-                    await self.handoffs.callback_input_started(call_id, turn.turn_id)
+                if self.handoffs is not None:
+                    if turn.is_final:
+                        await self.handoffs.callback_final_observed(call_id, turn.turn_id)
+                    else:
+                        # Промежуточная речь отзывает согласие даже без отдельного
+                        # input_started. Итоговый HTTP-ввод сохраняет строгий порядок.
+                        await self.handoffs.callback_input_started(call_id, turn.turn_id)
                 if self.handoffs is None or not await self.handoffs.has_callback_draft(call_id):
                     return handoff_reply(current, turn.turn_id)
             if turn.turn_id >= current.observed_turn_id:
@@ -224,13 +228,30 @@ class DialogueService:
                     )
                 if transfer is not None:
                     if self.handoffs is not None:
+                        if source == "text" and self.handoffs.settings.enabled:
+                            await self.handoffs.create_text_request(
+                                transfer.route,
+                                transfer.priority,
+                                "Текстовый запрос сотруднику",
+                                call_id=call_id,
+                            )
                         await self.handoffs.discard_draft(call_id)
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
                     await self._release_call(call_id)
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
             if current.phase == Phase.HANDOFF:
-                return await self.handoffs.callback_turn(call_id, turn)
+                callback_result = await self.handoffs.callback_turn(call_id, turn)
+                if callback_result.phase == Phase.ENDED:
+                    state, saved_reply = await self.store.finish_handoff_turn(
+                        call_id, turn.turn_id, digest, current.version, callback_result
+                    )
+                    if saved_reply is not None:
+                        return saved_reply
+                    if state.phase == Phase.HANDOFF:
+                        return handoff_reply(state, turn.turn_id)
+                    return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
+                return callback_result
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
