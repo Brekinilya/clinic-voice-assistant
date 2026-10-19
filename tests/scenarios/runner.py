@@ -55,8 +55,8 @@ GAPS = {
     "schedule.": "schedule_faq_T09",
     "silence.": "voice_event_channel_T03",
     "complaint.callback": "callback_T08",
+    "callback.mis_down": "callback_T08",
     "transfer.outside_hours": "callback_T08",
-    "my_visits.sms_sent": "sms_delivery_T20",
     "ident.relation": "guardian_T10",
     "ident.ask_child": "guardian_T10",
     "referral.": "referral_conversation_T09",
@@ -440,13 +440,14 @@ async def verify_callback_task(result, runtime, expectation):
         if request is not None
         else None
     )
-    expected_state = expectation.get("state", "queued") if isinstance(expectation, dict) else "queued"
+    expected_state = (
+        expectation.get("state", "queued") if isinstance(expectation, dict) else "queued"
+    )
     if task is None:
         result.add("callback_task_T08", "HandoffService не сохранил задачу обратного звонка")
         return
-    if (
-        task.state.value != expected_state
-        or request.callback_state != CallbackState(expected_state)
+    if task.state.value != expected_state or request.callback_state != CallbackState(
+        expected_state
     ):
         result.add("callback_task_T08", "Состояние сохранённой задачи не совпадает с ожидаемым")
         return
@@ -585,7 +586,9 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                             )
                             await runtime.handoffs.transfer_started(event)
                             await runtime.handoffs.transfer_result(
-                                SimpleNamespace(**vars(event), outcome="no_answer", reason="scenario")
+                                SimpleNamespace(
+                                    **vars(event), outcome="no_answer", reason="scenario"
+                                )
                             )
                             turn_id = len(responses) + 1
                             callback_reply = await runtime.service.start_callback(

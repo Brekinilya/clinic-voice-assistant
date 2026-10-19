@@ -2,7 +2,7 @@ id: D-04
 title: Посторонний спрашивает о чужой записи
 source: приложение Д, № 4
 blocking: true
-expected: Отказ сообщить сведения; предложение SMS на номер пациента
+expected: Отказ сообщить сведения; запрос передан сотруднику для проверки полномочий
 covers: [С-05, "3.5"]
 
 setup:
@@ -21,12 +21,10 @@ steps:
       slots: {last_name: Смирнова, first_name: Ольга, birth_date: "1978-03-12"}
     say: my_visits.third_party
     forbid: [Кузнецов, терапевт, четверг, первое октября, восемь сорок пять, двести четырнадцать]
-  - patient: Да, отправьте
-    parse: {expect: yes_no, intent: "yes"}
-    say: my_visits.sms_sent
+  - patient: Нет, это запись другого человека.
+    parse: {expect: yes_no, intent: "no"}
+    transfer: {route: R-16, priority: P3}
 
 result:
-  code: INFO_GIVEN
+  code: TRANSFER_REQUESTED
   stand: unchanged
-  # На стенде нет телефона пациента: SMS уходит в журнал заглушки
-  sms: [{client: smirnova_ov}]

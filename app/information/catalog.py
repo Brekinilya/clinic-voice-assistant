@@ -68,11 +68,13 @@ class InformationService:
         if ACTION_REQUEST.find(tokenize(text), 24):
             # Слово «час» в просьбе записать не превращает действие в справку о режиме.
             return None
+        hit = self._topics.best(text)
+        if hit is not None and hit.key == "price_unavailable":
+            return hit.key
         intent = classify(text, by_place=False)
         if intent is not None and intent[0] in {"I-08", "I-09"}:
             # «Вы работаете по ДМС?» не спрашивает часы работы поликлиники.
             return None
-        hit = self._topics.best(text)
         if hit is not None:
             if hit.key == "lab_terms":
                 return self._lab_topic(text)
