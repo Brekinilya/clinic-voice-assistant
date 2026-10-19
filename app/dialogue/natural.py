@@ -317,7 +317,18 @@ class BookingConversation:
         self, state: DialogueState, turn: Turn, result: NluResult | None = None
     ) -> tuple[DialogueState, Reply] | None:
         kind = classify_cross_scenario(turn.text)
+        if kind is None and result is not None and "repeat" in result.intents:
+            kind = CrossScenario.REPEAT
         if kind is None:
+            return None
+        if kind == CrossScenario.REPEAT:
+            question = self.information.resume_question(state, turn)
+            if not question:
+                question = self.information_continuation(state, turn)
+            if not question:
+                question = ("Повторите, пожалуйста, ответ на текущий вопрос.",)
+            return state, reply(state, turn.turn_id, *question, code="CURRENT_PROMPT_REPEATED")
+        if kind == CrossScenario.MORE_OPTIONS and state.purpose == "reschedule":
             return None
         if kind == CrossScenario.WAIT:
             return state, reply(
@@ -523,6 +534,13 @@ class BookingConversation:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
+        if "I-08" in result.intents and state.phase not in {
+            Phase.RECONCILING,
+            Phase.CANCEL_RECONCILING,
+            Phase.MOVE_PENDING,
+            Phase.MOVE_FINISH_CONFIRM,
+        }:
+            return await self.transfer(state, turn, "R-10")
         cross_reply = await self.cross_scenario_reply(state, turn, result)
         if cross_reply is not None:
             return cross_reply

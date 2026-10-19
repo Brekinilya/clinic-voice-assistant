@@ -9,6 +9,7 @@ class CrossScenario(StrEnum):
     GOODBYE = "goodbye"
     RESET = "reset"
     MORE_OPTIONS = "more_options"
+    REPEAT = "repeat"
     UNSURE = "unsure"
     FILLER = "filler"
     THIRD_PARTY = "third_party"
@@ -26,6 +27,15 @@ _PATTERNS = (
     (
         CrossScenario.MORE_OPTIONS,
         re.compile(r"\b(еще|другие|какие|вариант)\b.*\bвариант(ы|ов)?\b|\bварианты\b"),
+    ),
+    (CrossScenario.MORE_OPTIONS, re.compile(r"\b(другой|другая|другое)\s+(день|дата|время)\b")),
+    (
+        CrossScenario.REPEAT,
+        re.compile(
+            r"^\s*(?:(?:я\s+)?не расслышал[аи]?(?:,?\s*что вы сказали)?|"
+            r"повторите(?:,?\s*пожалуйста)?|повтори(?:,?\s*пожалуйста)?|"
+            r"что|как|алло|ещё раз)\s*[.!?]*\s*$"
+        ),
     ),
     (CrossScenario.UNSURE, re.compile(r"\b(не знаю|ну да,? наверное|может быть|наверное)\b")),
     (CrossScenario.FILLER, re.compile(r"^(мм+|эм+|м-м+|а-а+|ну\.?)$")),
