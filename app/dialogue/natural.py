@@ -1,5 +1,6 @@
 """Текстовый маршрутизатор: NLU Ильи, сценарии С-01/С-05 и правила действий backend."""
 
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -642,6 +643,43 @@ class BookingConversation:
         self, state: DialogueState, turn: Turn, result: NluResult, decision: SafetyDecision
     ) -> tuple[DialogueState, Reply]:
         slots, intents = result.slots, set(result.intents)
+        if (
+            state.phase == Phase.READY
+            and not state.caller_is_representative
+            and re.search(r"(?:доч|сын|реб[её]н|внук|внуч)", turn.text.casefold())
+        ):
+            state = state.model_copy(
+                update={
+                    "caller_is_representative": True,
+                    "representative_relation_pending": True,
+                }
+            )
+        if state.representative_relation_pending and state.client_id is not None:
+            text = turn.text.casefold()
+            if re.search(r"мам|пап|отец|матер|родител", text):
+                relationship = "parent"
+            elif re.search(r"опек|попеч", text):
+                relationship = "guardian"
+            elif text.strip():
+                relationship = "other"
+            else:
+                relationship = None
+            if relationship is None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Кем вы приходитесь пациенту?",
+                    code="REPRESENTATIVE_RELATION_REQUIRED",
+                )
+            state = state.model_copy(
+                update={
+                    "representative_relation_pending": False,
+                    "representative_relationship": relationship,
+                }
+            )
+            if state.specialty:
+                return await self.offer(state, turn)
+            return state, reply(state, turn.turn_id, "К какому специалисту записать пациента?")
         if state.referral_fallback_pending:
             if "yes" in intents:
                 state = state.model_copy(
@@ -977,12 +1015,38 @@ class BookingConversation:
                 code="BIRTH_DATE_AMBIGUOUS",
             )
         if slots.last_name and slots.first_name and slots.birth_date:
-            patient = await self.booking.identify(
-                slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
-            )
+            try:
+                patient = await self.booking.identify(
+                    slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
+                )
+            except BookingError as error:
+                if str(error) != "IDENTIFICATION_REQUIRED":
+                    raise
+                attempts = state.identity_attempts + 1
+                state = state.model_copy(update={"identity_attempts": attempts, "client_id": None})
+                if attempts >= 2:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Не удалось найти пациента по ФИО и дате рождения. Назовите номер полиса ОМС.",
+                        code="IDENTIFICATION_REQUIRED",
+                    )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Не получается найти карту по этим данным. Назовите фамилию по буквам и дату рождения.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
             state = state.model_copy(
                 update={"client_id": patient.id, "phase": Phase.IDENTIFIED, "misunderstandings": 0}
             )
+            if state.representative_relation_pending:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Кем вы приходитесь пациенту?",
+                    code="REPRESENTATIVE_RELATION_REQUIRED",
+                )
             if state.specialty:
                 return await self.offer(state, turn)
             return state, reply(

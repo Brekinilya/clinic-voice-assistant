@@ -72,6 +72,8 @@ class HandoffService:
             summary = "Вопрос о существующей записи"
         if specialty:
             summary = f"{summary}; специальность: {specialty}"
+        if state is not None and state.caller_is_representative:
+            summary = f"{summary}; звонит представитель пациента"
         summary = f"{summary}. Причина маршрута: {route}."[:200]
         if summary_override is not None:
             summary = re.sub(r"\s+", " ", summary_override).strip()[:200]

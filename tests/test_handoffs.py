@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.clock import CLINIC_TIMEZONE
-from app.dialogue.models import Turn
+from app.dialogue.models import DialogueState, Turn
 from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.models import TransferState
 from app.handoffs.service import HandoffService, HandoffSettings
@@ -67,6 +67,25 @@ async def test_transfer_attempt_is_journaled_and_replayed_once():
     assert request.transfer_state == TransferState.NO_ANSWER
     assert len(store.requests) == len(store.attempts) == 1
     assert not store.mis_operations
+
+
+@pytest.mark.asyncio
+async def test_representative_is_marked_in_handoff_summary():
+    store = MemoryHandoffStore()
+    service = HandoffService(store, NoMis(), Clock(), b"x" * 32, HandoffSettings(enabled=True))
+    state = DialogueState(
+        call_id="representative-1",
+        client_id=42,
+        specialty="педиатр",
+        caller_is_representative=True,
+        representative_relationship="parent",
+    )
+
+    request = await service.ensure_request("representative-1", "R-07", "P3", state)
+
+    assert request.identity_status == "verified"
+    assert request.client_id == 42
+    assert "звонит представитель пациента" in request.summary
 
 
 @pytest.mark.asyncio

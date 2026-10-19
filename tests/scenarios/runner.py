@@ -16,6 +16,8 @@ PHASES = {
     "ident.ask_name": {"identifying"},
     "ident.ask_birth_date": {"identifying"},
     "ident.ask_patient": {"identifying"},
+    "ident.ask_child": {"identifying"},
+    "ident.relation": {"identified"},
     "booking.offer_first": {"offered"},
     "booking.offer_period": {"offered"},
     "booking.offer_nearest": {"offered"},
@@ -61,8 +63,6 @@ GAPS = {
     "complaint.callback": "callback_T08",
     "callback.mis_down": "callback_T08",
     "transfer.outside_hours": "callback_T08",
-    "ident.relation": "guardian_T10",
-    "ident.ask_child": "guardian_T10",
     "paid.price": "legacy_paid_catalog_outside_scope",
     "transfer.ministry": "faq_T09",
     "transfer.insurer": "faq_T09",
@@ -339,6 +339,15 @@ def verify_step(result, number, step, response):
         if name in PHASES:
             if response.phase not in PHASES[name]:
                 result.add("phase:" + name, f"Получено состояние {response.phase}", step=number)
+            if name == "ident.relation" and (
+                response.code != "REPRESENTATIVE_RELATION_REQUIRED"
+                or not re.search(r"кем вы приходитесь пациенту", text)
+            ):
+                result.add(
+                    "guardian_relation_T10",
+                    "Не уточнено отношение звонящего к найденному пациенту",
+                    step=number,
+                )
             if name == "referral.missing" and (
                 response.code != "REFERRAL_REQUIRES_GP"
                 or not re.search(r"подтвержд.*направлен", text)

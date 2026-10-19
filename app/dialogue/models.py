@@ -122,6 +122,9 @@ class DialogueState(BookingModel):
     information_clarifying: bool = False
     referral_fallback_pending: bool = False
     referral_fallback_used: bool = False
+    caller_is_representative: bool = False
+    representative_relation_pending: bool = False
+    representative_relationship: Literal["parent", "guardian", "other"] | None = None
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     purpose: Literal["booking", "visits", "cancel", "reschedule"] = "booking"
