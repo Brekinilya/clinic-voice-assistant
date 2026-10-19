@@ -233,6 +233,29 @@ class CallSession:
                 self._next_partial_ms += self.settings.partial_ms
                 self._start_partial()
 
+    async def resume_after_transfer(self, outcome: str) -> bool:
+        """Resume the caller dialogue after an unsuccessful P2/P3 operator attempt."""
+        start_callback = getattr(self.dialogue, "start_callback", None)
+        if start_callback is None:
+            return False
+        self.ended = False
+        self.closing = False
+        self.finished.clear()
+        self.turn_id += 1
+        self._answered.clear()
+        self._fallback_used = False
+        self._cause = None
+        self._buffer.clear()
+        self.endpointer = Endpointer(self.endpointer.settings)
+        self._playback_end = self.now()
+        result = await start_callback(self.call_id, self.turn_id, outcome)
+        if result is None:
+            self.ended = True
+            self.finished.set()
+            return False
+        await self._deliver(self.turn_id, result)
+        return True
+
     def speaking(self) -> bool:
         return self.now() < self._playback_end + PLAYBACK_MARGIN_S
 

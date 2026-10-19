@@ -23,6 +23,8 @@ from app.mis.models import (
     Client,
     ClientComment,
     Doctor,
+    Escalation,
+    EscalationCreate,
     Visit,
     VisitChange,
     VisitCreate,
@@ -442,6 +444,44 @@ class HttpMedicalSystem:
             self._invalidate_clients(client_id)
         if result.id != client_id:
             raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    async def create_escalation(self, request: EscalationCreate) -> Escalation:
+        body = request.body()
+        response = await self._request("POST", "escalations", json=body)
+        result = self._decode(response, Escalation, write=True)
+        if result.client_id != request.client_id or result.description != request.description:
+            raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    async def escalations(
+        self, client_id: int, *, limit: int = PAGE, offset: int = 0
+    ) -> list[Escalation]:
+        self._id(client_id)
+        if type(limit) is not int or not 1 <= limit <= PAGE:
+            raise ValueError("limit вне контракта OpenAPI")
+        if type(offset) is not int or not 0 <= offset <= 100_000:
+            raise ValueError("offset вне разрешённого диапазона")
+        response = await self._request(
+            "GET", "escalations", params={"client_id": client_id, "limit": limit, "offset": offset}
+        )
+        try:
+            payload = response.json()
+            if not isinstance(payload, list) or len(payload) > limit:
+                raise ValueError("ожидался ограниченный массив")
+            items = [Escalation.model_validate(item) for item in payload]
+        except (ValidationError, ValueError):
+            raise MisUnavailable("INVALID_RESPONSE") from None
+        if any(item.client_id != client_id for item in items):
+            raise MisUnavailable("INVALID_RESPONSE")
+        return items
+
+    async def escalation(self, escalation_id: int) -> Escalation:
+        self._id(escalation_id)
+        response = await self._request("GET", f"escalations/{escalation_id}")
+        result = self._decode(response, Escalation)
+        if result.id != escalation_id:
+            raise MisUnavailable("INVALID_RESPONSE")
         return result
 
     def _invalidate_clients(self, client_id: int) -> None:

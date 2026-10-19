@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.backend import backend_engine
 from app.dialogue.composition import assemble_dialogue
+from app.handoffs.service import HandoffWorker
 from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.scheduling.bootstrap import configured_schedule
@@ -50,7 +51,7 @@ async def open_live_backend(settings: Settings, clock):
                 if doctor.is_active
             ):
                 raise RuntimeError("справочник МИС изменился: повторите импорт расписания")
-            yield assemble_dialogue(
+            service = assemble_dialogue(
                 settings,
                 clock,
                 mis,
@@ -61,6 +62,11 @@ async def open_live_backend(settings: Settings, clock):
                 PostgresMoveStore(engine),
                 settings.dialogue_hash_key.get_secret_value().encode(),
             )
+            if service.handoffs is not None:
+                async with HandoffWorker(service.handoffs):
+                    yield service
+            else:
+                yield service
     finally:
         schedule.close()
         if engine is not None:

@@ -356,6 +356,16 @@ class ReminderConversation:
         if answer == "maybe":
             if await self._pending(state):
                 return await self.handoff(state, turn, "R-16")
+            if state.misunderstandings >= 1:
+                return await self.handoff(state, turn, "R-05")
+            if words(text).startswith("пока "):
+                state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Вы придёте на приём? Ответьте, пожалуйста, точно: «да» или «нет».",
+                    code="REMINDER_CLARIFICATION",
+                )
             return await self.finish(
                 state,
                 turn,

@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 debug_events = Table(
     "backend_debug_events",
@@ -344,3 +344,114 @@ reminder_client_locks = Table(
     Column("owner", String(128), nullable=False),
     Column("until", DateTime(timezone=True), nullable=False),
 )
+
+# T08: локальная карточка и фактические телефонные исходы. JSONB хранит расширяемые поля,
+# отдельные проекции обеспечивают атомарность, дедупликацию и bounded queue queries.
+handoff_requests = Table(
+    "backend_handoff_requests",
+    metadata,
+    Column("request_id", String(32), primary_key=True),
+    Column("call_id", String(128), nullable=False, unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("route", String(16), nullable=False),
+    Column("priority", String(2), nullable=False),
+    Column("transfer_state", String(16), nullable=False),
+    Column("mis_state", String(16), nullable=False),
+    Column("callback_state", String(16)),
+    Column("callback_deadline", DateTime(timezone=True)),
+    Column("version", Integer, nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("priority IN ('P1','P2','P3')"),
+    CheckConstraint("version > 0"),
+)
+Index("handoff_request_queue", handoff_requests.c.transfer_state, handoff_requests.c.created_at)
+Index(
+    "handoff_callback_queue",
+    handoff_requests.c.callback_state,
+    handoff_requests.c.callback_deadline,
+)
+
+handoff_attempts = Table(
+    "backend_handoff_attempts",
+    metadata,
+    Column("attempt_id", String(64), primary_key=True),
+    Column("request_id", String(32), ForeignKey(handoff_requests.c.request_id), nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("outcome", String(16), nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("outcome IN ('attempting','connected','no_answer','failed','aborted')"),
+)
+Index("handoff_attempt_request", handoff_attempts.c.request_id, handoff_attempts.c.started_at)
+
+handoff_mis_operations = Table(
+    "backend_handoff_mis_operations",
+    metadata,
+    Column("operation_id", String(32), primary_key=True),
+    Column(
+        "request_id",
+        String(32),
+        ForeignKey(handoff_requests.c.request_id),
+        nullable=False,
+        unique=True,
+    ),
+    Column("kind", String(20), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("next_check_at", DateTime(timezone=True)),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("kind IN ('transfer','emergency_notice')"),
+    CheckConstraint("state IN ('pending','sending','applied','unknown','rejected','manual')"),
+)
+Index("handoff_mis_due", handoff_mis_operations.c.state, handoff_mis_operations.c.next_check_at)
+
+callback_tasks = Table(
+    "backend_callback_tasks",
+    metadata,
+    Column("task_id", String(32), primary_key=True),
+    Column(
+        "request_id",
+        String(32),
+        ForeignKey(handoff_requests.c.request_id),
+        nullable=False,
+        unique=True,
+    ),
+    Column("state", String(16), nullable=False),
+    Column("priority", String(2), nullable=False),
+    Column("deadline", DateTime(timezone=True), nullable=False),
+    Column("next_at", DateTime(timezone=True), nullable=False),
+    Column("owner", String(64)),
+    Column("lease_until", DateTime(timezone=True)),
+    Column("version", Integer, nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint(
+        "state IN ('queued','claimed','in_progress','done','cancelled','exhausted','manual')"
+    ),
+    CheckConstraint("priority IN ('P2','P3')"),
+    CheckConstraint("version > 0"),
+)
+Index("callback_task_due", callback_tasks.c.state, callback_tasks.c.next_at)
+Index("callback_task_lease", callback_tasks.c.state, callback_tasks.c.lease_until)
+
+callback_drafts = Table(
+    "backend_callback_drafts",
+    metadata,
+    Column("request_id", String(32), ForeignKey(handoff_requests.c.request_id), primary_key=True),
+    Column("stage", String(16), nullable=False),
+    Column("last_turn_id", Integer, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("stage IN ('offer','contact','time','confirm')"),
+)
+
+callback_attempts = Table(
+    "backend_callback_attempts",
+    metadata,
+    Column("attempt_id", String(32), primary_key=True),
+    Column("task_id", String(32), ForeignKey(callback_tasks.c.task_id), nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("outcome", String(16), nullable=False),
+    Column("data", JSONB, nullable=False),
+    CheckConstraint("outcome IN ('connected','no_answer','failed','cancelled','unknown')"),
+)
+Index("callback_attempt_task", callback_attempts.c.task_id, callback_attempts.c.started_at)

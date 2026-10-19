@@ -62,8 +62,10 @@ dialogs:
         say: remind.details
       - patient: Пока не знаю, может быть.
         parse: {expect: yes_no, intent: maybe}
-        say: remind.maybe
-        end: true
+        say: remind.clarify_maybe
+      - patient: Не знаю.
+        transfer: {route: R-05, priority: P3}
+        say: reask.offer_operator
     result:
       stand: unchanged
 

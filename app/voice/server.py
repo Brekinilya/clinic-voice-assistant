@@ -134,7 +134,16 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
 
     debug = getattr(app.state.dialogue, "debug", None)
 
-    def transfer_result(result) -> None:
+    async def transfer_started(event) -> None:
+        handoffs = getattr(app.state.dialogue, "handoffs", None)
+        if handoffs is not None:
+            dialogue_state = await app.state.dialogue.store.inspect(event.call_id)
+            await handoffs.transfer_started(event, dialogue_state)
+
+    async def transfer_result(result) -> None:
+        handoffs = getattr(app.state.dialogue, "handoffs", None)
+        if handoffs is not None:
+            await handoffs.transfer_result(result)
         # До T08 исход перевода виден в панели; заявку по нему создаёт диалог, не шлюз
         if debug is not None:
             debug.emit(
@@ -153,6 +162,7 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         say=say,
         resample=resample,
         on_transfer=transfer_result,
+        on_transfer_start=transfer_started,
         outbound=lambda call_id, channel, context, machine, done: open_session(
             app.state,
             call_id,

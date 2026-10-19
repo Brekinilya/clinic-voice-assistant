@@ -14,6 +14,8 @@ from app.mis.models import (
     COMMENT_LIMIT,
     Client,
     Doctor,
+    Escalation,
+    EscalationCreate,
     Visit,
     VisitChange,
     VisitCreate,
@@ -48,6 +50,7 @@ class MisEmulator:
             token: {item.id: item for item in items} for token, items in clients.items()
         }
         self.records: dict[str, dict[int, Visit]] = {token: {} for token in clients}
+        self.escalation_records: dict[str, dict[int, Escalation]] = {token: {} for token in clients}
         self.write_count = 0
         self.patch_count = 0
         self.next_failure: str | None = None
@@ -86,7 +89,49 @@ class MisEmulator:
             self.log.append((self.clock.now(), request.method, "/".join(path), offset))
             try:
                 if len(path) == 1 and request.method == "GET":
+                    if path[0] == "escalations":
+                        items = list(self.escalation_records[token].values())
+                        if query.get("client_id", "").isdigit():
+                            client_id = int(query["client_id"])
+                            if client_id not in self.clients[token]:
+                                return self.error(404)
+                            items = [item for item in items if item.client_id == client_id]
+                        limit = int(query.get("limit", "50"))
+                        if not 1 <= limit <= 50 or offset < 0:
+                            return self.error(400)
+                        items.sort(key=lambda item: (item.created_at, item.id), reverse=True)
+                        return httpx.Response(
+                            200,
+                            json=[
+                                item.model_dump(mode="json")
+                                for item in items[offset : offset + limit]
+                            ],
+                        )
                     return self._list(path[0], token, query)
+                if path == ["escalations"] and request.method == "POST":
+                    payload = json.loads(request.content)
+                    data = EscalationCreate.model_validate(
+                        {k: v for k, v in payload.items() if k in EscalationCreate.model_fields}
+                    )
+                    data.body()
+                    if data.client_id not in self.clients[token]:
+                        return self.error(400)
+                    record = Escalation(
+                        id=max(self.escalation_records[token], default=0) + 1,
+                        client_id=data.client_id,
+                        description=data.description,
+                        created_at=self.clock.now().replace(second=0, microsecond=0),
+                    )
+                    self.escalation_records[token][record.id] = record
+                    self.write_count += 1
+                    failure, self.next_failure = self.next_failure, None
+                    if failure == "lost_response":
+                        raise httpx.ReadTimeout("ответ потерян", request=request)
+                    if failure == "server_error":
+                        return self.error(500)
+                    if failure == "invalid_response":
+                        return httpx.Response(201, json={"unexpected": True})
+                    return httpx.Response(201, json=record.model_dump(mode="json"))
                 if path == ["visits"] and request.method == "POST":
                     payload = json.loads(request.content)
                     data = VisitCreate.model_validate(
@@ -128,6 +173,8 @@ class MisEmulator:
                         if path[0] == "clients"
                         else self.records[token]
                         if path[0] == "visits"
+                        else self.escalation_records[token]
+                        if path[0] == "escalations"
                         else {}
                     )
                     if item_id not in items:

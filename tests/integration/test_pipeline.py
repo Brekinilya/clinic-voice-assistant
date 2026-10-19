@@ -292,6 +292,24 @@ async def test_operator_and_medical_routes_are_server_decisions():
         assert result["transfer"]["status"] == "requested" and emulator.write_count == 0
 
 
+async def test_operator_request_at_held_booking_confirmation_never_confirms_booking():
+    async with pipeline() as (client, service, emulator, *_):
+        reserved = await reserve(client)
+        action_id = reserved["proposal"]["action_id"]
+        action = await service.booking.store.get(action_id)
+        assert action.state.value == "held"
+
+        result = await turn(client, 4, "Нет, соедините с оператором")
+
+        action = await service.booking.store.get(action_id)
+        state = await service.store.inspect("scenario")
+        assert result["transfer"]["route"] == "R-02"
+        assert result["transfer"]["priority"] == "P2"
+        assert state.phase.value == "handoff"
+        assert action.state.value != "confirmed"
+        assert emulator.write_count == 0
+
+
 async def test_default_natural_factory_writes_only_to_emulator():
     import httpx
 
@@ -351,6 +369,36 @@ async def test_danger_after_post_keeps_unknown_operation_for_operator():
         assert (
             await service.booking.store.get(result["transfer"]["action_id"])
         ).state == "reconciling"
+
+
+async def test_operator_request_after_post_keeps_unknown_operation_without_retry():
+    async with pipeline() as (client, service, emulator, *_):
+        reserved = await reserve(client)
+        sent, finish = asyncio.Event(), asyncio.Event()
+        original = service.booking.mis.create_visit
+
+        async def answer_lost(request):
+            await original(request)
+            sent.set()
+            await finish.wait()
+            raise MisOutcomeUnknown("LOST_RESPONSE")
+
+        service.booking.mis.create_visit = answer_lost
+        confirmation = asyncio.create_task(turn(client, 4, "Да"))
+        await asyncio.wait_for(sent.wait(), timeout=2)
+        result = await turn(client, 5, "Позовите оператора")
+
+        assert result["transfer"]["route"] == "R-02"
+        assert result["transfer"]["action_id"] == reserved["proposal"]["action_id"]
+        action = await service.booking.store.get(reserved["proposal"]["action_id"])
+        assert action.state.value == "committing"
+        assert emulator.write_count == 1
+
+        finish.set()
+        await asyncio.wait_for(confirmation, timeout=2)
+        action = await service.booking.store.get(reserved["proposal"]["action_id"])
+        assert action.state.value == "reconciling"
+        assert emulator.write_count == 1
 
 
 async def test_partial_yes_does_not_write_until_final_yes():

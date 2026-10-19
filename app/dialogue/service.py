@@ -50,6 +50,7 @@ class DialogueService:
         mis_turn_wait_s: float = 8.0,
         mis_wait_limit_s: int = 120,
         reminder_actions: ReminderActions | None = None,
+        handoffs=None,
     ) -> None:
         if len(hash_key) < 32:
             raise ValueError("ключ квитанций должен содержать хотя бы 32 байта")
@@ -59,6 +60,7 @@ class DialogueService:
         self.interpreter = interpreter if interpreter is not None else CommandInterpreter()
         self.safety = safety
         self.conversation = conversation
+        self.handoffs = handoffs
         self.mis_turn_wait_s = mis_turn_wait_s
         self.mis_wait_limit_s = mis_wait_limit_s
         self.debug = None
@@ -157,10 +159,10 @@ class DialogueService:
             hashlib.sha256,
         ).hexdigest()
 
-    async def handle(self, call_id: str, turn: Turn) -> Reply:
+    async def handle(self, call_id: str, turn: Turn, *, source: str = "phone") -> Reply:
         with observe(self.debug, call_id, turn.turn_id):
             emit("dialogue.input", text=turn.text, final=turn.is_final)
-            result = await self._handle(call_id, turn)
+            result = await self._handle(call_id, turn, source=source)
             if self.debug is not None:
                 emit(
                     "dialogue.reply",
@@ -168,22 +170,31 @@ class DialogueService:
                 )
             return result
 
-    async def _handle(self, call_id: str, turn: Turn) -> Reply:
+    async def _handle(self, call_id: str, turn: Turn, *, source: str = "phone") -> Reply:
         digest = self._digest(call_id, turn)
         if self.safety is not None:
             current = await self.store.observe(call_id, turn.turn_id, digest)
             if current.phase == Phase.ENDED:
-                if (
-                    current.reminder is not None
-                    and turn.is_final
-                    and turn.turn_id <= current.last_turn_id
-                ):
-                    claim = await self.store.claim(call_id, turn.turn_id, digest)
-                    if claim.cached is not None:
-                        return claim.cached
+                if turn.is_final and turn.turn_id <= current.last_turn_id:
+                    try:
+                        claim = await self.store.claim(call_id, turn.turn_id, digest)
+                    except DialogueError as error:
+                        if str(error) != "CALL_ENDED":
+                            raise
+                    else:
+                        if claim.cached is not None:
+                            return claim.cached
                 return reply(current, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
             if current.phase == Phase.HANDOFF:
-                return handoff_reply(current, turn.turn_id)
+                if self.handoffs is not None:
+                    if turn.is_final:
+                        await self.handoffs.callback_final_observed(call_id, turn.turn_id)
+                    else:
+                        # Промежуточная речь отзывает согласие даже без отдельного
+                        # input_started. Итоговый HTTP-ввод сохраняет строгий порядок.
+                        await self.handoffs.callback_input_started(call_id, turn.turn_id)
+                if self.handoffs is None or not await self.handoffs.has_callback_draft(call_id):
+                    return handoff_reply(current, turn.turn_id)
             if turn.turn_id >= current.observed_turn_id:
                 try:
                     decision = self.safety.evaluate(call_id, turn)
@@ -216,10 +227,31 @@ class DialogueService:
                         code="SAFETY_UNAVAILABLE",
                     )
                 if transfer is not None:
+                    if self.handoffs is not None:
+                        if source == "text" and self.handoffs.settings.enabled:
+                            await self.handoffs.create_text_request(
+                                transfer.route,
+                                transfer.priority,
+                                "Текстовый запрос сотруднику",
+                                call_id=call_id,
+                            )
+                        await self.handoffs.discard_draft(call_id)
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
                     await self._release_call(call_id)
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
+            if current.phase == Phase.HANDOFF:
+                callback_result = await self.handoffs.callback_turn(call_id, turn)
+                if callback_result.phase == Phase.ENDED:
+                    state, saved_reply = await self.store.finish_handoff_turn(
+                        call_id, turn.turn_id, digest, current.version, callback_result
+                    )
+                    if saved_reply is not None:
+                        return saved_reply
+                    if state.phase == Phase.HANDOFF:
+                        return handoff_reply(state, turn.turn_id)
+                    return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
+                return callback_result
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
@@ -334,12 +366,21 @@ class DialogueService:
 
     async def input_started(self, call_id: str, turn_id: int) -> Reply:
         event = InputStart(turn_id=turn_id)
+        # HandoffStore serializes this epoch bump with callback-task creation.
+        # Whichever transaction commits first defines whether consent was current.
+        if self.handoffs is not None:
+            await self.handoffs.callback_input_started(call_id, event.turn_id)
         state = await self.store.start_input(call_id, event.turn_id)
         if self.debug is not None:
             self.debug.emit(
                 call_id, turn_id, "dialogue.input_started", input_epoch=state.input_epoch
             )
         if state.phase == Phase.HANDOFF:
+            if self.handoffs is not None:
+                if await self.handoffs.has_callback_draft(call_id):
+                    return reply(
+                        state, event.turn_id, code="CALLBACK_INPUT_STARTED", kind="partial"
+                    )
             return handoff_reply(state, event.turn_id)
         return reply(
             state,
@@ -355,6 +396,8 @@ class DialogueService:
         return await self.handle(call_id, turn)
 
     async def end(self, call_id: str) -> Reply:
+        if self.handoffs is not None:
+            await self.handoffs.discard_draft(call_id)
         state = await self.store.end(call_id)
         # Повтор end снова пытается снять оставшиеся брони, если прежняя попытка прервалась.
         await self._release_call(call_id)
@@ -362,6 +405,11 @@ class DialogueService:
         if self.debug is not None:
             self.debug.emit(call_id, None, "dialogue.ended", phase=state.phase)
         return reply(state, state.last_turn_id, "Разговор завершён.", code="CALL_ENDED")
+
+    async def start_callback(self, call_id: str, turn_id: int, outcome: str):
+        if self.handoffs is None:
+            return None
+        return await self.handoffs.start_callback(call_id, turn_id, outcome)
 
     async def _release_call(self, call_id: str) -> None:
         if self.conversation is not None:
@@ -389,11 +437,39 @@ class DialogueService:
                 "Обработка прервана. Завершите разговор.",
                 code="PROCESSING_INTERRUPTED",
             )
+        if state.end_confirmation_pending:
+            answer = parse_answer(turn.text)
+            if answer == "yes":
+                await self._release_call(state.call_id)
+                ended = await self.store.end(state.call_id)
+                return ended, reply(
+                    ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED"
+                )
+            if answer == "no":
+                state = state.model_copy(update={"end_confirmation_pending": False})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо, продолжаем. Ответьте на текущий вопрос: да или нет.",
+                    code="END_CANCELLED",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Завершить разговор без выполнения действия? Ответьте «да» или «нет».",
+                code="END_CONFIRMATION_REQUIRED",
+            )
+        contextual_handler = getattr(self.conversation, "cross_scenario_reply", None)
         if state.reminder is not None:
+            # Outbound reminder phases own the current question, including the
+            # cancellation offer. Let ReminderConversation classify each turn.
             if self.reminders is None:
-                # Сессия не получает прав после перезапуска без адаптера заданий.
                 raise DialogueError("OUTBOUND_NOT_CONFIGURED")
             return await self.reminders.step(state, turn)
+        if contextual_handler is not None:
+            contextual = await contextual_handler(state, turn)
+            if contextual is not None:
+                return contextual
         if state.phase == Phase.HELD and state.proposal is not None:
             action = await self.booking.store.get(state.proposal.action_id)
             if action.state in {
@@ -422,6 +498,10 @@ class DialogueService:
                         "Назовите подходящий день или время, и я предложу новые варианты.",
                         code="PROPOSAL_EXPIRED",
                     )
+        if contextual_handler is not None:
+            contextual = await contextual_handler(state, turn)
+            if contextual is not None:
+                return contextual
         if self.conversation is not None:
             shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:

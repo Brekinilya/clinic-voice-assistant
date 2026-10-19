@@ -133,6 +133,64 @@ class PostgresDialogueStore:
             )
             return not stale
 
+    async def finish_handoff_turn(self, call_id, turn_id, digest, expected_version, result):
+        async with self._locked(call_id) as (connection, row):
+            state = DialogueState.model_validate(row.state)
+            receipt = (
+                await connection.execute(
+                    select(receipts).where(
+                        receipts.c.call_id == call_id, receipts.c.turn_id == turn_id
+                    )
+                )
+            ).first()
+            if receipt is not None:
+                if receipt.digest != digest:
+                    raise DialogueError("TURN_CONTENT_CONFLICT")
+                cached = None if receipt.reply is None else Reply.model_validate(receipt.reply)
+                return state, cached
+            if state.phase != Phase.HANDOFF or state.version != expected_version:
+                return state, None
+            if turn_id != state.last_turn_id + 1:
+                raise DialogueError("TURN_OUT_OF_ORDER")
+            state = state.model_copy(
+                update={
+                    "phase": Phase.ENDED,
+                    "identity_draft": None,
+                    "version": state.version + 1,
+                    "last_turn_id": max(turn_id, state.last_turn_id),
+                    "pending_turn_id": None,
+                    "client_id": None,
+                    "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
+                    "options": (),
+                    "retry_at": None,
+                    "mis_wait_since": None,
+                    "authorization": None,
+                    "visit_items": (),
+                    "visit_cursor": None,
+                    "visit_has_more": False,
+                    "query_for_self": False,
+                }
+            )
+            saved_reply = result.model_copy(update={"phase": Phase.ENDED, "version": state.version})
+            await connection.execute(
+                insert(receipts).values(
+                    call_id=call_id,
+                    turn_id=turn_id,
+                    digest=digest,
+                    reply=saved_reply.model_dump(mode="json"),
+                )
+            )
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"), pending_turn=None)
+            )
+            return state, saved_reply
+
     async def end(self, call_id: str) -> DialogueState:
         async with self._locked(call_id) as (connection, row):
             state = DialogueState.model_validate(row.state)
@@ -233,7 +291,12 @@ class PostgresDialogueStore:
     async def preempt(self, call_id: str, turn_id: int, transfer: TransferRequest) -> DialogueState:
         async with self._locked(call_id) as (connection, row):
             current = DialogueState.model_validate(row.state)
-            if turn_id < current.observed_turn_id or current.phase in {Phase.ENDED, Phase.HANDOFF}:
+            if turn_id < current.observed_turn_id or current.phase == Phase.ENDED:
+                return current
+            if current.phase == Phase.HANDOFF and not (
+                transfer.priority == "P1"
+                and (current.transfer is None or current.transfer.priority != "P1")
+            ):
                 return current
             state = preempt_state(current, transfer)
             await connection.execute(
