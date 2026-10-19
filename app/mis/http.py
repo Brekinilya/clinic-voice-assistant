@@ -22,6 +22,7 @@ from app.mis.budget import current_demand, immediate
 from app.mis.models import (
     Client,
     ClientComment,
+    ClientCreate,
     Doctor,
     Escalation,
     EscalationCreate,
@@ -443,6 +444,22 @@ class HttpMedicalSystem:
         finally:
             self._invalidate_clients(client_id)
         if result.id != client_id:
+            raise MisOutcomeUnknown("INVALID_RESPONSE")
+        return result
+
+    async def create_client(self, request: ClientCreate) -> Client:
+        # 201 — создан, 200 — карточка с этим ключом уже была: оба исхода дают клиента
+        response = await self._request(
+            "POST", "clients", json=request.model_dump(mode="json", exclude_none=True)
+        )
+        result = self._decode(response, Client, write=True)
+        # Стенд вернул чужую карточку — исход записи неизвестен, а не «клиент найден»
+        same = (
+            name_key(result.last_name) == name_key(request.last_name)
+            and name_key(result.first_name) == name_key(request.first_name)
+            and result.birth_date == request.birth_date
+        )
+        if not same:
             raise MisOutcomeUnknown("INVALID_RESPONSE")
         return result
 
