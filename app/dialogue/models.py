@@ -113,6 +113,8 @@ class DialogueState(BookingModel):
     specialty: str | None = None
     preferences: SlotPreferences = Field(default_factory=SlotPreferences)
     misunderstandings: int = 0
+    end_confirmation_pending: bool = False
+    shown_option_keys: tuple[str, ...] = Field(default=(), max_length=100)
     recording_opt_out: bool = False
     medical_boundary_pending: bool = False
     # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.

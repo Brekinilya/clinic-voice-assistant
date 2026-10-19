@@ -116,6 +116,7 @@ class BookingService:
         preferences: SlotPreferences | None = None,
         *,
         limit: int = 3,
+        exclude: frozenset[tuple[int, datetime]] = frozenset(),
         call_id: str | None = None,
     ) -> tuple[Slot, ...]:
         if not 1 <= limit <= 3:
@@ -152,6 +153,8 @@ class BookingService:
         busy: set[tuple[int, datetime]] = set()
         checked: set[tuple[int, date]] = set()
         for index, slot in enumerate(eligible):
+            if (slot.doctor_id, slot.scheduled_at) in exclude:
+                continue
             if (slot.doctor_id, slot.scheduled_at.date()) not in checked:
                 # Занятость читаем только за дни ближайших нужных вариантов этого врача:
                 # две недели загруженного врача — много страниц из бюджета на 8 запросов.

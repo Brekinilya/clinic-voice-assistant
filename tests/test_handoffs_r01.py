@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -8,7 +9,10 @@ from pydantic import ValidationError
 
 from app.api.handoffs import TextRequestInput
 from app.clock import CLINIC_TIMEZONE
-from app.dialogue.models import Turn
+from app.dialogue.memory import MemoryDialogueStore
+from app.dialogue.models import Phase, TransferRequest, Turn, reply
+from app.dialogue.safety_adapter import RulesSafety
+from app.dialogue.service import DialogueService
 from app.handoffs.calendar import CalendarUnavailable, callback_deadline, is_open_day
 from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.models import CallbackDraft, MisDeliveryState
@@ -17,6 +21,8 @@ from app.handoffs.service import HandoffService, HandoffSettings, parse_preferre
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Escalation, EscalationCreate
 from app.mis.ports import MisError, MisOutcomeUnknown
+from app.main import create_app
+from app.settings import Settings
 
 
 class BudgetSpy:
@@ -60,6 +66,37 @@ def test_callback_calendar_marks_2026_victory_day_and_transferred_day_closed():
     assert callback_deadline(
         datetime(2026, 5, 8, 20, 10, tzinfo=CLINIC_TIMEZONE), "P3"
     ) == datetime(2026, 5, 12, 10, tzinfo=CLINIC_TIMEZONE)
+
+
+def test_callback_calendar_matches_all_configured_2026_nonworking_days():
+    closed = {
+        *(date(2026, 1, day) for day in range(1, 12)),
+        date(2026, 2, 23),
+        date(2026, 3, 9),
+        date(2026, 5, 1),
+        date(2026, 5, 9),
+        date(2026, 5, 11),
+        date(2026, 6, 12),
+        date(2026, 11, 4),
+        date(2026, 12, 31),
+    }
+    day = date(2026, 1, 1)
+    while day <= date(2026, 12, 31):
+        expected_open = day.weekday() < 6 and day not in closed
+        assert is_open_day(day) is expected_open, day
+        day += timedelta(days=1)
+
+
+def test_callback_deadline_clinic_open_and_close_boundaries():
+    def at(month, day, hour, minute):
+        return datetime(2026, month, day, hour, minute, tzinfo=CLINIC_TIMEZONE)
+
+    assert callback_deadline(at(10, 19, 7, 0), "P2") == at(10, 19, 7, 15)
+    assert callback_deadline(at(10, 19, 19, 30), "P3") == at(10, 19, 20, 0)
+    assert callback_deadline(at(10, 19, 19, 31), "P3") == at(10, 20, 10, 0)
+    assert callback_deadline(at(10, 24, 8, 30), "P2") == at(10, 24, 8, 45)
+    assert callback_deadline(at(10, 24, 14, 45), "P2") == at(10, 24, 15, 0)
+    assert callback_deadline(at(10, 24, 14, 46), "P2") == at(10, 26, 10, 0)
 
 
 def test_parse_preferred_time_converts_parser_iso_values():
@@ -146,6 +183,79 @@ async def test_preferred_callback_time_after_sla_requires_explicit_confirmation(
     task = await store.get_callback_task_by_request(request.request_id)
     assert confirmed.code == "CALLBACK_QUEUED"
     assert task is not None and task.preferred_at == draft.preferred_at
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_callback_time_repeats_deadline_without_queuing():
+    service, store, _, event, request = await prepared_callback()
+    await store.delete_callback_draft(request.request_id)
+    await service.start_callback(event.call_id, 5, "no_answer")
+    await service.callback_turn(event.call_id, Turn(turn_id=6, text="да"))
+    await service.callback_turn(event.call_id, Turn(turn_id=7, text="79991234567"))
+    draft = await store.get_callback_draft(request.request_id)
+    assert draft is not None and draft.stage == "time"
+
+    result = await service.callback_turn(
+        event.call_id, Turn(turn_id=8, text="Когда вы сможете перезвонить?")
+    )
+
+    updated = await store.get_callback_draft(request.request_id)
+    assert result.code == "CALLBACK_STEP"
+    assert updated is not None and updated.stage == "time"
+    assert updated.deadline == draft.deadline
+    assert any("Нормативный срок" in utterance for utterance in result.utterances)
+    assert await store.get_callback_task_by_request(request.request_id) is None
+
+
+@pytest.mark.asyncio
+async def test_http_replay_of_final_callback_turn_returns_the_same_task():
+    service, handoff_store, clock, event, request = await prepared_callback()
+    dialogue_store = MemoryDialogueStore()
+    for turn_id in range(1, 5):
+        claim = await dialogue_store.claim(event.call_id, turn_id, f"seed-{turn_id}")
+        if turn_id == 4:
+            await dialogue_store.preempt(
+                event.call_id,
+                turn_id,
+                TransferRequest(route="R-08", priority="P3"),
+            )
+        else:
+            await dialogue_store.complete(
+                claim.state,
+                turn_id,
+                reply(claim.state, turn_id, "Продолжаем."),
+            )
+    dialogue = DialogueService(
+        None,
+        dialogue_store,
+        b"x" * 32,
+        safety=RulesSafety(clock),
+        handoffs=service,
+    )
+
+    @asynccontextmanager
+    async def dialogue_factory(settings, selected_clock):
+        yield dialogue
+
+    app = create_app(
+        Settings(_env_file=None, backend_demo_enabled=True),
+        clock=clock,
+        dialogue_factory=dialogue_factory,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            payload = {"turn_id": 5, "text": "да"}
+            first = await client.post(f"/api/dialog/{event.call_id}/turn", json=payload)
+            replay = await client.post(f"/api/dialog/{event.call_id}/turn", json=payload)
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert first.json()["code"] == "CALLBACK_QUEUED"
+    tasks = await handoff_store.list_callback_tasks(limit=50, offset=0)
+    assert len(tasks) == 1 and tasks[0].request_id == request.request_id
+    assert await handoff_store.get_callback_task_by_request(request.request_id) == tasks[0]
 
 
 def test_callback_draft_without_observed_turn_is_backward_compatible():
@@ -266,6 +376,52 @@ async def test_escalation_http_faults_are_single_shot_and_classified(status, exp
             await system.create_escalation(
                 EscalationCreate(client_id=1, description="[T08:test] transfer")
             )
+    assert len(calls) == 1
+    assert calls[0].method == "POST" and calls[0].url.path == "/api/v1/escalations"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_client_id,response_description,accepted",
+    [
+        (42, "[T08:test] operator transfer", True),
+        (43, "[T08:test] operator transfer", False),
+        (42, "[T08:test] other content", False),
+    ],
+)
+async def test_escalation_http_201_requires_matching_client_and_description(
+    response_client_id, response_description, accepted
+):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": 91,
+                "client_id": response_client_id,
+                "description": response_description,
+                "created_at": "19.10.2026 10:00",
+            },
+        )
+
+    description = "[T08:test] operator transfer"
+    async with httpx.AsyncClient(
+        base_url="https://mis.invalid/api/v1/", transport=httpx.MockTransport(respond)
+    ) as client:
+        system = HttpMedicalSystem(client, BudgetSpy())
+        if accepted:
+            result = await system.create_escalation(
+                EscalationCreate(client_id=42, description=description)
+            )
+            assert result.id == 91 and result.client_id == 42
+            assert result.description == description
+        else:
+            with pytest.raises(MisOutcomeUnknown, match="INVALID_RESPONSE"):
+                await system.create_escalation(
+                    EscalationCreate(client_id=42, description=description)
+                )
     assert len(calls) == 1
     assert calls[0].method == "POST" and calls[0].url.path == "/api/v1/escalations"
 
@@ -509,6 +665,35 @@ async def test_emergency_intent_is_committed_with_transfer_result():
     operation = next(iter(store.mis_operations.values()))
     assert operation.kind == "emergency_notice"
     assert operation.client_id == 999
+    assert store.callback_drafts == {}
+    assert store.callback_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_p1_without_technical_client_stays_manual_without_mis_lookup():
+    store, clock = MemoryHandoffStore(), Clock()
+    service = HandoffService(
+        store,
+        NoMis(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=True),
+    )
+    event = SimpleNamespace(
+        attempt_id="urgent-no-client", call_id="urgent-no-client-call", route="R-01", priority="P1"
+    )
+
+    await service.transfer_started(event)
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+
+    request = await store.request_for_call(event.call_id)
+    assert request is not None
+    assert request.mis_state == MisDeliveryState.MANUAL
+    assert request.mis_operation_id is None
+    assert store.mis_operations == {}
+    assert await service.start_callback(event.call_id, 1, "no_answer") is None
     assert store.callback_drafts == {}
     assert store.callback_tasks == {}
 

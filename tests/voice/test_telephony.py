@@ -9,10 +9,12 @@ import pytest
 
 from app.clock import CLINIC_TIMEZONE
 from app.dialogue.memory import MemoryDialogueStore
+from app.dialogue.models import DialogueState
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
 from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.service import HandoffService, HandoffSettings
+from app.mis.ports import MisError
 from app.voice import telephony as telephony_module
 from app.voice.rtp import CODECS, RtpSender, Upsampler
 from app.voice.session import CallSession
@@ -242,6 +244,103 @@ async def test_transfer_connects_registrar(line):
     assert ("hangup", "caller-1") in line.ari.calls
 
 
+async def test_verified_call_transfer_delivers_mis_escalation(line):
+    clock = FixedClock()
+    dialogue_store = MemoryDialogueStore()
+    call_id = "verified-t08-call"
+    dialogue_store.states[call_id] = DialogueState(call_id=call_id, client_id=71)
+    handoff_store = MemoryHandoffStore()
+
+    class MisRecorder:
+        def __init__(self):
+            self.posts = []
+
+        async def create_escalation(self, payload):
+            self.posts.append(payload)
+            return SimpleNamespace(id=42)
+
+    mis = MisRecorder()
+    handoffs = HandoffService(
+        handoff_store,
+        mis,
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True),
+    )
+
+    async def release_call_holds(_):
+        return None
+
+    dialogue = DialogueService(
+        SimpleNamespace(
+            clock=clock,
+            clear_call_cache=lambda _: None,
+            store=SimpleNamespace(release_call_holds=release_call_holds),
+        ),
+        dialogue_store,
+        b"x" * 32,
+        safety=RulesSafety(clock),
+        handoffs=handoffs,
+    )
+    recognizer = SequenceRecognizer(("соедините с оператором",))
+
+    def new_session(call_id, channel):
+        return CallSession(
+            call_id,
+            channel,
+            dialogue,
+            Vad(),
+            recognizer,
+            Synthesizer(),
+            today=lambda: date(2026, 10, 19),
+            settings=VoiceSettings(
+                _env_file=None,
+                min_speech_ms=192,
+                end_silence_ms=320,
+                dictation_silence_ms=640,
+                partial_ms=5000,
+                silence_prompt_s=30,
+                goodbye_hangup_s=0.05,
+                wait_phrase_s=0.3,
+            ),
+        )
+
+    line.sessions = new_session
+
+    async def transfer_started(event):
+        state = await dialogue_store.inspect(event.call_id)
+        await handoffs.transfer_started(event, state)
+
+    line.on_transfer_start = transfer_started
+    line.on_transfer = handoffs.transfer_result
+    await line.handle(start(call_id, "inbound"))
+    session = line.calls[call_id].session
+    await settled(lambda: not session.speaking())
+    await session.feed(phrase(10))
+    await settled(lambda: bool(recognizer.heard))
+    await settled(lambda: "operator-1" in line._operators)
+    await line.handle(start("operator-1", "operator", call_id))
+    await settled(lambda: line.calls[call_id].connected)
+
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None
+    assert (request.route, request.priority, request.identity_status, request.client_id) == (
+        "R-02",
+        "P2",
+        "verified",
+        71,
+    )
+    assert request.transfer_state.value == "connected"
+    assert await handoffs.deliver_mis_once() == 1
+    operation = await handoff_store.get_mis_operation(request.mis_operation_id)
+    assert operation is not None and operation.state.value == "applied"
+    assert len(mis.posts) == 1
+    assert mis.posts[0].client_id == 71
+    assert operation.marker in mis.posts[0].description
+
+    await line.handle(end(call_id))
+
+
 async def test_answered_operator_with_rejected_bridge_is_reported_failed(line, monkeypatch):
     outcomes = []
     original_add = line.ari.add
@@ -387,8 +486,13 @@ async def test_journal_timeout_does_not_replace_actual_connected_outcome(line, m
     assert outcomes == ["connected"]
 
 
-@pytest.mark.parametrize("callback_enabled", [True, False])
-async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabled, monkeypatch):
+@pytest.mark.parametrize(
+    "callback_enabled,hangup_during_callback_offer,emergency_during_callback",
+    [(True, False, False), (False, False, False), (True, True, False), (True, False, True)],
+)
+async def test_real_call_session_handles_fake_ari_no_answer(
+    line, callback_enabled, hangup_during_callback_offer, emergency_during_callback, monkeypatch
+):
     """Проверяет полный локальный путь ARI → CallSession → dialogue → durable callback."""
     clock = FixedClock()
     handoff_store = MemoryHandoffStore()
@@ -415,14 +519,9 @@ async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabl
         safety=RulesSafety(clock),
         handoffs=handoffs,
     )
+    callback_final = "Что мне выпить, не могу дышать" if emergency_during_callback else "да"
     recognizer = SequenceRecognizer(
-        (
-            "соедините с оператором",
-            "да",
-            "79991234567",
-            "завтра в 15:00",
-            "да",
-        )
+        ("соедините с оператором", "да", "79991234567", "в ближайшее время", callback_final)
     )
     sessions = []
 
@@ -502,6 +601,15 @@ async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabl
     )
     assert await handoff_store.request_for_call(call_id) is not None
 
+    if hangup_during_callback_offer:
+        await line.handle(end(call_id))
+        await settled(lambda: call_id not in line.calls)
+        assert session.ended
+        assert await handoff_store.get_callback_draft(request.request_id) is None
+        assert await handoff_store.get_callback_task_by_request(request.request_id) is None
+        assert len(sessions) == 1
+        return
+
     for words in (12, 14, 16, 18):
         previous_recognitions = len(recognizer.heard)
         await session.feed(phrase(words))
@@ -510,6 +618,20 @@ async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabl
         if words < 18:
             await settled(lambda: not session.speaking())
     await asyncio.sleep(0.05)
+    if emergency_during_callback:
+        originates = [call for call in line.ari.calls if call[0] == "originate"]
+        assert len(originates) == 2
+        assert originates[1][-1] == 20
+        assert "operator-1" in line._operators
+        request = await handoff_store.request_for_call(call_id)
+        assert request is not None
+        assert request.route == "R-01" and request.priority == "P1"
+        assert request.transfer_state.value == "attempting"
+        assert await handoff_store.get_callback_draft(request.request_id) is None
+        assert await handoff_store.get_callback_task_by_request(request.request_id) is None
+        assert any("сто три" in spoken.lower() for spoken in session.synthesizer.spoken)
+        await line.handle(end(call_id))
+        return
     assert session.ended, (recognizer.heard, session.synthesizer.spoken)
 
     request = await handoff_store.request_for_call(call_id)
@@ -524,3 +646,116 @@ async def test_real_call_session_handles_fake_ari_no_answer(line, callback_enabl
 
     await line.handle(end(call_id))
     assert call_id not in line.calls
+
+
+@pytest.mark.parametrize("technical_client_id", [None, 999])
+async def test_full_p1_call_session_and_mis_429_never_create_callback(line, technical_client_id):
+    clock = FixedClock()
+    handoff_store = MemoryHandoffStore()
+    mis = SimpleNamespace(calls=[])
+
+    async def create_escalation(payload):
+        mis.calls.append(payload)
+        raise MisError("RATE_LIMIT", retry_after=5)
+
+    mis.create_escalation = create_escalation
+    handoffs = HandoffService(
+        handoff_store,
+        mis,
+        clock,
+        b"x" * 32,
+        HandoffSettings(
+            enabled=True,
+            callback_enabled=True,
+            technical_client_id=technical_client_id,
+        ),
+    )
+
+    async def release_call_holds(_):
+        return None
+
+    booking = SimpleNamespace(
+        clock=clock,
+        clear_call_cache=lambda _: None,
+        store=SimpleNamespace(release_call_holds=release_call_holds),
+    )
+    dialogue = DialogueService(
+        booking,
+        MemoryDialogueStore(),
+        b"x" * 32,
+        safety=RulesSafety(clock),
+        handoffs=handoffs,
+    )
+    recognizer = SequenceRecognizer(("Что мне выпить, не могу дышать",))
+    sessions = []
+
+    def new_session(call_id, channel):
+        session = CallSession(
+            call_id,
+            channel,
+            dialogue,
+            Vad(),
+            recognizer,
+            Synthesizer(),
+            today=lambda: date(2026, 10, 19),
+            settings=VoiceSettings(
+                _env_file=None,
+                min_speech_ms=192,
+                end_silence_ms=320,
+                dictation_silence_ms=640,
+                partial_ms=5000,
+                silence_prompt_s=30,
+                goodbye_hangup_s=0.05,
+                wait_phrase_s=0.3,
+            ),
+        )
+        sessions.append(session)
+        return session
+
+    line.sessions = new_session
+    line.on_transfer_start = handoffs.transfer_started
+    line.on_transfer = handoffs.transfer_result
+    call_id = "full-t08-p1-no-client"
+    await line.handle(start(call_id, "inbound"))
+    session = line.calls[call_id].session
+    await settled(lambda: not session.speaking())
+    await session.feed(phrase(10))
+    await settled(lambda: bool(recognizer.heard))
+    await settled(lambda: "operator-1" in line._operators)
+
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None
+    assert (request.route, request.priority, request.identity_status, request.client_id) == (
+        "R-01",
+        "P1",
+        "unknown",
+        None,
+    )
+    originate = next(call for call in line.ari.calls if call[0] == "originate")
+    assert originate[-1] == 20
+    assert any("сто три" in spoken.lower() for spoken in sessions[0].synthesizer.spoken)
+
+    await line.handle({"type": "ChannelDestroyed", "channel": {"id": "operator-1"}})
+    await settled(lambda: ("hangup", call_id) in line.ari.calls)
+    request = await handoff_store.request_for_call(call_id)
+    assert request is not None and request.transfer_state.value == "no_answer"
+    if technical_client_id is None:
+        assert request.mis_state.value == "manual"
+        assert request.mis_operation_id is None
+        assert handoff_store.mis_operations == {}
+        assert mis.calls == []
+    else:
+        assert request.mis_state.value == "pending"
+        assert request.mis_operation_id is not None
+        # RATE_LIMIT is handled as a retryable operation, so this method's
+        # return count includes only successful deliveries.
+        assert await handoffs.deliver_mis_once() == 0
+        operation = await handoff_store.get_mis_operation(request.mis_operation_id)
+        assert operation.state.value == "pending" and operation.reason == "RATE_LIMIT"
+        assert len(mis.calls) == 1
+        assert await handoffs.deliver_mis_once() == 0
+        assert len(mis.calls) == 1
+    assert handoff_store.callback_drafts == {}
+    assert handoff_store.callback_tasks == {}
+    assert len(sessions) == 1
+    await line.handle(end(call_id))

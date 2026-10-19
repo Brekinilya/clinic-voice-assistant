@@ -70,6 +70,34 @@ async def test_transfer_attempt_is_journaled_and_replayed_once():
 
 
 @pytest.mark.asyncio
+async def test_conflicting_transfer_result_does_not_overwrite_attempt_history():
+    store = MemoryHandoffStore()
+    service = HandoffService(store, NoMis(), Clock(), b"x" * 32, HandoffSettings(enabled=True))
+    event = SimpleNamespace(
+        attempt_id="attempt-conflict",
+        call_id="channel-conflict",
+        route="R-08",
+        priority="P3",
+    )
+    await service.transfer_started(event)
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="connected", reason="late_duplicate")
+    )
+
+    request = await store.request_for_call(event.call_id)
+    attempt = store.attempts[event.attempt_id]
+    assert request.transfer_state == TransferState.NO_ANSWER
+    assert request.transfer_reason == "timeout"
+    assert attempt.outcome == TransferState.NO_ANSWER
+    assert attempt.reason == "timeout"
+    assert len(store.attempts) == 1
+
+
+@pytest.mark.asyncio
 async def test_callback_requires_consent_and_explicit_final_confirmation():
     store = MemoryHandoffStore()
     service = HandoffService(

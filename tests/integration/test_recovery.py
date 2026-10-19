@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from time import monotonic
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from test_rescheduling import prepare as prepare_move
 
 from app.booking.models import ActionState
 from app.mis.budget import Priority, current_demand
+from app.mis.http import HttpMedicalSystem
 from app.mis.models import Visit, VisitCreate, VisitStatus
 from app.mis.ports import BudgetExhausted
 from app.recovery.coordinator import OperationCoordinator
@@ -23,6 +25,10 @@ from app.recovery.memory import MemoryRecoveryStore
 from app.recovery.models import Outcome, OwnershipLost
 from app.recovery.ownership import Scope, current
 from app.recovery.worker import RecoveryWorker
+from app.reminders.calendar import ClinicCalendar
+from app.reminders.executor import ReminderExecutor
+from app.reminders.memory import MemoryReminderStore
+from app.storage.booking import PostgresBudget
 from app.storage.recovery import PostgresRecoveryStore
 
 
@@ -353,6 +359,79 @@ async def test_projection_poll_leaves_budget_headroom_for_calls(recovery_engine)
         advance(env, 301)
         assert (await env.worker.run_once()).state == "watching"
         assert priorities and set(priorities) == {Priority.BACKGROUND}
+
+
+@pytest.mark.postgres
+async def test_reminder_executor_and_recovery_worker_share_postgres_budget(pg_engine):
+    async with environment(pg_engine) as env:
+        held = await reserve(env.client)
+        env.emulator.next_failure = "lost_response"
+        assert (await turn(env.client, 4, "Да"))["code"] == "RECONCILING"
+        advance(env)
+
+        started = monotonic()
+
+        class BudgetClock:
+            def now(self):
+                return env.clock.now() + timedelta(seconds=monotonic() - started)
+
+        budget_clock = BudgetClock()
+        env.emulator.rate_limit = 1
+        env.emulator.rate_window_s = 1
+        # Reset only this fixture's synthetic rate-limit history after setup traffic.
+        env.emulator._hits.clear()
+        env.emulator.limited = 0
+        env.emulator.log.clear()
+        http_results = []
+
+        async def record_response(response):
+            http_results.append(
+                (response.request.method, response.request.url.path, response.status_code)
+            )
+
+        env.booking.mis._client.event_hooks["response"].append(record_response)
+        executor_mis = HttpMedicalSystem(
+            env.booking.mis._client,
+            PostgresBudget(
+                pg_engine,
+                "fictional-t11-recovery-shared-budget",
+                limit=1,
+                window_s=1,
+                clock=budget_clock,
+            ),
+        )
+        recovery_mis = HttpMedicalSystem(
+            env.booking.mis._client,
+            PostgresBudget(
+                pg_engine,
+                "fictional-t11-recovery-shared-budget",
+                limit=1,
+                window_s=1,
+                clock=budget_clock,
+            ),
+        )
+        env.emulator.clock = budget_clock
+        env.worker.mis = recovery_mis
+        reminders = ReminderExecutor(
+            MemoryReminderStore(),
+            executor_mis,
+            ClinicCalendar(),
+            budget_clock,
+            None,
+            owner="t11-budget-review",
+            allowed_endpoints=set(),
+        )
+
+        await reminders.tick()
+        result = await env.worker.run_once()
+
+        visits = [entry for entry in env.emulator.log if entry[2] == "visits"]
+        action = await env.booking.store.get(held["proposal"]["action_id"])
+        assert result.state == "watching"
+        assert action.state == ActionState.BOOKED and action.visit_id == 1
+        assert len(visits) == 2
+        assert (visits[1][0] - visits[0][0]).total_seconds() >= 1
+        assert env.emulator.limited == 0, (http_results, env.emulator.log)
 
 
 async def test_unavailable_mis_eventually_goes_to_manual_without_retrying_post(

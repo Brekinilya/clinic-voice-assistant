@@ -40,6 +40,7 @@ CODE_EXPECTATIONS = {
     "emergency.call_103": {"EMERGENCY"},
     "emergency.self_harm": {"EMERGENCY"},
     "reask.first": {"NOT_UNDERSTOOD"},
+    "remind.clarify_maybe": {"REMINDER_CLARIFICATION"},
     "ident.not_found": {"IDENTIFICATION_REQUIRED"},
     "emergency.insist": {"EMERGENCY"},
     "emergency.ambulance_called": {"EMERGENCY"},

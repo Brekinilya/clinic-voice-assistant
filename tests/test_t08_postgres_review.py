@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.dialogue.models import DialogueState, Phase, TransferRequest, Turn, reply
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
-from app.handoffs.models import MisDeliveryState
+from app.handoffs.models import CallbackOutcome, CallbackState, MisDeliveryState
 from app.handoffs.ports import HandoffConflict
 from app.handoffs.service import HandoffService, HandoffSettings
 from app.main import create_app
@@ -174,6 +174,66 @@ async def test_postgres_callback_terminal_result_is_durable_and_idempotent(pg_en
     assert saved is not None and saved.phase == Phase.ENDED
     assert repeated.cached == saved
     assert (await store.inspect(call)).phase == Phase.ENDED
+
+
+@pytest.mark.asyncio
+async def test_postgres_http_replay_of_final_callback_turn_returns_one_task(pg_engine):
+    clock = Clock()
+    call = "postgres-callback-http-replay"
+    dialogue_store = PostgresDialogueStore(pg_engine)
+    handoff_store = PostgresHandoffStore(pg_engine)
+    handoffs = HandoffService(
+        handoff_store,
+        object(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=True),
+    )
+    state = await _preempt_after_turns(dialogue_store, call)
+    event = SimpleNamespace(
+        attempt_id=f"{call}-attempt", call_id=call, route="R-08", priority="P3"
+    )
+    await handoffs.transfer_started(event)
+    await handoffs.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+    await handoffs.start_callback(call, 1, "no_answer")
+    await handoffs.callback_turn(call, Turn(turn_id=2, text="да"))
+    await handoffs.callback_turn(call, Turn(turn_id=3, text="79991234567"))
+    await handoffs.callback_turn(call, Turn(turn_id=4, text="в ближайшее время"))
+    dialogue = DialogueService(
+        None,
+        dialogue_store,
+        b"x" * 32,
+        safety=RulesSafety(clock),
+        handoffs=handoffs,
+    )
+
+    @asynccontextmanager
+    async def dialogue_factory(settings, selected_clock):
+        yield dialogue
+
+    app = create_app(
+        Settings(_env_file=None, backend_demo_enabled=True),
+        clock=clock,
+        dialogue_factory=dialogue_factory,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            payload = {"turn_id": 5, "text": "да"}
+            first = await client.post(f"/api/dialog/{call}/turn", json=payload)
+            replay = await client.post(f"/api/dialog/{call}/turn", json=payload)
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert first.json()["code"] == "CALLBACK_QUEUED"
+    tasks = await handoff_store.list_callback_tasks(limit=50, offset=0)
+    saved_request = await handoff_store.request_for_call(call)
+    assert len(tasks) == 1 and saved_request is not None
+    assert tasks[0].request_id == saved_request.request_id
+    assert await handoff_store.get_callback_task_by_request(tasks[0].request_id) == tasks[0]
 
 
 @pytest.mark.asyncio
@@ -440,6 +500,63 @@ async def test_two_postgres_operators_cannot_claim_the_same_callback(pg_engine):
 
 
 @pytest.mark.asyncio
+async def test_expired_in_progress_callback_after_restart_becomes_manual_unknown(pg_engine):
+    clock = Clock()
+    store = PostgresHandoffStore(pg_engine)
+    service = HandoffService(
+        store,
+        MisSpy(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=True),
+    )
+    event = SimpleNamespace(
+        attempt_id="callback-process-lost-transfer",
+        call_id="callback-process-lost-call",
+        route="R-08",
+        priority="P3",
+    )
+    await service.transfer_started(event)
+    await service.transfer_result(
+        SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+    )
+    await service.start_callback(event.call_id, 1, "no_answer")
+    await service.callback_turn(event.call_id, Turn(turn_id=2, text="да"))
+    await service.callback_turn(event.call_id, Turn(turn_id=3, text="79991234567"))
+    await service.callback_turn(event.call_id, Turn(turn_id=4, text="в ближайшее время"))
+    await service.callback_turn(event.call_id, Turn(turn_id=5, text="да"))
+    request = await store.request_for_call(event.call_id)
+    task = await store.get_callback_task_by_request(request.request_id)
+    claimed = await service.operator_claim(task.task_id, "operator-a")
+    in_progress, attempt = await service.operator_start_attempt(
+        task.task_id, "operator-a", claimed.version
+    )
+    assert in_progress.state == CallbackState.IN_PROGRESS and in_progress.attempts == 1
+
+    clock.value += timedelta(minutes=11)
+    restarted = HandoffService(
+        PostgresHandoffStore(pg_engine),
+        MisSpy(),
+        clock,
+        b"x" * 32,
+        HandoffSettings(enabled=True, callback_enabled=True),
+    )
+    recovered = await restarted.recover_callbacks_once()
+
+    saved = await restarted.store.get_callback_task(task.task_id)
+    history = await restarted.callback_attempt_history(task.task_id)
+    assert len(recovered) == 1 and saved is not None
+    assert saved.state == CallbackState.MANUAL
+    assert saved.last_outcome == CallbackOutcome.UNKNOWN
+    assert saved.attempts == 1 and saved.active_attempt_id is None
+    assert len(history) == 1 and history[0].attempt_id == attempt.attempt_id
+    assert history[0].outcome == CallbackOutcome.UNKNOWN
+    assert history[0].reason == "PROCESS_LOST" and history[0].finished_at is not None
+    with pytest.raises(HandoffConflict):
+        await restarted.operator_claim(task.task_id, "operator-b")
+
+
+@pytest.mark.asyncio
 async def test_restarted_worker_reconciles_sending_without_post(pg_engine):
     mis = MisSpy()
     first, request = await connected_request(pg_engine, mis)
@@ -509,3 +626,68 @@ async def test_enabled_operator_routes_require_team_login(pg_engine, tmp_path):
             response = await client.get("/api/operator/requests", auth=("clinic", password))
             assert response.headers["cache-control"] == "no-store"
             assert response.json()["items"][0]["transfer_state"] == "connected"
+
+            cross_origin = await client.get(
+                "/api/operator/requests",
+                auth=("clinic", password),
+                headers={"origin": "https://attacker.invalid"},
+            )
+            assert cross_origin.status_code == 403
+            duplicate_origin = await client.get(
+                "/api/operator/requests",
+                auth=("clinic", password),
+                headers=[("origin", "http://testserver"), ("origin", "https://attacker.invalid")],
+            )
+            assert duplicate_origin.status_code == 403
+            same_origin = await client.get(
+                "/api/operator/requests",
+                auth=("clinic", password),
+                headers={"origin": "http://testserver"},
+            )
+            assert same_origin.status_code == 200
+
+            injected = "<img src=x onerror=alert(1)>"
+            created = await client.post(
+                "/api/operator/requests",
+                auth=("clinic", password),
+                headers={"origin": "http://testserver"},
+                json={"route": "R-08", "priority": "P3", "summary": injected},
+            )
+            assert created.status_code == 200
+            page = await client.get(
+                "/operator", auth=("clinic", password), headers={"origin": "http://testserver"}
+            )
+            assert page.status_code == 200
+            assert "textContent" in page.text and "createTextNode" in page.text
+            assert "innerHTML" not in page.text
+
+            service.settings = HandoffSettings(enabled=True, callback_enabled=True)
+            event = SimpleNamespace(
+                attempt_id="operator-http-version-attempt",
+                call_id="operator-http-version-call",
+                route="R-08",
+                priority="P3",
+            )
+            await service.transfer_started(event)
+            await service.transfer_result(
+                SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
+            )
+            await service.start_callback(event.call_id, 1, "no_answer")
+            await service.callback_turn(event.call_id, Turn(turn_id=2, text="да"))
+            await service.callback_turn(event.call_id, Turn(turn_id=3, text="79991234567"))
+            await service.callback_turn(event.call_id, Turn(turn_id=4, text="в ближайшее время"))
+            queued = await service.callback_turn(event.call_id, Turn(turn_id=5, text="да"))
+            assert queued.code == "CALLBACK_QUEUED"
+            callback_request = await service.store.request_for_call(event.call_id)
+            task = await service.store.get_callback_task_by_request(
+                callback_request.request_id
+            )
+            claimed = await service.operator_claim(task.task_id, "operator-a")
+            stale = await client.post(
+                f"/api/operator/callbacks/{task.task_id}/attempts",
+                json={"owner": "operator-a", "version": claimed.version - 1},
+                auth=("clinic", password),
+            )
+            assert stale.status_code == 409
+            current = await service.store.get_callback_task(task.task_id)
+            assert current.version == claimed.version and current.state.value == "claimed"

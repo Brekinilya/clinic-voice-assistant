@@ -437,6 +437,31 @@ class DialogueService:
                 "Обработка прервана. Завершите разговор.",
                 code="PROCESSING_INTERRUPTED",
             )
+        if state.end_confirmation_pending:
+            answer = parse_answer(turn.text)
+            if answer == "yes":
+                await self._release_call(state.call_id)
+                ended = await self.store.end(state.call_id)
+                return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+            if answer == "no":
+                state = state.model_copy(update={"end_confirmation_pending": False})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо, продолжаем. Ответьте на текущий вопрос: да или нет.",
+                    code="END_CANCELLED",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Завершить разговор без выполнения действия? Ответьте «да» или «нет».",
+                code="END_CONFIRMATION_REQUIRED",
+            )
+        contextual_handler = getattr(self.conversation, "cross_scenario_reply", None)
+        if state.reminder is not None and contextual_handler is not None:
+            contextual = await contextual_handler(state, turn)
+            if contextual is not None:
+                return contextual
         if state.reminder is not None:
             if self.reminders is None:
                 # Сессия не получает прав после перезапуска без адаптера заданий.
@@ -470,6 +495,10 @@ class DialogueService:
                         "Назовите подходящий день или время, и я предложу новые варианты.",
                         code="PROPOSAL_EXPIRED",
                     )
+        if contextual_handler is not None:
+            contextual = await contextual_handler(state, turn)
+            if contextual is not None:
+                return contextual
         if self.conversation is not None:
             shortcut = await self.conversation.short_reply(state, turn)
             if shortcut is not None:

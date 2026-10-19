@@ -607,6 +607,11 @@ templates:
     end: true
     src: С-10
 
+  remind.clarify_maybe:
+    text: Не расслышала точный ответ. Вы придёте на приём? Ответьте «да» или «нет».
+    expect: yes_no
+    src: С-10
+
   remind.wrong_person:
     text: Передайте, пожалуйста, {patient:datv} просьбу перезвонить в поликлинику номер семь. Всего доброго!
     end: true

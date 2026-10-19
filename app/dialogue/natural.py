@@ -1,5 +1,6 @@
 """Текстовый маршрутизатор: NLU Ильи, сценарии С-01/С-05 и правила действий backend."""
 
+from datetime import datetime
 from typing import Literal
 
 from app.booking.models import ActionState, Approval, BookingError
@@ -10,6 +11,7 @@ from app.cancellation.service import CancellationService
 from app.contracts import NluResult, SafetyDecision
 from app.diagnostics.recorder import emit
 from app.dialogue.cancellation import CancellationConversation
+from app.dialogue.cross_scenario import CrossScenario, classify as classify_cross_scenario
 from app.dialogue.doctors import DoctorNames
 from app.dialogue.failures import mis_failure
 from app.dialogue.identity import IdentityDrafts
@@ -298,8 +300,210 @@ class BookingConversation:
                 code="NO_SLOTS",
             )
         offered, phrases = self.presenter.offer(options, doctors)
-        state = state.model_copy(update={"options": offered})
+        state = state.model_copy(
+            update={
+                "options": offered,
+                "shown_option_keys": tuple(self._slot_key(slot) for slot in offered),
+            }
+        )
         return state, reply(state, turn.turn_id, *phrases)
+
+    @staticmethod
+    def _slot_key(slot) -> str:
+        return f"{slot.doctor_id}:{slot.scheduled_at.isoformat()}"
+
+    async def cross_scenario_reply(
+        self, state: DialogueState, turn: Turn, result: NluResult | None = None
+    ) -> tuple[DialogueState, Reply] | None:
+        kind = classify_cross_scenario(turn.text)
+        if kind is None:
+            return None
+        if kind == CrossScenario.WAIT:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо, подожду. Скажите «продолжим», когда будете готовы.",
+                code="WAIT_REQUESTED",
+            )
+        if kind == CrossScenario.GOODBYE:
+            if state.phase in {
+                Phase.HELD,
+                Phase.CANCEL_CONFIRM,
+                Phase.MOVE_CONFIRM,
+                Phase.MOVE_FINISH_CONFIRM,
+            }:
+                state = state.model_copy(update={"end_confirmation_pending": True})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Перед завершением уточню: закончить разговор без выполнения этого действия?",
+                    code="END_CONFIRMATION_REQUIRED",
+                )
+            await self.release_call(state.call_id)
+            ended = await self.store.end(state.call_id)
+            return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+        if kind == CrossScenario.RESET:
+            if state.phase in {
+                Phase.RECONCILING,
+                Phase.CANCEL_RECONCILING,
+                Phase.MOVE_PENDING,
+                Phase.MOVE_FINISH_CONFIRM,
+            }:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Действие ещё проверяется. Повторно отправлять его не буду.",
+                    "Скажите «проверьте результат» или попросите регистратора.",
+                    code="ACTION_PENDING",
+                )
+            if state.reminder is not None:
+                state = state.model_copy(update={"end_confirmation_pending": False})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо, начнём сначала: вы придёте на приём? Ответьте «да» или «нет».",
+                    code="REMINDER_RESTART",
+                )
+            await self.release_call(state.call_id)
+            state = state.model_copy(
+                update={
+                    "phase": Phase.READY,
+                    "client_id": None,
+                    "options": (),
+                    "shown_option_keys": (),
+                    "proposal": None,
+                    "cancel_proposal": None,
+                    "cancel_target": None,
+                    "move_proposal": None,
+                    "move_target": None,
+                    "authorization": None,
+                    "specialty": None,
+                    "preferences": type(state.preferences)(),
+                    "purpose": "booking",
+                    "visit_id": None,
+                    "identity_draft": None,
+                    "identity_attempts": 0,
+                    "visit_items": (),
+                    "visit_cursor": None,
+                    "visit_has_more": False,
+                    "visit_query": VisitQuery(),
+                    "query_for_self": False,
+                    "cancel_reschedule_offered": False,
+                    "information_topic": None,
+                    "information_clarifying": False,
+                    "medical_boundary_pending": False,
+                    "misunderstandings": 0,
+                    "end_confirmation_pending": False,
+                    "retry_at": None,
+                    "mis_wait_since": None,
+                }
+            )
+            return state, reply(state, turn.turn_id, "Хорошо, начнём сначала. Чем могу помочь?", code="DIALOGUE_RESTARTED")
+        if kind == CrossScenario.MORE_OPTIONS:
+            if state.phase == Phase.OFFERED and state.client_id is not None and state.specialty:
+                excluded = frozenset(
+                    (int(key.split(":", 1)[0]), datetime.fromisoformat(key.split(":", 1)[1]))
+                    for key in state.shown_option_keys
+                )
+                try:
+                    options = await self.booking.options(
+                        state.client_id,
+                        state.specialty,
+                        state.preferences,
+                        limit=2,
+                        exclude=excluded,
+                        call_id=state.call_id,
+                    )
+                except MisError as error:
+                    return mis_failure(state, turn, self.booking.clock.now(), error)
+                if options:
+                    doctors = {d.id: d for d in await self.names.speaking()}
+                    offered, phrases = self.presenter.offer(options, doctors)
+                    state = state.model_copy(
+                        update={
+                            "options": offered,
+                            "shown_option_keys": state.shown_option_keys
+                            + tuple(self._slot_key(slot) for slot in offered),
+                        }
+                    )
+                    return state, reply(state, turn.turn_id, *phrases, code="MORE_OPTIONS")
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Других подтверждённых вариантов пока нет. Назовите другой день или время.",
+                    code="NO_MORE_OPTIONS",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Сначала уточним текущий вопрос. Если хотите, назовите другой день или время.",
+                code="MORE_OPTIONS_CONTEXT",
+            )
+        if kind == CrossScenario.UNSURE:
+            if state.phase in {Phase.HELD, Phase.CANCEL_CONFIRM, Phase.MOVE_CONFIRM}:
+                if state.misunderstandings >= 1:
+                    return await self.transfer(state, turn, "R-05")
+                state = state.model_copy(
+                    update={"misunderstandings": 1, "authorization": None}
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Не расслышала точный ответ. Подтверждаете действие? Ответьте «да» или «нет».",
+                    code="CONFIRMATION_CLARIFICATION",
+                )
+            if state.reminder is not None:
+                if state.misunderstandings >= 1:
+                    return await self.transfer(state, turn, "R-05")
+                state = state.model_copy(update={"misunderstandings": 1})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Вы придёте на приём? Ответьте, пожалуйста, точно: «да» или «нет».",
+                    code="REMINDER_CLARIFICATION",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Нужен точный ответ: да или нет?",
+                code="YES_NO_CLARIFICATION",
+            )
+        if kind == CrossScenario.FILLER:
+            question = self.information.resume_question(state, turn)
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Не расслышала ответ.",
+                *(question or ("Повторите, пожалуйста, ответ на текущий вопрос.",)),
+                code="CONTEXT_REPROMPT",
+            )
+        if kind == CrossScenario.THIRD_PARTY:
+            return await self.visits.privacy_transfer(state, turn)
+        if kind == CrossScenario.SWITCH_CANCEL:
+            if result is None and state.reminder is not None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Сейчас идёт звонок-напоминание. Изменить запись в нём нельзя.",
+                    "Для отмены обратитесь в регистратуру.",
+                    code="REMINDER_SCOPE",
+                )
+            if result is None or self.cancellation is None:
+                return None
+            return await self.cancellation.start(state, turn, result)
+        if kind == CrossScenario.SWITCH_VISITS:
+            if result is None:
+                if state.reminder is not None:
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Сейчас идёт звонок-напоминание. Сведения о других записях в нём не проверяю.",
+                        "Обратитесь в регистратуру, если хотите проверить свои записи.",
+                        code="REMINDER_SCOPE",
+                    )
+                return None
+            return await self.visits.start(state, turn, result)
+        return None
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
@@ -318,6 +522,9 @@ class BookingConversation:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
+        cross_reply = await self.cross_scenario_reply(state, turn, result)
+        if cross_reply is not None:
+            return cross_reply
         if state.client_id is not None and (
             any(
                 getattr(result.slots, field) is not None
