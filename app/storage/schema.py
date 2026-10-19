@@ -370,3 +370,27 @@ escalation_requests = Table(
     CheckConstraint("(state = 'applied') = (escalation_id IS NOT NULL)"),
 )
 Index("escalation_check", escalation_requests.c.state, escalation_requests.c.next_check_at)
+# Задачи обратного звонка (T08, §7.6). Карточка — в заявке МИС; здесь ссылка и срок.
+callback_tasks = Table(
+    "callback_tasks",
+    metadata,
+    Column("id", String(200), primary_key=True),
+    Column("call_id", String(128), nullable=False),
+    Column("route", String(8), nullable=False),
+    Column("priority", String(2), nullable=False),
+    Column("escalation_ref", String(200)),
+    Column("client_id", Integer),
+    Column("preferred", String(100)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("due_at", DateTime(timezone=True), nullable=False),
+    Column("out_of_hours", Boolean, nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("owner", String(128)),
+    Column("claimed_until", DateTime(timezone=True)),
+    Column("sms_pending", Boolean, nullable=False),
+    Column("version", Integer, nullable=False),
+    CheckConstraint("state IN ('pending','calling','done','failed')"),
+    CheckConstraint("priority IN ('P2','P3') AND attempts BETWEEN 0 AND 3"),
+)
+Index("callback_queue", callback_tasks.c.state, callback_tasks.c.due_at)
