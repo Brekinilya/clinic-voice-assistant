@@ -125,6 +125,10 @@ docker compose -f deploy/voice/compose.yaml exec voice python -m app.reminders.c
   `DIALOGUE_MODE=natural`, затем выполнить
   `python bench/voice/load.py --sessions 2 --calls 4 --container <имя>`. Синтезированная речь
   чище человеческой, поэтому результат оптимистичнее живого звонка.
+- **Сценарии T07, которых нет в текстовом канале** (тишина R-17, фраза ожидания D-13, отказ
+  от записи D-15): `python -m bench.voice.evidence --output-dir <папка>`. Настоящие шлюз, диалог
+  и эмулятор МИС из прогона T07, подставные VAD/ASR/TTS, тайминги по умолчанию, около 40 с.
+  Итог — `voice_evidence.json` для прогона T07 и `voice_evidence.md`. SIP и модели не проверяет.
 
 ## Обновление, остановка, откат
 
