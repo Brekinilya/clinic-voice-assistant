@@ -29,6 +29,7 @@ from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
 from app.mis.ports import MisError
+from app.nlu.dictionaries import load_specialties
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
 from app.scheduling.matching import profile_key
@@ -267,6 +268,22 @@ class BookingConversation:
                 "phase": Phase.IDENTIFIED,
             }
         )
+        if state.client_id is not None and state.specialty:
+            specialty_rule = load_specialties().get(profile_key(state.specialty))
+            if (
+                specialty_rule
+                and specialty_rule.referral
+                and not self._has_current_referral(state.client_id, state.specialty)
+            ):
+                state = state.model_copy(update={"referral_fallback_pending": True})
+                specialty = specialty_rule.forms["datv"]
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    f"К {specialty} запись идёт по направлению лечащего врача.",
+                    "Подтверждённое направление не найдено. Проверить запись к участковому терапевту?",
+                    code="REFERRAL_REQUIRES_GP",
+                )
         try:
             options = await self.booking.options(
                 state.client_id, state.specialty, state.preferences, limit=2, call_id=state.call_id
@@ -277,6 +294,15 @@ class BookingConversation:
             return mis_failure(state, turn, self.booking.clock.now(), error)
         except BookingError as error:
             if str(error) == "ELIGIBILITY_UNKNOWN":
+                if profile_key(state.specialty or "") not in {"терапевт", "педиатр"}:
+                    state = state.model_copy(update={"referral_fallback_pending": True})
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        f"К {state.specialty} запись требует подтверждённого направления или допуска.",
+                        "Я не могу подтвердить его наличие. Проверить запись к участковому терапевту?",
+                        code="REFERRAL_REQUIRES_GP",
+                    )
                 return state, reply(
                     state,
                     turn.turn_id,
@@ -308,6 +334,25 @@ class BookingConversation:
             }
         )
         return state, reply(state, turn.turn_id, *phrases)
+
+    def _has_current_referral(self, client_id: int, specialty: str) -> bool:
+        schedule = self.booking.schedule
+        document = getattr(schedule, "document", None)
+        facts = document.access if document is not None else getattr(schedule, "facts", ())
+        doctors = (
+            {slot.doctor_id: slot.specialty for slot in document.slots}
+            if document is not None
+            else {doctor.id: doctor.specialty for doctor in getattr(schedule, "doctors", ())}
+        )
+        now = self.booking.clock.now()
+        return any(
+            fact.client_id == client_id
+            and getattr(fact.state, "value", fact.state) == "allowed"
+            and fact.valid_from <= now <= fact.valid_until
+            and fact.doctor_id in doctors
+            and profile_key(doctors[fact.doctor_id]) == profile_key(specialty)
+            for fact in facts
+        )
 
     @staticmethod
     def _slot_key(slot) -> str:
@@ -355,7 +400,9 @@ class BookingConversation:
                 )
             await self.release_call(state.call_id)
             ended = await self.store.end(state.call_id)
-            return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+            return ended, reply(
+                ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED"
+            )
         if kind == CrossScenario.RESET:
             if state.phase in {
                 Phase.RECONCILING,
@@ -412,7 +459,12 @@ class BookingConversation:
                     "mis_wait_since": None,
                 }
             )
-            return state, reply(state, turn.turn_id, "Хорошо, начнём сначала. Чем могу помочь?", code="DIALOGUE_RESTARTED")
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо, начнём сначала. Чем могу помочь?",
+                code="DIALOGUE_RESTARTED",
+            )
         if kind == CrossScenario.MORE_OPTIONS:
             if state.phase == Phase.OFFERED and state.client_id is not None and state.specialty:
                 excluded = frozenset(
@@ -457,9 +509,7 @@ class BookingConversation:
             if state.phase in {Phase.HELD, Phase.CANCEL_CONFIRM, Phase.MOVE_CONFIRM}:
                 if state.misunderstandings >= 1:
                     return await self.transfer(state, turn, "R-05")
-                state = state.model_copy(
-                    update={"misunderstandings": 1, "authorization": None}
-                )
+                state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
                 return state, reply(
                     state,
                     turn.turn_id,
@@ -546,6 +596,11 @@ class BookingConversation:
         information_reply = await self.information.step(state, turn)
         if information_reply is not None:
             return information_reply
+        words = set(turn.text.casefold().split())
+        if any(word.startswith("бумажн") for word in words) and any(
+            word.startswith("направлен") for word in words
+        ):
+            return await self.transfer(state, turn, "R-08")
         cross_reply = await self.cross_scenario_reply(state, turn, result)
         if cross_reply is not None:
             return cross_reply
@@ -579,6 +634,41 @@ class BookingConversation:
         self, state: DialogueState, turn: Turn, result: NluResult, decision: SafetyDecision
     ) -> tuple[DialogueState, Reply]:
         slots, intents = result.slots, set(result.intents)
+        if state.referral_fallback_pending:
+            if "yes" in intents:
+                state = state.model_copy(
+                    update={
+                        "referral_fallback_pending": False,
+                        "referral_fallback_used": True,
+                        "specialty": "терапевт",
+                        "preferences": SlotPreferences(),
+                        "phase": Phase.IDENTIFIED,
+                    }
+                )
+                return await self.offer(state, turn)
+            if "no" in intents:
+                state = state.model_copy(
+                    update={
+                        "referral_fallback_pending": False,
+                        "referral_fallback_used": False,
+                        "phase": Phase.READY,
+                        "client_id": None,
+                        "specialty": None,
+                    }
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо. Уточните направление у регистратора.",
+                    FOLLOW_UP_QUESTION,
+                    code="REFERRAL_DECLINED",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Скажите «да», чтобы проверить запись к участковому терапевту, или «нет», чтобы закончить этот вопрос.",
+                code="REFERRAL_CONFIRMATION_REQUIRED",
+            )
         if state.medical_boundary_pending:
             refinements = PREFERENCE_FIELDS & slots.model_fields_set
             if "repeat" in intents:
@@ -993,7 +1083,7 @@ class BookingConversation:
                     turn.turn_id,
                     confirmed,
                     FOLLOW_UP_QUESTION,
-                    code="BOOKED",
+                    code="BOOKED_GP" if state.referral_fallback_used else "BOOKED",
                 )
             if action.state in {ActionState.COMMITTING, ActionState.RECONCILING}:
                 state = state.model_copy(update={"phase": Phase.RECONCILING})

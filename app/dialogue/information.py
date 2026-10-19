@@ -81,6 +81,16 @@ class InformationConversation:
         topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
         # Короткие ответы относятся к справочному вопросу, только пока он активен.
         answer = self.short_answer(turn.text)
+        tokens = set(tokenize(turn.text))
+        if (
+            answer is None
+            and topic is None
+            and state.information_topic is not None
+            and state.phase in IDLE
+            and {"нет", "спасибо"}.issubset(tokens)
+            and not tokens.intersection({"записать", "записаться", "перенести", "отменить"})
+        ):
+            answer = "no"
         if (
             topic is None
             and state.information_topic is not None
@@ -141,6 +151,8 @@ class InformationConversation:
         )
 
     def resume_question(self, state: DialogueState, turn: Turn) -> tuple[str, ...]:
+        if state.information_topic == "specialty_schedule":
+            return ("Записать вас?",)
         if state.medical_boundary_pending:
             return ("Записать вас к терапевту?",)
         if state.phase in IDLE:

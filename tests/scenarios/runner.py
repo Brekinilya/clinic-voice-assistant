@@ -21,6 +21,9 @@ PHASES = {
     "booking.offer_nearest": {"offered"},
     "booking.confirm": {"held"},
     "booking.done": {"booked"},
+    "referral.found": {"offered"},
+    "referral.done": {"booked"},
+    "referral.missing": {"identified"},
     "booking.done_child": {"booked"},
     "cancel.which": {"cancel_choosing"},
     "cancel.offer_reschedule": {"cancel_offer"},
@@ -46,10 +49,11 @@ CODE_EXPECTATIONS = {
     "ident.not_found": {"IDENTIFICATION_REQUIRED"},
     "emergency.insist": {"EMERGENCY"},
     "emergency.ambulance_called": {"EMERGENCY"},
+    "referral.paper": {"TRANSFER_REQUESTED"},
 }
 GAPS = {
     "labs.": "labs_status_source_T09",
-    "home_visit.": "home_visit_T09",
+    "home_visit.": "home_visit_T08",
     "waitlist.": "waitlist_T08",
     "attach.": "faq_T09",
     "schedule.": "schedule_faq_T09",
@@ -59,7 +63,6 @@ GAPS = {
     "my_visits.sms_sent": "sms_delivery_T20",
     "ident.relation": "guardian_T10",
     "ident.ask_child": "guardian_T10",
-    "referral.": "referral_conversation_T09",
     "paid.price": "legacy_paid_catalog_outside_scope",
     "transfer.ministry": "faq_T09",
     "transfer.insurer": "faq_T09",
@@ -73,6 +76,22 @@ TEXT_REQUIREMENTS = {
 
 # Проверяем и происхождение, и содержание; одного INFO_GIVEN недостаточно.
 INFORMATION_EXPECTATIONS = {
+    "schedule.specialty": (
+        "specialty_schedule",
+        (r"Хирурги принимают по будням", r"сменн.*график", r"точное время зависит от врача"),
+    ),
+    "transfer.ministry": (
+        "transfer_ministry",
+        (r"льготн.*лекарств", r"колл-центр Минздрава", r"122"),
+    ),
+    "transfer.insurer": (
+        "transfer_insurer",
+        (
+            r"Полис обязательного медицинского страхования",
+            r"страховая компания",
+            r"телефон указан на полисе",
+        ),
+    ),
     "attach.how": (
         "attachment",
         (r"Госуслуг", r"окне номер один", r"паспорт", r"полис", r"СНИЛС", r"трех рабочих дней"),
@@ -320,6 +339,16 @@ def verify_step(result, number, step, response):
         if name in PHASES:
             if response.phase not in PHASES[name]:
                 result.add("phase:" + name, f"Получено состояние {response.phase}", step=number)
+            if name == "referral.missing" and (
+                response.code != "REFERRAL_REQUIRES_GP"
+                or not re.search(r"подтвержд.*направлен", text)
+                or not re.search(r"участков.*терапевт", text)
+            ):
+                result.add(
+                    "referral_fallback",
+                    "Не объяснено отсутствие подтверждённого допуска и вариант терапевта",
+                    step=number,
+                )
             if name.startswith("booking.offer") and response.code in {
                 "WAIT_MIS",
                 "BOOKING_REJECTED",
@@ -440,13 +469,14 @@ async def verify_callback_task(result, runtime, expectation):
         if request is not None
         else None
     )
-    expected_state = expectation.get("state", "queued") if isinstance(expectation, dict) else "queued"
+    expected_state = (
+        expectation.get("state", "queued") if isinstance(expectation, dict) else "queued"
+    )
     if task is None:
         result.add("callback_task_T08", "HandoffService не сохранил задачу обратного звонка")
         return
-    if (
-        task.state.value != expected_state
-        or request.callback_state != CallbackState(expected_state)
+    if task.state.value != expected_state or request.callback_state != CallbackState(
+        expected_state
     ):
         result.add("callback_task_T08", "Состояние сохранённой задачи не совпадает с ожидаемым")
         return
@@ -585,7 +615,9 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                             )
                             await runtime.handoffs.transfer_started(event)
                             await runtime.handoffs.transfer_result(
-                                SimpleNamespace(**vars(event), outcome="no_answer", reason="scenario")
+                                SimpleNamespace(
+                                    **vars(event), outcome="no_answer", reason="scenario"
+                                )
                             )
                             turn_id = len(responses) + 1
                             callback_reply = await runtime.service.start_callback(
@@ -736,6 +768,14 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         "critical",
                         number,
                     )
+                if "home_visit" in dialog.result and reply.transfer is not None:
+                    result.add(
+                        "home_visit_T08",
+                        "Домашний визит пока передаётся сотруднику без завершённой заявки.",
+                        "unsupported",
+                        number,
+                    )
+                    break
                 verify_step(result, number, step, reply)
                 if "card" in dialog.result:
                     await verify_handoff_card(result, runtime, reply, number)
@@ -762,11 +802,15 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     result.evidence["handoff_validation_scope"] = (
                         "Проверены локальная карточка и её маршрут; физическое соединение не проверялось."
                     )
-            elif expected_code and expected_code not in {r.code for r in responses}:
+            elif (
+                expected_code
+                and expected_code not in {r.code for r in responses}
+                and not ("home_visit" in dialog.result and expected_code == "HOME_VISIT_REQUESTED")
+            ):
                 result.add("result_code", f"Не получен итоговый код {expected_code}")
             for key, feature in {
                 "sms": "sms_delivery_T20",
-                "home_visit": "home_visit_T09",
+                "home_visit": "home_visit_T08",
                 "waitlist": "waitlist_T08",
                 "recording": "recording_engine_T13",
             }.items():

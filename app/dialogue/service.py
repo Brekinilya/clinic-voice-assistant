@@ -276,6 +276,18 @@ class DialogueService:
             with self._mis_demand(call_id, state, granted.append):
                 state, result = await self._process(state, turn)
             state, result = await self._settle_wait(state, turn, result, progressed=bool(granted))
+            if (
+                result.transfer is not None
+                and self.handoffs is not None
+                and self.handoffs.settings.enabled
+            ):
+                await self.handoffs.ensure_request(
+                    call_id,
+                    result.transfer.route,
+                    result.transfer.priority,
+                    state,
+                    source=source,
+                )
         except Exception as error:
             emit("dialogue.error", error=type(error).__name__)
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
@@ -448,7 +460,9 @@ class DialogueService:
             if answer == "yes":
                 await self._release_call(state.call_id)
                 ended = await self.store.end(state.call_id)
-                return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+                return ended, reply(
+                    ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED"
+                )
             if answer == "no":
                 state = state.model_copy(update={"end_confirmation_pending": False})
                 return state, reply(

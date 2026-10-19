@@ -120,6 +120,8 @@ class DialogueState(BookingModel):
     # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.
     information_topic: str | None = None
     information_clarifying: bool = False
+    referral_fallback_pending: bool = False
+    referral_fallback_used: bool = False
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     purpose: Literal["booking", "visits", "cancel", "reschedule"] = "booking"
