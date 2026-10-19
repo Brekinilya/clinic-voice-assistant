@@ -543,6 +543,9 @@ class BookingConversation:
             Phase.MOVE_FINISH_CONFIRM,
         }:
             return await self.transfer(state, turn, "R-10")
+        information_reply = await self.information.step(state, turn)
+        if information_reply is not None:
+            return information_reply
         cross_reply = await self.cross_scenario_reply(state, turn, result)
         if cross_reply is not None:
             return cross_reply
