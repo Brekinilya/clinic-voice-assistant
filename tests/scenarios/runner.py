@@ -4,8 +4,10 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import timedelta
+from types import SimpleNamespace
 
-from app.dialogue.models import Reply
+from app.dialogue.models import Reply, Turn
+from app.handoffs.models import CallbackState
 from app.mis.models import VisitStatus
 from tests.scenarios.runtime import TOKEN, ScenarioRuntime, moment
 
@@ -48,7 +50,6 @@ CODE_EXPECTATIONS = {
 GAPS = {
     "labs.": "labs_status_source_T09",
     "home_visit.": "home_visit_T09",
-    "callback.": "callback_T08",
     "waitlist.": "waitlist_T08",
     "attach.": "faq_T09",
     "schedule.": "schedule_faq_T09",
@@ -219,6 +220,22 @@ def verify_step(result, number, step, response):
     ):
         result.add("slot_weekdays", "Предложен запрещённый день недели", step=number)
     for name in templates(step):
+        if name == "callback.offer":
+            if response.code != "CALLBACK_OFFERED":
+                result.add(
+                    "callback_offer_T08",
+                    "Не создано предложение обратного звонка через HandoffService",
+                    step=number,
+                )
+            continue
+        if name == "callback.created":
+            if response.code != "CALLBACK_QUEUED" or response.phase != "ended":
+                result.add(
+                    "callback_result_T08",
+                    "Ответ не подтверждает сохранённую задачу обратного звонка",
+                    step=number,
+                )
+            continue
         gap = next((value for prefix, value in GAPS.items() if name.startswith(prefix)), None)
         if name == "remind.details":
             if response.code != "REMINDER_DETAILS" or response.phase != "remind_details":
@@ -393,6 +410,57 @@ async def verify_reminder_result(result, runtime, reminder_result):
     }
 
 
+async def verify_handoff_card(result, runtime, response, number):
+    if response is None or response.transfer is None:
+        return
+    request = await runtime.handoff_store.request_for_call(runtime.call_id)
+    if request is None:
+        result.add("operator_card_T08", "HandoffService не сохранил карточку перевода", step=number)
+        return
+    if (request.route, request.priority) != (
+        response.transfer.route,
+        response.transfer.priority,
+    ):
+        result.add("operator_card_T08", "Карточка не совпадает с маршрутом в ответе", step=number)
+        return
+    result.evidence["handoff_card"] = {
+        "route": request.route,
+        "priority": request.priority,
+        "source": request.source,
+        "identity_status": request.identity_status,
+        "transfer_state": request.transfer_state.value,
+        "mis_state": request.mis_state.value,
+    }
+
+
+async def verify_callback_task(result, runtime, expectation):
+    request = await runtime.handoff_store.request_for_call(runtime.call_id)
+    task = (
+        await runtime.handoff_store.get_callback_task_by_request(request.request_id)
+        if request is not None
+        else None
+    )
+    expected_state = expectation.get("state", "queued") if isinstance(expectation, dict) else "queued"
+    if task is None:
+        result.add("callback_task_T08", "HandoffService не сохранил задачу обратного звонка")
+        return
+    if (
+        task.state.value != expected_state
+        or request.callback_state != CallbackState(expected_state)
+    ):
+        result.add("callback_task_T08", "Состояние сохранённой задачи не совпадает с ожидаемым")
+        return
+    if not task.contact_masked or not task.contact_ciphertext or task.priority != request.priority:
+        result.add("callback_task_T08", "В задаче не подтверждены номер и приоритет")
+        return
+    result.evidence["callback_task"] = {
+        "state": task.state.value,
+        "priority": task.priority,
+        "contact_masked": task.contact_masked,
+        "deadline": task.deadline.isoformat(),
+    }
+
+
 def verify_records(result, runtime, expectation):
     actual = runtime.snapshot()
     initial = runtime.initial_records
@@ -464,6 +532,7 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
     beginning = runtime.clock.now()
     responses = []
     outbound = dialog.setup["channel"] == "outbound"
+    callback_active = False
     try:
         async with runtime.application() as client:
             if outbound:
@@ -498,6 +567,49 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                                 }
                             )
                             verify_step(result, number, step, reply)
+                        elif step["event"] == "handoff_no_answer":
+                            request = await runtime.handoff_store.request_for_call(runtime.call_id)
+                            if request is None:
+                                result.add(
+                                    "operator_card_T08",
+                                    "Нет карточки перевода перед событием «нет ответа»",
+                                    step=number,
+                                )
+                                continue
+                            attempt_id = f"scenario-{number}"
+                            event = SimpleNamespace(
+                                attempt_id=attempt_id,
+                                call_id=runtime.call_id,
+                                route=request.route,
+                                priority=request.priority,
+                            )
+                            await runtime.handoffs.transfer_started(event)
+                            await runtime.handoffs.transfer_result(
+                                SimpleNamespace(**vars(event), outcome="no_answer", reason="scenario")
+                            )
+                            turn_id = len(responses) + 1
+                            callback_reply = await runtime.service.start_callback(
+                                runtime.call_id, turn_id, "no_answer"
+                            )
+                            if callback_reply is None:
+                                result.add(
+                                    "callback_offer_T08",
+                                    "HandoffService не предложил обратный звонок после отсутствия ответа",
+                                    step=number,
+                                )
+                                continue
+                            responses.append(callback_reply)
+                            callback_active = True
+                            result.steps.append(
+                                {
+                                    "step": number,
+                                    "turn": turn_id,
+                                    "phase": callback_reply.phase,
+                                    "code": callback_reply.code,
+                                    "event": "handoff_no_answer",
+                                }
+                            )
+                            verify_step(result, number, step, callback_reply)
                         else:
                             result.add(
                                 "event:" + step["event"],
@@ -506,6 +618,25 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                                 number,
                             )
                     # Приветствие браузера не подменяем вымышленным ответом сервера.
+                    continue
+                if callback_active:
+                    turn = len(responses) + 1
+                    callback_reply = await runtime.handoffs.callback_turn(
+                        runtime.call_id, Turn(turn_id=turn, text=step["patient"])
+                    )
+                    responses.append(callback_reply)
+                    result.steps.append(
+                        {
+                            "step": number,
+                            "turn": turn,
+                            "phase": callback_reply.phase,
+                            "code": callback_reply.code,
+                            "options": len(callback_reply.options),
+                        }
+                    )
+                    verify_step(result, number, step, callback_reply)
+                    if callback_reply.phase == "ended":
+                        callback_active = False
                     continue
                 if step.get("advance_s"):
                     runtime.clock.value += timedelta(seconds=step["advance_s"])
@@ -606,6 +737,8 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         number,
                     )
                 verify_step(result, number, step, reply)
+                if "card" in dialog.result:
+                    await verify_handoff_card(result, runtime, reply, number)
             if outbound and runtime.reminder_attempt_id is not None:
                 state = await runtime.dialogue_store.inspect(runtime.call_id)
                 reminder_result = state.reminder_result
@@ -619,17 +752,20 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
             verify_records(result, runtime, dialog.result.get("stand"))
             expected_code = dialog.result.get("code")
             if expected_code == "ESCALATED" and any(r.transfer is not None for r in responses):
-                result.add(
-                    "handoff_completion_T08_T04",
-                    "Запрос перевода не доказывает состоявшееся соединение",
-                    "unsupported",
-                )
+                request = await runtime.handoff_store.request_for_call(runtime.call_id)
+                if request is None:
+                    result.add(
+                        "operator_card_T08",
+                        "HandoffService не сохранил ожидаемую карточку перевода",
+                    )
+                else:
+                    result.evidence["handoff_validation_scope"] = (
+                        "Проверены локальная карточка и её маршрут; физическое соединение не проверялось."
+                    )
             elif expected_code and expected_code not in {r.code for r in responses}:
                 result.add("result_code", f"Не получен итоговый код {expected_code}")
             for key, feature in {
-                "card": "operator_card_T08",
                 "sms": "sms_delivery_T20",
-                "callback": "callback_T08",
                 "home_visit": "home_visit_T09",
                 "waitlist": "waitlist_T08",
                 "recording": "recording_engine_T13",
@@ -638,6 +774,15 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     result.add(
                         feature, "Нельзя подтвердить обязательный результат " + key, "unsupported"
                     )
+            if "callback" in dialog.result:
+                await verify_callback_task(result, runtime, dialog.result["callback"])
+            if "card" in dialog.result:
+                await verify_handoff_card(
+                    result,
+                    runtime,
+                    next((r for r in reversed(responses) if r.transfer is not None), None),
+                    len(responses),
+                )
             # Наличие флага opt-out не доказывает физическое прекращение записи аудио.
             if dialog.result.get("recording") is False:
                 state = await runtime.dialogue_store.inspect(runtime.call_id)

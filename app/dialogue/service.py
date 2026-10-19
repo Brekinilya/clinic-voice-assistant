@@ -251,7 +251,9 @@ class DialogueService:
                     if state.phase == Phase.HANDOFF:
                         return handoff_reply(state, turn.turn_id)
                     return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
-                return callback_result
+                return callback_result.model_copy(
+                    update={"phase": current.phase, "version": current.version}
+                )
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
@@ -409,7 +411,11 @@ class DialogueService:
     async def start_callback(self, call_id: str, turn_id: int, outcome: str):
         if self.handoffs is None:
             return None
-        return await self.handoffs.start_callback(call_id, turn_id, outcome)
+        result = await self.handoffs.start_callback(call_id, turn_id, outcome)
+        if result is None:
+            return None
+        state = await self.store.inspect(call_id)
+        return result.model_copy(update={"phase": state.phase, "version": state.version})
 
     async def _release_call(self, call_id: str) -> None:
         if self.conversation is not None:

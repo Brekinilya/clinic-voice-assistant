@@ -14,6 +14,8 @@ from app.clock import CLINIC_TIMEZONE
 from app.demo import DemoClock, EmulatorBudget
 from app.dialogue.composition import assemble_dialogue
 from app.dialogue.memory import MemoryDialogueStore
+from app.handoffs.memory import MemoryHandoffStore
+from app.handoffs.service import HandoffService, HandoffSettings
 from app.main import create_app
 from app.mis.budget import MemoryBudget
 from app.mis.http import HttpMedicalSystem
@@ -143,6 +145,8 @@ class ScenarioRuntime:
             document, self.clock, hashlib.sha256(document.model_dump_json().encode()).hexdigest()
         )
         self.dialogue_store = MemoryDialogueStore()
+        self.handoff_store = MemoryHandoffStore()
+        self.handoffs = None
         self.booking_store = MemoryBookingStore(guard_reader=self.dialogue_store)
         self.cancellation_store = MemoryCancellationStore(
             self.booking_store.ledger, self.dialogue_store
@@ -244,6 +248,14 @@ class ScenarioRuntime:
                     b"fictional-scenario-hash-key-longer-than-32",
                     reminder_actions=reminder_actions,
                 )
+                self.handoffs = HandoffService(
+                    self.handoff_store,
+                    mis,
+                    clock,
+                    b"fictional-scenario-hash-key-longer-than-32",
+                    HandoffSettings(enabled=True, callback_enabled=True),
+                )
+                self.service.handoffs = self.handoffs
                 if self.reminder_dialer is not None:
                     self.reminder_dialer.executor = self.reminder_executor
                 yield self.service

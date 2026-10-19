@@ -59,8 +59,18 @@ dialogs:
       - say: greeting.inbound
       - patient: Оператор
         safety: {flags: [operator], rule: R-02}
-        say: transfer.outside_hours
-      - patient: Да, пусть перезвонят
+        say: transfer.operator
+        transfer: {route: R-02, priority: P2}
+      - event: handoff_no_answer
+        say: callback.offer
+      - patient: Да
         parse: {expect: yes_no, intent: "yes"}
+      - patient: "+79990000000"
+      - patient: В ближайшее время
+      - patient: Да
         say: callback.created
-    result: {code: CALLBACK, stand: unchanged}
+    result:
+      code: CALLBACK_QUEUED
+      stand: unchanged
+      card: {rule: R-02, priority: P2}
+      callback: {state: queued}
