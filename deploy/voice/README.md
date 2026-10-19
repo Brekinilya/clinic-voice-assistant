@@ -114,6 +114,18 @@ docker compose -f deploy/voice/compose.yaml exec voice python -m app.reminders.c
 `PJSIP/phone-021@gateway`). Окна и праздники — `config/calendar.yaml`; вне сверенного периода
 обзвона нет.
 
+## Замеры и наблюдение за звонком
+
+- **Живой звонок:** `bash deploy/voice/monitor_call.sh 600 2 > звонок.log` запустить на ВМ до
+  звонка. Скрипт только читает и раз в 2 с снимает CPU/RAM контейнеров, число каналов и
+  RTP-статистику SIP-плеча (`pjsip show channelstats`). В конце он выписывает задержки по
+  репликам из журнала голоса. Текстов и аудио в выводе нет. Хранить вне Git.
+- **Без SIP, на целевых ресурсах:** запустить этот образ с `--cpus=2 --memory=4g`,
+  `TELEPHONY_ENABLED=false`, `APP_MODE=offline_test`, `BACKEND_DEMO_ENABLED=true`,
+  `DIALOGUE_MODE=natural`, затем выполнить
+  `python bench/voice/load.py --sessions 2 --calls 4 --container <имя>`. Синтезированная речь
+  чище человеческой, поэтому результат оптимистичнее живого звонка.
+
 ## Обновление, остановка, откат
 
 Обновление — один согласованный выпуск для backend и голоса:
