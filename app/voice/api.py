@@ -97,5 +97,6 @@ async def voice_call(socket: WebSocket, call_id: CallId) -> None:
         await session.close()
         try:
             await socket.close()
-        except RuntimeError:
+        except (WebSocketDisconnect, RuntimeError):
+            # Клиент уже ушёл: Starlette сообщает об этом WebSocketDisconnect(1006)
             pass
