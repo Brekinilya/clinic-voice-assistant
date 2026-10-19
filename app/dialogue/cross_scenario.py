@@ -9,6 +9,7 @@ class CrossScenario(StrEnum):
     GOODBYE = "goodbye"
     RESET = "reset"
     MORE_OPTIONS = "more_options"
+    OTHER_DAY = "other_day"
     REPEAT = "repeat"
     UNSURE = "unsure"
     FILLER = "filler"
@@ -28,7 +29,7 @@ _PATTERNS = (
         CrossScenario.MORE_OPTIONS,
         re.compile(r"\b(еще|другие|какие|вариант)\b.*\bвариант(ы|ов)?\b|\bварианты\b"),
     ),
-    (CrossScenario.MORE_OPTIONS, re.compile(r"\b(другой|другая|другое)\s+(день|дата|время)\b")),
+    (CrossScenario.OTHER_DAY, re.compile(r"\b(другой|другая|другое)\s+(день|дата|время)\b")),
     (
         CrossScenario.REPEAT,
         re.compile(

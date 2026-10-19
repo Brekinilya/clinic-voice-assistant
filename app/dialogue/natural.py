@@ -328,8 +328,10 @@ class BookingConversation:
             if not question:
                 question = ("Повторите, пожалуйста, ответ на текущий вопрос.",)
             return state, reply(state, turn.turn_id, *question, code="CURRENT_PROMPT_REPEATED")
-        if kind == CrossScenario.MORE_OPTIONS and state.purpose == "reschedule":
-            return None
+        if kind == CrossScenario.OTHER_DAY:
+            if state.purpose == "reschedule":
+                return None
+            kind = CrossScenario.MORE_OPTIONS
         if kind == CrossScenario.WAIT:
             return state, reply(
                 state,
