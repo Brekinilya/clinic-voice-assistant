@@ -1,0 +1,109 @@
+# Матрица контекста: реплики «не по сценарию» на каждом активном вопросе.
+#
+# bases — эталонные диалоги T07; каждый доводится до шага k, и вместо ожидаемой реплики
+# подаётся пробная. Каждый случай — свежий прогон на эмуляторе МИС.
+#
+# Исходы: answered (осмысленный ответ), transfer (перевод), ended (конец звонка),
+# not_understood («не поняла / уточните»). allowed — какие исходы правильны для класса;
+# allowed_in — исключения по фазе; forbidden_codes — коды ответа, которые значат ошибку
+# понимания, даже если формально «ответил». task — где это чинится по плану 40.
+bases:
+  - M-01
+  - M-03
+  - M-04
+  - M-05
+  - M-10 подтверждение
+  - M-10 перенос
+
+probes:
+  repeat:
+    title: Повторите / что? / не расслышал
+    texts: ["Повторите, пожалуйста.", "Что?", "Я не расслышал, что вы сказали."]
+    allowed: [answered]
+    task: A3
+  robot:
+    title: Вы робот?
+    texts: ["А вы робот?"]
+    allowed: [answered]
+    task: T09
+  operator:
+    title: Позовите оператора
+    texts: ["Соедините с оператором."]
+    allowed: [transfer]
+    task: R-02
+  hold:
+    title: Подождите минутку
+    texts: ["Подождите минутку."]
+    allowed: [answered]
+    task: A2
+  goodbye:
+    title: Спасибо, до свидания
+    texts: ["Спасибо, до свидания."]
+    allowed: [ended, answered]
+    task: A2
+  change_mind:
+    title: Я передумал
+    texts: ["Я передумал."]
+    allowed: [answered, ended]
+    task: A2
+  restart:
+    title: Давайте сначала
+    texts: ["Давайте начнём сначала."]
+    allowed: [answered]
+    task: A2
+  more_options:
+    title: Какие ещё есть варианты?
+    texts: ["А какие ещё есть варианты?"]
+    allowed: [answered]
+    task: A2
+  other_day:
+    title: А можно на другой день?
+    texts: ["А можно на другой день?"]
+    allowed: [answered]
+    # При записи это просьба о других вариантах, а не перенос существующей записи
+    forbidden_codes: [NO_ACTIVE_VISITS]
+    task: A3
+  not_sure:
+    title: Не знаю / ну да, наверное
+    texts: ["Не знаю.", "Ну да, наверное."]
+    allowed: [answered]
+    # С-10: «не знаю, может быть» на напоминании — фраза remind.maybe и конец звонка
+    allowed_in:
+      remind_details: [answered, ended]
+    task: A2
+  third_party:
+    title: Это не для меня, а для мамы
+    texts: ["Это не для меня, а для мамы."]
+    allowed: [answered, transfer]
+    task: A7
+  faq_address:
+    title: Где вы находитесь?
+    texts: ["А где вы находитесь?"]
+    allowed: [answered]
+    task: A6
+  faq_wait:
+    title: Долго ждать приёма?
+    texts: ["А долго ждать приёма?"]
+    allowed: [answered]
+    task: A6
+  price:
+    title: Сколько стоит приём?
+    texts: ["Сколько стоит приём?"]
+    allowed: [answered, transfer]
+    task: A6
+  switch_cancel:
+    title: Смена задачи — отмените запись
+    texts: ["Отмените мою запись."]
+    allowed: [answered]
+    task: A2
+  switch_visits:
+    title: Смена задачи — какие у меня записи
+    texts: ["Какие у меня записи?"]
+    allowed: [answered]
+    task: A2
+  filler:
+    title: Ммм (неразборчиво)
+    texts: ["Ммм."]
+    # Переспрос — правильная лестница E-03, а не пробел
+    allowed: [not_understood, answered]
+    task: E-03
