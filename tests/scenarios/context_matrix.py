@@ -9,6 +9,7 @@
 import argparse
 import asyncio
 import json
+import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -203,6 +204,7 @@ def report(cells: list[Cell], data: dict) -> dict:
 
 
 def main(argv=None):
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-gap", type=float, help="порог доли «не поняла» для кода 1")

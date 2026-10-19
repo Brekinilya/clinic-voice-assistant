@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +134,8 @@ def main(argv=None):
         json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8"
     )
     (args.output_dir / "STATUS.md").write_text(markdown(document, probes), encoding="utf-8")
+    # Консоль Windows в cp1251 не печатает стрелки и кавычки отчёта
+    sys.stdout.reconfigure(encoding="utf-8")
     print((args.output_dir / "STATUS.md").read_text("utf-8"))
     return 0
 
