@@ -1,0 +1,53 @@
+# Голосовой шлюз рядом с deploy/vm: та же PostgreSQL, тот же индекс расписания, Asterisk на хосте.
+# Из корня репозитория, после deploy/vm и миграции:
+#   docker compose -f deploy/voice/compose.yaml up -d --build
+name: clinic-voice
+services:
+  voice:
+    build:
+      context: ../..
+      dockerfile: deploy/voice/Dockerfile
+      args:
+        # SOURCE_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/voice/compose.yaml build
+        SOURCE_COMMIT: "${SOURCE_COMMIT:-unknown}"
+    env_file:
+      # MIS_TOKEN, PostgreSQL, DIALOGUE_HASH_KEY, вход в веб — общие с backend
+      - ../../.env
+      # ARI_USER/ARI_PASSWORD и включение T11 — только для голоса (шаблон voice.env.example)
+      - voice.env
+    environment:
+      # Имя сервиса PostgreSQL в сети clinic-vm_default
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      TELEPHONY_ENABLED: "${TELEPHONY_ENABLED:-true}"
+      # Asterisk на хосте: ARI слушает только адрес шлюза сети compose
+      TELEPHONY_ARI_URL: "http://${COMPOSE_GATEWAY:-172.18.0.1}:8090"
+      TELEPHONY_ASTERISK_RTP_HOST: "${COMPOSE_GATEWAY:-172.18.0.1}"
+      TELEPHONY_MEDIA_BIND: 0.0.0.0
+      # Пакет Asterisk из Ubuntu не принимает slin16 во внешнем медиаканале
+      TELEPHONY_MEDIA_FORMAT: ulaw
+      # Адресата перевода на шлюзе хакатона нет: перевод не дозвонится и прозвучит «звоните…»
+      TELEPHONY_OPERATOR_ENDPOINT: PJSIP/operator
+      VOICE_MODELS_DIR: /models
+      # Как у машины организаторов: два ядра на модели
+      VOICE_THREADS: "2"
+      # Публичный профиль: вход в веб и панель нельзя случайно выключить из .env
+      WEB_ACCESS_ENABLED: "true"
+    volumes:
+      # Каталог моделей проверяется по deploy/voice/models.sha256
+      - "${VOICE_MODELS_HOST:-../../models}:/models:ro"
+      # Журнал: задержки по репликам, без текстов разговора
+      - ./log.json:/etc/clinic/log.json:ro
+      # Индекс расписания публикует schedule-updater из deploy/vm; голос его только читает
+      - ../../data:/app/data
+    ports:
+      # Наружу голос не открыт: браузерный доступ — через backend и вход команды
+      - "127.0.0.1:8001:8001"
+    networks: [clinic]
+    init: true
+    restart: unless-stopped
+networks:
+  clinic:
+    # Сеть проекта deploy/vm: там PostgreSQL и backend
+    external: true
+    name: clinic-vm_default
