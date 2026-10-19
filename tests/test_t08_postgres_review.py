@@ -190,9 +190,7 @@ async def test_postgres_http_replay_of_final_callback_turn_returns_one_task(pg_e
         HandoffSettings(enabled=True, callback_enabled=True),
     )
     await _preempt_after_turns(dialogue_store, call)
-    event = SimpleNamespace(
-        attempt_id=f"{call}-attempt", call_id=call, route="R-08", priority="P3"
-    )
+    event = SimpleNamespace(attempt_id=f"{call}-attempt", call_id=call, route="R-08", priority="P3")
     await handoffs.transfer_started(event)
     await handoffs.transfer_result(
         SimpleNamespace(**vars(event), outcome="no_answer", reason="timeout")
@@ -679,9 +677,7 @@ async def test_enabled_operator_routes_require_team_login(pg_engine, tmp_path):
             queued = await service.callback_turn(event.call_id, Turn(turn_id=5, text="да"))
             assert queued.code == "CALLBACK_QUEUED"
             callback_request = await service.store.request_for_call(event.call_id)
-            task = await service.store.get_callback_task_by_request(
-                callback_request.request_id
-            )
+            task = await service.store.get_callback_task_by_request(callback_request.request_id)
             claimed = await service.operator_claim(task.task_id, "operator-a")
             stale = await client.post(
                 f"/api/operator/callbacks/{task.task_id}/attempts",

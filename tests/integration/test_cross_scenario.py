@@ -51,4 +51,6 @@ async def test_more_options_returns_a_new_page_without_repeating_slots():
         assert result.code in {"MORE_OPTIONS", "NO_MORE_OPTIONS"}
         if result.code == "MORE_OPTIONS":
             previous = {(slot.doctor_id, slot.scheduled_at) for slot in before.options}
-            assert all((slot.doctor_id, slot.scheduled_at) not in previous for slot in result.options)
+            assert all(
+                (slot.doctor_id, slot.scheduled_at) not in previous for slot in result.options
+            )

@@ -17,12 +17,24 @@ class CrossScenario(StrEnum):
 
 
 _PATTERNS = (
-    (CrossScenario.THIRD_PARTY, re.compile(r"\b(для мам|для ребен|для ребен|не для меня|за мам)\w*\b")),
-    (CrossScenario.SWITCH_CANCEL, re.compile(r"\b(отмените|отменить|отменяйте)\b.*\b(запис|прием|талон)\w*\b")),
-    (CrossScenario.SWITCH_VISITS, re.compile(r"\b(мои записи|какие у меня записи|покажите записи|мои приемы)\b")),
+    (
+        CrossScenario.THIRD_PARTY,
+        re.compile(r"\b(для мам|для ребен|для ребен|не для меня|за мам)\w*\b"),
+    ),
+    (
+        CrossScenario.SWITCH_CANCEL,
+        re.compile(r"\b(отмените|отменить|отменяйте)\b.*\b(запис|прием|талон)\w*\b"),
+    ),
+    (
+        CrossScenario.SWITCH_VISITS,
+        re.compile(r"\b(мои записи|какие у меня записи|покажите записи|мои приемы)\b"),
+    ),
     (CrossScenario.GOODBYE, re.compile(r"\b(до свидания|всего доброго|заканчиваем)\b")),
     (CrossScenario.WAIT, re.compile(r"\b(подождите|подожди|минутку|секундочку)\b")),
-    (CrossScenario.RESET, re.compile(r"\b(передумал[аи]?|давайте сначала|начн[её]м сначала|сначала)\b")),
+    (
+        CrossScenario.RESET,
+        re.compile(r"\b(передумал[аи]?|давайте сначала|начн[её]м сначала|сначала)\b"),
+    ),
     (
         CrossScenario.MORE_OPTIONS,
         re.compile(r"\b(еще|другие|какие|вариант)\b.*\bвариант(ы|ов)?\b|\bварианты\b"),

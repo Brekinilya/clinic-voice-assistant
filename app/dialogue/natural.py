@@ -342,7 +342,9 @@ class BookingConversation:
                 )
             await self.release_call(state.call_id)
             ended = await self.store.end(state.call_id)
-            return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+            return ended, reply(
+                ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED"
+            )
         if kind == CrossScenario.RESET:
             if state.phase in {
                 Phase.RECONCILING,
@@ -399,7 +401,12 @@ class BookingConversation:
                     "mis_wait_since": None,
                 }
             )
-            return state, reply(state, turn.turn_id, "Хорошо, начнём сначала. Чем могу помочь?", code="DIALOGUE_RESTARTED")
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо, начнём сначала. Чем могу помочь?",
+                code="DIALOGUE_RESTARTED",
+            )
         if kind == CrossScenario.MORE_OPTIONS:
             if state.phase == Phase.OFFERED and state.client_id is not None and state.specialty:
                 excluded = frozenset(
@@ -444,9 +451,7 @@ class BookingConversation:
             if state.phase in {Phase.HELD, Phase.CANCEL_CONFIRM, Phase.MOVE_CONFIRM}:
                 if state.misunderstandings >= 1:
                     return await self.transfer(state, turn, "R-05")
-                state = state.model_copy(
-                    update={"misunderstandings": 1, "authorization": None}
-                )
+                state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
                 return state, reply(
                     state,
                     turn.turn_id,

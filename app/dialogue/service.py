@@ -442,7 +442,9 @@ class DialogueService:
             if answer == "yes":
                 await self._release_call(state.call_id)
                 ended = await self.store.end(state.call_id)
-                return ended, reply(ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED")
+                return ended, reply(
+                    ended, turn.turn_id, "Спасибо за обращение. До свидания.", code="CALL_ENDED"
+                )
             if answer == "no":
                 state = state.model_copy(update={"end_confirmation_pending": False})
                 return state, reply(
@@ -458,15 +460,16 @@ class DialogueService:
                 code="END_CONFIRMATION_REQUIRED",
             )
         contextual_handler = getattr(self.conversation, "cross_scenario_reply", None)
-        if state.reminder is not None and contextual_handler is not None:
+        if state.reminder is not None:
+            # Outbound reminder phases own the current question, including the
+            # cancellation offer. Let ReminderConversation classify each turn.
+            if self.reminders is None:
+                raise DialogueError("OUTBOUND_NOT_CONFIGURED")
+            return await self.reminders.step(state, turn)
+        if contextual_handler is not None:
             contextual = await contextual_handler(state, turn)
             if contextual is not None:
                 return contextual
-        if state.reminder is not None:
-            if self.reminders is None:
-                # Сессия не получает прав после перезапуска без адаптера заданий.
-                raise DialogueError("OUTBOUND_NOT_CONFIGURED")
-            return await self.reminders.step(state, turn)
         if state.phase == Phase.HELD and state.proposal is not None:
             action = await self.booking.store.get(state.proposal.action_id)
             if action.state in {
