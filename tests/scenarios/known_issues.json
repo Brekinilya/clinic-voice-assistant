@@ -33,30 +33,6 @@
         }
       ]
     },
-    "D-04": {
-      "status": "fail",
-      "reason": "T20: отсутствует подтверждённая доставка SMS",
-      "findings": [
-        {
-          "code": "sms_delivery_T20",
-          "detail": "Не подключено требование: my_visits.sms_sent",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код INFO_GIVEN",
-          "kind": "fail",
-          "step": null
-        },
-        {
-          "code": "sms_delivery_T20",
-          "detail": "Нельзя подтвердить обязательный результат sms",
-          "kind": "unsupported",
-          "step": null
-        }
-      ]
-    },
     "D-05 сразу после приветствия": {
       "status": "unsupported",
       "reason": "T04/T08: есть запрос перевода, завершение и callback не подтверждены",

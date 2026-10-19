@@ -37,6 +37,11 @@ def spoken(result):
         ("Какие документы для прикрепления?", "attachment", "СНИЛС"),
         ("Пока не прикрепился, можно к врачу?", "before_attachment", "помощь оказывают всем"),
         ("Какой у вас адрес?", "address", "улица Центральная"),
+        (
+            "Сколько стоит приём?",
+            "price_unavailable",
+            "Точную стоимость приёма сейчас назвать не могу",
+        ),
         ("Что взять с собой на приём?", "visit_documents", "паспорт родителя"),
     ],
 )
@@ -173,6 +178,18 @@ async def test_information_at_booking_confirmation_preserves_hold_and_never_conf
         assert emulator.log[mark:] == [] and emulator.write_count == 0
         assert (await turn(client, 5, "Да"))["code"] == "BOOKED"
         assert emulator.write_count == 1
+
+
+async def test_price_fallback_during_booking_preserves_hold_and_confirmation_question():
+    async with pipeline() as (client, service, emulator, *_):
+        held = await reserve(client)
+        answer = await turn(client, 4, "Сколько стоит приём?")
+        assert answer["code"] == "INFO_GIVEN" and answer["phase"] == "held"
+        assert answer["proposal"] == held["proposal"]
+        assert "Точную стоимость приёма сейчас назвать не могу" in spoken(answer)
+        assert "Подтверждаете" in spoken(answer) or "Верно" in spoken(answer)
+        assert emulator.write_count == 0
+        assert (await turn(client, 5, "Да"))["code"] == "BOOKED"
 
 
 async def test_lab_clarification_yes_cannot_confirm_a_booking():

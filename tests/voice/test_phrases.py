@@ -87,7 +87,12 @@ def test_outbound_phrases_without_personal_data(book):
 
 def test_third_party_gets_no_details(book):
     # контрольный диалог 4
-    assert book.get("my_visits.third_party").placeholders() == []
+    phrase = book.get("my_visits.third_party")
+    assert phrase.placeholders() == []
+    assert "запрос подготовлен" in phrase.text.casefold()
+    assert "sms" not in phrase.text.casefold()
+    with pytest.raises(KeyError):
+        book.get("my_visits.sms_sent")
 
 
 def test_honest_robot_answer(book):

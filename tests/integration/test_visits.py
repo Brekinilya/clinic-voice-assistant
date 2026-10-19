@@ -1,11 +1,12 @@
 """Справка через HTTP: принадлежность, будущие записи, свежесть и сохранённые страницы."""
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from fixture_bridge import pipeline, turn
 
+from app.dialogue.visit_text import appointment_text, room_text
 from app.mis.budget import MemoryBudget
 from app.mis.models import VisitStatus, parse_date
 from app.mis.ports import BudgetExhausted, MisUnavailable
@@ -98,6 +99,26 @@ async def test_existing_visits_are_not_limited_by_booking_horizon():
         result = await turn(client, 2, IDENTITY)
         assert [v["visit_id"] for v in result["visits"]] == [3, 4]
         assert emulator.write_count == 0
+
+
+async def test_multiple_visits_are_spoken_as_specialty_doctor_date_time_and_room():
+    async with pipeline(records("05.10.2026 13:20", "06.10.2026 10:15")) as (
+        client,
+        _,
+        _,
+        *_,
+    ):
+        await turn(client, 1, REQUEST)
+        result = await turn(client, 2, IDENTITY)
+        spoken = " ".join(result["utterances"]).casefold()
+        assert result["code"] == "INFO_GIVEN"
+        assert len(result["visits"]) == 2
+        for visit in result["visits"]:
+            assert visit["specialty"].casefold() in spoken
+            assert visit["doctor_name"].casefold() in spoken
+            moment = datetime.fromisoformat(visit["scheduled_at"])
+            assert all(part.casefold() in spoken for part in appointment_text(moment))
+            assert room_text(visit["room"]).casefold() in spoken
 
 
 async def test_specialty_refinement_keeps_query_instead_of_starting_booking():

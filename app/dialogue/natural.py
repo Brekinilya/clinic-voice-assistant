@@ -367,6 +367,12 @@ class BookingConversation:
         if kind is None:
             return None
         if kind == CrossScenario.REPEAT:
+            if state.information_topic is not None:
+                information_reply = await self.information.step(state, turn)
+                if information_reply is not None:
+                    return information_reply
+            if state.phase == Phase.VISITS_SHOWN:
+                return await self.visits.show(state, turn)
             question = self.information.resume_question(state, turn)
             if not question:
                 question = self.information_continuation(state, turn)
@@ -374,8 +380,6 @@ class BookingConversation:
                 question = ("Повторите, пожалуйста, ответ на текущий вопрос.",)
             return state, reply(state, turn.turn_id, *question, code="CURRENT_PROMPT_REPEATED")
         if kind == CrossScenario.OTHER_DAY:
-            if state.purpose == "reschedule":
-                return None
             kind = CrossScenario.MORE_OPTIONS
         if kind == CrossScenario.WAIT:
             return state, reply(
@@ -578,6 +582,10 @@ class BookingConversation:
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
         emit("nlu.parsed", **result.model_dump(mode="json", exclude={"call_id", "turn_id"}))
+        if self.information.service.find(turn.text) == "price_unavailable":
+            price_reply = await self.information.step(state, turn)
+            if price_reply is not None:
+                return price_reply
         decision = self.safety.evaluate(state.call_id, turn, result.flags)
         transfer = route_for(decision)
         if transfer:
