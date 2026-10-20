@@ -115,6 +115,46 @@ async def test_only_unambiguous_addressee_answer_reveals_details(reminder_engine
         assert not actions.calls and emulator.patch_count == emulator.write_count == 0
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_code"),
+    [
+        ("Я передумал", "REMINDER_RESTART"),
+        ("Давайте сначала", "REMINDER_RESTART"),
+        ("А какие ещё есть варианты?", "REMINDER_VERIFY_REQUIRED"),
+    ],
+)
+async def test_cross_scenario_replies_do_not_disclose_before_addressee_verification(
+    reminder_engine, text, expected_code
+):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context, verify=False)
+        result = await turn(client, 2, text)
+        assert result["code"] == expected_code
+        assert "терапевт" not in " ".join(result["utterances"])
+        assert not actions.calls and emulator.patch_count == emulator.write_count == 0
+
+
+@pytest.mark.parametrize("text", ["Я передумал", "Давайте сначала"])
+async def test_cross_scenario_replies_in_details_keep_mis_read_only(reminder_engine, text):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context)
+        result = await turn(client, 3, text)
+        state = await service.store.inspect("scenario")
+        assert result["code"] == "REMINDER_RESTART"
+        assert state.phase == Phase.REMIND_DETAILS
+        assert result["reminder_result"] is None
+        assert not actions.calls and emulator.patch_count == emulator.write_count == 0
+
+
+async def test_more_options_in_details_explains_available_reminder_actions(reminder_engine):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context)
+        result = await turn(client, 3, "А какие ещё есть варианты?")
+        assert result["code"] == "REMINDER_OPTIONS_CONTEXT"
+        assert "перенос" in " ".join(result["utterances"])
+        assert not actions.calls and emulator.patch_count == emulator.write_count == 0
+
+
 async def test_third_party_during_reminder_is_transferred_without_disclosure(reminder_engine):
     async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
         await opened(service, context, verify=False)
@@ -280,6 +320,33 @@ async def test_one_move_option_yes_selects_it_but_does_not_write(reminder_engine
         assert emulator.write_count == emulator.patch_count == 0
         result = await turn(client, 5, "Да")
         assert result["reminder_result"]["outcome"] == "RESCHEDULED"
+
+
+async def test_more_options_after_move_confirmation_aborts_old_proposal(reminder_engine):
+    async with outgoing(reminder_engine) as (client, service, emulator, _, context):
+        service.booking.schedule._slots = tuple(
+            slot
+            for slot in service.booking.schedule.slots()
+            if slot.doctor_id == context.visit.doctor_id and slot.scheduled_at.day == 6
+        )
+        await opened(service, context)
+        offered = await turn(client, 3, "Перенесите на следующую неделю")
+        assert len(offered["options"]) == 1
+        prepared = await turn(client, 4, "Да")
+        assert prepared["code"] == "MOVE_CONFIRMATION_REQUIRED"
+        assert emulator.write_count == emulator.patch_count == 0
+
+        requested = await turn(client, 5, "А какие ещё есть варианты?")
+        assert requested["code"] == "MOVE_MORE_OPTIONS_CONTEXT"
+        assert requested["phase"] == "move_offered"
+        assert requested["move_proposal"] is None
+        assert requested["options"] == []
+        assert emulator.write_count == emulator.patch_count == 0
+
+        answer = await turn(client, 6, "Да")
+        assert answer["phase"] != "ended"
+        assert answer.get("reminder_result") is None
+        assert emulator.write_count == emulator.patch_count == 0
 
 
 async def test_no_with_new_date_refines_move_instead_of_ending_call(reminder_engine):
