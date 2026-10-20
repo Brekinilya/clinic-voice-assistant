@@ -322,6 +322,33 @@ async def test_one_move_option_yes_selects_it_but_does_not_write(reminder_engine
         assert result["reminder_result"]["outcome"] == "RESCHEDULED"
 
 
+async def test_more_options_after_move_confirmation_aborts_old_proposal(reminder_engine):
+    async with outgoing(reminder_engine) as (client, service, emulator, _, context):
+        service.booking.schedule._slots = tuple(
+            slot
+            for slot in service.booking.schedule.slots()
+            if slot.doctor_id == context.visit.doctor_id and slot.scheduled_at.day == 6
+        )
+        await opened(service, context)
+        offered = await turn(client, 3, "Перенесите на следующую неделю")
+        assert len(offered["options"]) == 1
+        prepared = await turn(client, 4, "Да")
+        assert prepared["code"] == "MOVE_CONFIRMATION_REQUIRED"
+        assert emulator.write_count == emulator.patch_count == 0
+
+        requested = await turn(client, 5, "А какие ещё есть варианты?")
+        assert requested["code"] == "MOVE_MORE_OPTIONS_CONTEXT"
+        assert requested["phase"] == "move_offered"
+        assert requested["move_proposal"] is None
+        assert requested["options"] == []
+        assert emulator.write_count == emulator.patch_count == 0
+
+        answer = await turn(client, 6, "Да")
+        assert answer["phase"] != "ended"
+        assert answer.get("reminder_result") is None
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 async def test_no_with_new_date_refines_move_instead_of_ending_call(reminder_engine):
     async with outgoing(reminder_engine) as (client, service, emulator, _, context):
         await opened(service, context)
