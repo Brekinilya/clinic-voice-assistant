@@ -35,6 +35,8 @@ def check(settings: VoiceSettings, *, warm_up=False):
             pass
         files.append(item)
     result = {
+        # Распознавание и синтез только локально: другое значение настройка не примет
+        "speech_processing": settings.speech_processing,
         "packages": packages,
         "models": files,
         "inputs_present": False,

@@ -1,8 +1,9 @@
 """Настройки голосового шлюза: пути к моделям и пороги разговора (переменные VOICE_*)."""
 
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,10 @@ class VoiceSettings(BaseSettings):
         env_prefix="VOICE_", env_file=".env", env_file_encoding="utf-8", extra="ignore", frozen=True
     )
 
+    # Условия кейса и 152-ФЗ: голос пациента не покидает контур. Распознавание и синтез — только
+    # локальные модели на CPU; облачных движков в коде нет, и выбрать их настройкой нельзя:
+    # любое другое значение VOICE_SPEECH_PROCESSING — ошибка запуска.
+    speech_processing: Literal["local"] = "local"
     models_dir: Path = Path("models")
     vad_model: str = "silero/silero_vad.onnx"
     asr_model: str = "gigaam/v3_ctc_onnx/v3_ctc_int8.onnx"
@@ -47,6 +52,16 @@ class VoiceSettings(BaseSettings):
     dialogue_job_capacity: int = Field(default=4, ge=1, le=32)
     # Не копируем в буфер произвольно большой пакет: при перегрузке требуется новый звонок.
     max_audio_chunk_bytes: int = Field(default=524288, ge=1024, le=1048576)
+
+    @field_validator(
+        "models_dir", "vad_model", "asr_model", "asr_config", "tts_model", mode="before"
+    )
+    @classmethod
+    def from_disk(cls, value):
+        # Модели читаются только с диска: адрес вместо пути — попытка загрузки по сети
+        if "://" in str(value):
+            raise ValueError("модели загружаются только с локального диска, адреса запрещены")
+        return value
 
     def path(self, relative: str) -> Path:
         return self.models_dir / relative
