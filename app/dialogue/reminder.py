@@ -339,7 +339,7 @@ class ReminderConversation:
             and state.phase in {Phase.MOVE_SOURCE, Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}
         ):
             if state.phase == Phase.MOVE_CONFIRM and self.conversation.rescheduling is not None:
-                await self.conversation.rescheduling.store.release_call(state.call_id)
+                await self.conversation.rescheduling.service.store.release_call(state.call_id)
                 state = state.model_copy(
                     update={
                         "phase": Phase.MOVE_OFFERED,
