@@ -227,6 +227,18 @@ uv run python -m app.reminders.cli jobs --day 2026-10-20
 
 ### Проверки и ограничения
 
+Все проверки CI одной командой — нужен только Docker, без `.env` и своей PostgreSQL:
+
+```bash
+docker compose -f compose.test.yaml run --rm tests
+```
+
+Внутри — одноразовая PostgreSQL в памяти, ruff, форматирование и весь pytest, включая голос
+(модели не скачиваются). Часть тестов: `-e PYTEST_ARGS="tests/voice"`. Убрать за собой:
+`docker compose -f compose.test.yaml down -v`.
+
+То же без Docker:
+
 ```bash
 uv sync --locked --extra voice
 uv run --no-sync ruff check .
