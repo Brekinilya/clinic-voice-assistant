@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.mis.models import (
     COMMENT_LIMIT,
     Client,
+    ClientCreate,
     Doctor,
     Escalation,
     EscalationCreate,
@@ -108,6 +109,24 @@ class MisEmulator:
                             ],
                         )
                     return self._list(path[0], token, query)
+                if path == ["clients"] and request.method == "POST":
+                    data = ClientCreate.model_validate(json.loads(request.content))
+                    key = (data.last_name, data.first_name, data.birth_date)
+                    for known in self.clients[token].values():
+                        if (known.last_name, known.first_name, known.birth_date) == key:
+                            return httpx.Response(200, json=known.model_dump(mode="json"))
+                    client = Client(
+                        id=max(self.clients[token], default=0) + 1,
+                        last_name=data.last_name,
+                        first_name=data.first_name,
+                        middle_name=data.middle_name,
+                        birth_date=data.birth_date,
+                        comment=data.comment,
+                        created_at=self.clock.now().replace(second=0, microsecond=0),
+                    )
+                    self.clients[token][client.id] = client
+                    self.write_count += 1
+                    return httpx.Response(201, json=client.model_dump(mode="json"))
                 if path == ["escalations"] and request.method == "POST":
                     payload = json.loads(request.content)
                     data = EscalationCreate.model_validate(

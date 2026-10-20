@@ -124,6 +124,16 @@ class VisitCreate(MisModel):
 COMMENT_LIMIT = 1000
 
 
+class ClientCreate(MisModel):
+    """Тело POST /clients. Ключ — фамилия, имя и дата рождения: повтор отдаёт ту же карточку."""
+
+    last_name: Name = Field(repr=False)
+    first_name: Name = Field(repr=False)
+    middle_name: str | None = Field(default=None, repr=False)
+    birth_date: MisDate = Field(repr=False)
+    comment: str | None = Field(default=None, max_length=COMMENT_LIMIT, repr=False)
+
+
 class ClientComment(MisModel):
     """Тело PATCH /clients/{id}: комментарий заменяется целиком, null его стирает."""
 
