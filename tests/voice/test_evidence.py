@@ -48,6 +48,8 @@ def test_cli_writes_the_report_for_the_scenario_runner(tmp_path, monkeypatch):
     )
     assert document["engines"]["sip"] is None and document["source"]["commit"]
     assert "R-17" in (tmp_path / "voice_evidence.md").read_text("utf-8")
+
+
 def test_matching_voice_evidence_removes_only_its_unsupported_finding(tmp_path):
     result = DialogResult("D-13", "D-13 в часы работы регистратуры — перевод", False)
     result.add("intermediate_wait_prompt_T03_T05", "wait phrase is checked by voice", "unsupported")
