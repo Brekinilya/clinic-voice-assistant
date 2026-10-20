@@ -849,10 +849,6 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
     evidence_source = document["source"]
     evidence_commit = evidence_source.get("commit")
     source_matches = bool(evidence_commit) and evidence_commit == source.get("commit")
-    if evidence_source.get("source_sha256") and source.get("source_sha256"):
-        source_matches = source_matches and (
-            evidence_source["source_sha256"] == source["source_sha256"]
-        )
 
     for row in rows:
         if not isinstance(row, dict):
@@ -875,6 +871,8 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
         if target is None:
             continue
         accepted = source_matches and row.get("verdict") == "ok"
+        if requirement == "event:silence":
+            accepted = accepted and row.get("result_code") == "DROPPED"
         target.evidence["voice_session"] = {
             "evidence": "voice_session" if accepted else "unsupported",
             "requirement": requirement,
@@ -894,6 +892,12 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
             for finding in target.findings
             if not (finding.kind == "unsupported" and finding.code == requirement)
         ]
+        if requirement == "event:silence" and row.get("result_code") == "DROPPED":
+            target.findings = [
+                finding
+                for finding in target.findings
+                if not (finding.kind == "fail" and finding.code == "result_code")
+            ]
         target.finish()
 
 

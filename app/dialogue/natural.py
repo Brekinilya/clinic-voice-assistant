@@ -8,6 +8,7 @@ from typing import Literal
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
+from app.clock import CLINIC_TIMEZONE
 from app.cancellation.models import CancelState
 from app.cancellation.service import CancellationService
 from app.contracts import NluResult, SafetyDecision
@@ -26,6 +27,7 @@ from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
 from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
+from app.policies.safety import operators_on_duty
 from app.dialogue.transitions import handoff_reply
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
@@ -254,9 +256,28 @@ class BookingConversation:
         route: str,
         priority: Literal["P1", "P2", "P3"] = "P3",
         *,
-        reason: Literal["move_create_rejected", "move_manual", "mis_wait", "paper_referral"]
+        reason: Literal[
+            "move_create_rejected",
+            "move_manual",
+            "mis_wait",
+            "mis_unknown",
+            "privacy",
+            "paper_referral",
+        ]
         | None = None,
     ) -> tuple[DialogueState, Reply]:
+        if reason == "mis_unknown" and self.handoffs is not None:
+            action_id = state.proposal.action_id if state.proposal else "unknown"
+            await self.handoffs.ensure_request(
+                state.call_id,
+                route,
+                priority,
+                state,
+                summary_override=(
+                    "Неизвестен результат записи; требуется сверка операции "
+                    f"{action_id}"
+                ),
+            )
         state = await self.store.preempt(
             state.call_id,
             turn.turn_id,
@@ -264,6 +285,39 @@ class BookingConversation:
         )
         await self.release_call(state.call_id)
         return state, handoff_reply(state, turn.turn_id)
+
+    @staticmethod
+    def _catalog_route(text: str) -> str | None:
+        """Resolve narrow destinations inside the otherwise broad I-08/I-14 classes."""
+        value = text.casefold()
+        if any(
+            term in value
+            for term in (
+                "полиция",
+                "звоню из организации",
+                "звоню от организации",
+                "это страховая",
+                "представляю страховую",
+                "прокуратур",
+            )
+        ):
+            return "R-14"
+        if any(
+            term in value
+            for term in (
+                "персональн",
+                "отозвать согласие",
+                "информация о пациенте",
+                "данные о пациенте",
+            )
+        ):
+            return "R-16"
+        if any(
+            term in value
+            for term in ("медкомисси", "медицинскую комисси", "по дмс", "дмс")
+        ):
+            return "R-10"
+        return None
 
     async def offer(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         await self.booking.store.release_call_holds(state.call_id)
@@ -884,10 +938,19 @@ class BookingConversation:
         except BookingError as error:
             if str(error) != "IDENTIFICATION_REQUIRED":
                 raise
+            attempts = state.identity_attempts + 1
+            state = state.model_copy(
+                update={"identity_attempts": attempts, "identity_draft": None}
+            )
+            prompt = (
+                load_phrasebook().get("ident.ask_policy").text
+                if attempts >= 2
+                else "Не удалось однозначно найти пациента. Назовите ФИО и дату рождения ещё раз."
+            )
             return state, reply(
                 state,
                 turn.turn_id,
-                "Не удалось однозначно найти пациента. Назовите ФИО и дату рождения ещё раз.",
+                prompt,
                 code="IDENTIFICATION_REQUIRED",
             )
 
@@ -1179,6 +1242,15 @@ class BookingConversation:
                         *(referral_done or (FOLLOW_UP_QUESTION,)),
                         code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                     )
+                if (
+                    action.state == ActionState.RECONCILING
+                    and operators_on_duty(
+                        self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
+                    )
+                ):
+                    return await self.transfer(
+                        state, turn, "R-06", "P3", reason="mis_unknown"
+                    )
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
                 return state, reply(
                     state,
@@ -1190,7 +1262,9 @@ class BookingConversation:
         if state.phase == Phase.RECONCILING:
             if "no" in intents or intents & {"I-01", "I-02", "I-03"}:
                 # Уже отправленная операция не отменяется местным снятием брони.
-                return await self.transfer(state, turn, "R-08")
+                return await self.transfer(
+                    state, turn, "R-06", "P3", reason="mis_unknown"
+                )
             return state, reply(
                 state,
                 turn.turn_id,
@@ -1216,6 +1290,9 @@ class BookingConversation:
                     FOLLOW_UP_QUESTION,
                     code="MORE_HELP_OFFERED",
                 )
+        subroute = self._catalog_route(turn.text)
+        if subroute is not None:
+            return await self.transfer(state, turn, subroute)
         if intents & {
             "I-02",
             "I-03",

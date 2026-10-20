@@ -15,6 +15,7 @@ from app.dialogue.visit_text import appointment_text, room_text
 from app.mis.ports import MisError
 from app.visits.models import VisitQuery
 from app.visits.service import VisitService
+from app.voice.phrases import load_phrasebook
 
 TransferHandler = Callable[[DialogueState, Turn, str], Awaitable[tuple[DialogueState, Reply]]]
 
@@ -112,7 +113,7 @@ class VisitConversation:
         return await self.show(state, turn)
 
     async def privacy_transfer(self, state: DialogueState, turn: Turn):
-        state, _ = await self.transfer(state, turn, "R-16")
+        state, _ = await self.transfer(state, turn, "R-16", reason="privacy")
         return state, reply(
             state,
             turn.turn_id,
@@ -227,7 +228,15 @@ class VisitConversation:
             except BookingError:
                 attempts = state.identity_attempts + 1
                 if attempts >= 2:
-                    return await self.transfer(state, turn, "R-07")
+                    state = state.model_copy(
+                        update={"identity_attempts": attempts, "client_id": None}
+                    )
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        load_phrasebook().get("ident.ask_policy").text,
+                        code="IDENTIFICATION_POLICY_REQUIRED",
+                    )
                 state = state.model_copy(update={"identity_attempts": attempts, "client_id": None})
                 return state, reply(
                     state,

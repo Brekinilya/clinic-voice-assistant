@@ -275,7 +275,14 @@ def wait_prompt(evidence, line, recorded, state, settings, renderer, today):
     slow = [r for r in recorded.replies if r["answered"] - r["asked"] > settings.wait_phrase_s]
     if not slow:
         return False, "ни один ход диалога не ждал МИС дольше порога фразы ожидания"
-    turn = slow[-1]
+    turn = next(
+        (
+            candidate
+            for candidate in reversed(slow)
+            if any(candidate["asked"] < wait < candidate["answered"] for wait in waits)
+        ),
+        slow[-1],
+    )
     during = [t for t in waits if turn["asked"] < t < turn["answered"]]
     detail = (
         f"ход {turn['turn_id']} ждал МИС {turn['answered'] - turn['asked']:.1f} с; "

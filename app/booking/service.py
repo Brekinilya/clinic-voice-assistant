@@ -51,6 +51,41 @@ class BookingService:
         self.clock = clock
         self.require_dialogue_guard = require_dialogue_guard
         self.operations = operations
+        # Reuse a recent superset when successive option queries narrow the same call's
+        # dates; the MIS client cache is keyed by exact date bounds.
+        self._option_visit_cache: dict[int, tuple[datetime, date, date, tuple[Visit, ...]]] = {}
+
+    async def _option_visits(
+        self, doctor_id: int, date_from: date, date_to: date, call_id: str | None
+    ) -> tuple[Visit, ...]:
+        now = self.clock.now()
+        cached = self._option_visit_cache.get(doctor_id)
+        if (
+            cached is not None
+            and cached[0] > now
+            and cached[1] <= date_from <= date_to <= cached[2]
+        ):
+            return tuple(
+                visit
+                for visit in cached[3]
+                if date_from <= visit.scheduled_at.date() <= date_to
+            )
+        visits = tuple(
+            await self.mis.visits(
+                doctor_id=doctor_id,
+                status=VisitStatus.PLANNED,
+                date_from=date_from,
+                date_to=date_to,
+                call_id=call_id,
+            )
+        )
+        self._option_visit_cache[doctor_id] = (
+            now + timedelta(seconds=90),
+            date_from,
+            date_to,
+            visits,
+        )
+        return visits
 
     async def identify(
         self, last_name: str, first_name: str, middle_name: str | None, birth_date: date
@@ -159,12 +194,8 @@ class BookingService:
                 # Занятость читаем только за дни ближайших нужных вариантов этого врача:
                 # две недели загруженного врача — много страниц из бюджета на 8 запросов.
                 days = upcoming_days(eligible[index:], slot.doctor_id, limit)
-                visits = await self.mis.visits(
-                    doctor_id=slot.doctor_id,
-                    status=VisitStatus.PLANNED,
-                    date_from=min(days),
-                    date_to=max(days),
-                    call_id=call_id,
+                visits = await self._option_visits(
+                    slot.doctor_id, min(days), max(days), call_id
                 )
                 busy.update((v.doctor.id, v.scheduled_at) for v in visits)
                 checked.update(
@@ -270,6 +301,7 @@ class BookingService:
         # Такой исход тоже требует сверки, даже если HTTP ещё не успел отправиться.
         if not self._matches(action, visit):
             return await self.store.finish(action.action_id, ActionState.RECONCILING)
+        self._option_visit_cache.pop(action.slot.doctor_id, None)
         return await self.store.finish(action.action_id, ActionState.BOOKED, visit.id)
 
     @staticmethod

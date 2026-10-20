@@ -293,8 +293,8 @@ def say_digits(text: str, today: date) -> str:
 
     def number(m: re.Match) -> str:
         digits, space, noun = m.group(1), m.group(2), m.group(3)
-        # Ð¢ÐµÐ»ÐµÑ„Ð¾Ð½Ñ‹ Ð¸ Ð´Ñ€ÑƒÐ³Ð¸Ðµ Ð´Ð»Ð¸Ð½Ð½Ñ‹Ðµ Ð¸Ð´ÐµÐ½Ñ‚Ð¸Ñ„Ð¸ÐºÐ°Ñ‚Ð¾Ñ€Ñ‹ Ñ‡Ð¸Ñ‚Ð°ÐµÐ¼ Ð¿Ð¾ Ñ†Ð¸Ñ„Ñ€Ðµ,
-        # Ð¸Ð½Ð°Ñ‡Ðµ cardinal Ð¾Ñ‚ÐºÐ»Ð¾Ð½Ð¸Ñ‚ Ð·Ð½Ð°Ñ‡ÐµÐ½Ð¸Ðµ Ð¸Ð»Ð¸ Ð¾Ð·Ð²ÑƒÑ‡Ð¸Ñ‚ ÐµÐ³Ð¾ ÐºÐ°Ðº Ð¾Ð±Ñ‹Ñ‡Ð½Ð¾Ðµ Ñ‡Ð¸ÑÐ»Ð¾.
+        # Телефоны и другие длинные идентификаторы читаем по цифре, иначе
+        # cardinal отклонит значение или озвучит его как обычное число.
         if len(digits) >= 10:
             return " ".join(cardinal(int(digit)) for digit in digits)
         value = int(digits)

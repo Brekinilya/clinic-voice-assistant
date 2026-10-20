@@ -90,9 +90,10 @@ class TransferRequest(BookingModel):
     priority: Literal["P1", "P2", "P3"]
     status: Literal["requested"] = "requested"
     action_id: str | None = None
-    reason: Literal["move_create_rejected", "move_manual", "mis_wait", "paper_referral"] | None = (
-        None
-    )
+    reason: Literal[
+        "move_create_rejected", "move_manual", "mis_wait", "mis_unknown", "privacy",
+        "paper_referral"
+    ] | None = None
 
 
 class DialogueState(BookingModel):

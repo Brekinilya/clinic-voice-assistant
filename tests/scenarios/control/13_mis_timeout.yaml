@@ -26,7 +26,10 @@ dialogs:
         parse: {expect: choice, options: ["02.10.2026 10:30", "02.10.2026 15:15"], choice_index: 1}
         say: booking.confirm
       - patient: Да
-        say: [wait.schedule, transfer.mis_down]
+        say: wait.schedule
+        code: RECONCILING
+      - patient: На когда я записан?
+        say: transfer.mis_down
         transfer: {route: R-06, priority: P3}
     result:
       code: ESCALATED

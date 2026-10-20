@@ -3,18 +3,6 @@
   "baseline_commit": "b29e1cdbe08b9f92fb3a6343d85fbf0e11ac4435",
   "note": "Это список известных проблем, не пройденных требований.",
   "dialogs": {
-    "D-04": {
-      "status": "fail",
-      "reason": "T20: отсутствует подтверждённая доставка SMS",
-      "findings": [
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код PRIVACY_RESTRICTED",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
     "D-10": {
       "status": "unsupported",
       "reason": "T11: неправильный адресат и отсутствие изменений проверены; доставка SMS T20 не реализована",
@@ -28,15 +16,9 @@
       ]
     },
     "D-13 в часы работы регистратуры — перевод": {
-      "status": "fail",
-      "reason": "T05/T06/T08: неизвестный исход не дублируется, но полный маршрут отказа не завершён",
+      "status": "unsupported",
+      "reason": "T08: маршрут R-06/P3 и карточка созданы; промежуточная голосовая фраза ожидания не подтверждена текстовым сценарием",
       "findings": [
-        {
-          "code": "transfer",
-          "detail": "Ожидается R-06/P3",
-          "kind": "fail",
-          "step": 5
-        },
         {
           "code": "intermediate_wait_prompt_T03_T05",
           "detail": "Не подключено требование: wait.schedule",
@@ -44,22 +26,10 @@
           "step": 5
         },
         {
-          "code": "handoff:transfer.mis_down",
-          "detail": "В ответе отсутствует запрос перевода",
-          "kind": "fail",
-          "step": 5
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код ESCALATED",
-          "kind": "fail",
+          "code": "handoff_completion_T08_T04",
+          "detail": "В YAML не задан исход перевода; результат связи не подтверждён",
+          "kind": "unsupported",
           "step": null
-        },
-        {
-          "code": "operator_card_T08",
-          "detail": "HandoffService не сохранил карточку перевода",
-          "kind": "fail",
-          "step": 4
         }
       ]
     },
@@ -120,18 +90,6 @@
           "detail": "Не получен итоговый код INFO_GIVEN",
           "kind": "fail",
           "step": null
-        }
-      ]
-    },
-    "M-09 ДМС": {
-      "status": "fail",
-      "reason": "T09: платный справочный маршрут не завершён; оплату не разрабатываем",
-      "findings": [
-        {
-          "code": "transfer",
-          "detail": "Ожидается R-10/P3",
-          "kind": "fail",
-          "step": 2
         }
       ]
     },
@@ -201,18 +159,6 @@
         }
       ]
     },
-    "R-07": {
-      "status": "fail",
-      "reason": "T10/T08: понятный отказ идентификации исправлен; запрос полиса, результат перевода и карточка пока не завершены",
-      "findings": [
-        {
-          "code": "text:ident.ask_policy",
-          "detail": "Не прозвучало обязательное уточнение",
-          "kind": "fail",
-          "step": 4
-        }
-      ]
-    },
     "R-17": {
       "status": "fail",
       "reason": "Граница текстового API: голосовое событие тишины через него не передаётся",
@@ -234,72 +180,6 @@
           "detail": "Не получен итоговый код DROPPED",
           "kind": "fail",
           "step": null
-        }
-      ]
-    },
-    "R-OTHER медкомиссия (R-10)": {
-      "status": "fail",
-      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
-      "findings": [
-        {
-          "code": "transfer",
-          "detail": "Ожидается R-10/P3",
-          "kind": "fail",
-          "step": 2
-        }
-      ]
-    },
-    "R-OTHER звонок от организации (R-14)": {
-      "status": "fail",
-      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
-      "findings": [
-        {
-          "code": "transfer",
-          "detail": "Ожидается R-14/P3",
-          "kind": "fail",
-          "step": 2
-        }
-      ]
-    },
-    "R-OTHER персональные данные (R-16)": {
-      "status": "fail",
-      "reason": "T09/T04/T08: справочные маршруты либо их завершение ещё не подтверждены",
-      "findings": [
-        {
-          "code": "transfer",
-          "detail": "Ожидается R-16/P3",
-          "kind": "fail",
-          "step": 2
-        }
-      ]
-    },
-    "REG-T05 неизвестный пациент → исправление → пятница": {
-      "status": "fail",
-      "reason": "T05/T07: при 85 однотипных врачах и двух фоновых GET подбор ждёт окно; отказ идентификации теперь объясняется правильно",
-      "findings": [
-        {
-          "code": "phase:booking.offer_first",
-          "detail": "Получено состояние identified",
-          "kind": "fail",
-          "step": 3
-        },
-        {
-          "code": "offer_unavailable",
-          "detail": "Вместо вариантов получен WAIT_MIS",
-          "kind": "fail",
-          "step": 3
-        },
-        {
-          "code": "phase:booking.offer_period",
-          "detail": "Получено состояние identified",
-          "kind": "fail",
-          "step": 4
-        },
-        {
-          "code": "offer_unavailable",
-          "detail": "Вместо вариантов получен WAIT_MIS",
-          "kind": "fail",
-          "step": 4
         }
       ]
     }
