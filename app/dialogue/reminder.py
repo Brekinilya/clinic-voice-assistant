@@ -344,10 +344,15 @@ class ReminderConversation:
                 "Чтобы подобрать другой вариант, назовите день или время. Текущий вариант не подтверждён; прежняя запись сохранена.",
                 code="MOVE_MORE_OPTIONS_CONTEXT",
             )
-        if cross_scenario == CrossScenario.RESET and state.phase not in {
-            Phase.CANCEL_RECONCILING,
-            Phase.MOVE_PENDING,
-        } and state.reminder is not None:
+        if (
+            cross_scenario == CrossScenario.RESET
+            and state.phase
+            not in {
+                Phase.CANCEL_RECONCILING,
+                Phase.MOVE_PENDING,
+            }
+            and state.reminder is not None
+        ):
             if await self._pending(state):
                 return await self.handoff(state, turn, "R-16")
             return state, reply(
