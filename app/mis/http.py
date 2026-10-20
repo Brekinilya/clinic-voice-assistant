@@ -6,6 +6,7 @@
 
 import hashlib
 import math
+import weakref
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -82,6 +83,7 @@ class _Partial:
 
 
 _prepaid: ContextVar[_Prepaid | None] = ContextVar("mis_prepaid", default=None)
+_shared_doctor_caches: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class HttpMedicalSystem:
@@ -96,8 +98,14 @@ class HttpMedicalSystem:
         self._client = client
         self._budget = budget
         self._elapsed = elapsed
-        self._doctor_cache: dict[tuple[str, str | None], tuple[float, tuple[Doctor, ...]]] = {}
-        self._directory: dict[str, tuple[Doctor, ...]] = {}
+        # MIS adapters using the same authenticated HTTP client share the directory cache.
+        # This lets a background catalogue read serve the live dialogue without repeating
+        # paginated GETs against the same quota.
+        caches = _shared_doctor_caches.get(client)
+        if caches is None:
+            caches = ({}, {})
+            _shared_doctor_caches[client] = caches
+        self._doctor_cache, self._directory = caches
         self._client_cache: dict[tuple[str, int], tuple[float, Client]] = {}
         self._visit_cache: dict[
             tuple[str, str, int | None, int | None, VisitStatus | None, date | None, date | None],

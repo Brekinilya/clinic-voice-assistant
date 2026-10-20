@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from app.clock import CLINIC_TIMEZONE
 from app.nlu.dictionaries import CONFIG_DIR, load_specialties
 from app.nlu.lexicon import morph
 from app.voice.numerals import CASES, agreement, cardinal, ordinal
@@ -215,6 +216,19 @@ def say_specialty(name: str, form: str = "") -> str:
 
 def say_options(options: Sequence, today: date | None = None) -> str:
     """Варианты через запятую и «или». Врача и специальность называем, только если они различаются."""
+    if options and all(
+        hasattr(option, "doctor_name") and hasattr(option, "scheduled_at") for option in options
+    ):
+        visits = []
+        for option in options:
+            appointment = option.scheduled_at.astimezone(CLINIC_TIMEZONE)
+            doctor = say_person(option.doctor_name, "datv", surname_only=True)
+            specialty = say_specialty(option.specialty, "datv")
+            visits.append(
+                f"{specialty}, {doctor}, {say_date(appointment.date(), 'gent', today)}, "
+                f"{say_time(appointment.time())}"
+            )
+        return f"{', '.join(visits[:-1])} или {visits[-1]}" if len(visits) > 1 else visits[0]
     specialties = {o.specialty for o in options if getattr(o, "specialty", None)}
     doctors = {o.doctor for o in options if getattr(o, "doctor", None)}
     said = []
@@ -278,7 +292,12 @@ def say_digits(text: str, today: date) -> str:
         return say_time(time(hour, minute), "gent" if gent else "nomn")
 
     def number(m: re.Match) -> str:
-        value, space, noun = int(m.group(1)), m.group(2), m.group(3)
+        digits, space, noun = m.group(1), m.group(2), m.group(3)
+        # Телефоны и другие длинные идентификаторы читаем по цифре, иначе
+        # cardinal отклонит значение или озвучит его как обычное число.
+        if len(digits) >= 10:
+            return " ".join(cardinal(int(digit)) for digit in digits)
+        value = int(digits)
         if not noun:
             return say_number(value)
         gender, case = _noun_form(noun)

@@ -119,6 +119,13 @@ class PostgresDialogueStore:
                 update={
                     "last_turn_id": max(turn_id, state.started_turn_id - 1),
                     "pending_turn_id": None,
+                    "last_question": (
+                        result.utterances[-1]
+                        if state.reminder is None
+                        and result.question is not None
+                        and result.utterances
+                        else None
+                    ),
                 }
             )
             await connection.execute(
@@ -176,6 +183,50 @@ class PostgresDialogueStore:
                 }
             )
             saved_reply = result.model_copy(update={"phase": Phase.ENDED, "version": state.version})
+            await connection.execute(
+                insert(receipts).values(
+                    call_id=call_id,
+                    turn_id=turn_id,
+                    digest=digest,
+                    reply=saved_reply.model_dump(mode="json"),
+                )
+            )
+            await connection.execute(
+                update(sessions)
+                .where(sessions.c.call_id == call_id)
+                .values(state=state.model_dump(mode="json"), pending_turn=None)
+            )
+            return state, saved_reply
+
+    async def save_handoff_turn(self, call_id, turn_id, digest, expected_version, result):
+        async with self._locked(call_id) as (connection, row):
+            state = DialogueState.model_validate(row.state)
+            receipt = (
+                await connection.execute(
+                    select(receipts).where(
+                        receipts.c.call_id == call_id, receipts.c.turn_id == turn_id
+                    )
+                )
+            ).first()
+            if receipt is not None:
+                if receipt.digest != digest:
+                    raise DialogueError("TURN_CONTENT_CONFLICT")
+                cached = None if receipt.reply is None else Reply.model_validate(receipt.reply)
+                return state, cached
+            if state.phase != Phase.HANDOFF or state.version != expected_version:
+                return state, None
+            if turn_id != state.last_turn_id + 1:
+                raise DialogueError("TURN_OUT_OF_ORDER")
+            state = state.model_copy(
+                update={
+                    "version": state.version + 1,
+                    "last_turn_id": turn_id,
+                    "pending_turn_id": None,
+                }
+            )
+            saved_reply = result.model_copy(
+                update={"phase": Phase.HANDOFF, "version": state.version}
+            )
             await connection.execute(
                 insert(receipts).values(
                     call_id=call_id,
@@ -298,7 +349,9 @@ class PostgresDialogueStore:
                 and (current.transfer is None or current.transfer.priority != "P1")
             ):
                 return current
-            state = preempt_state(current, transfer)
+            state = preempt_state(current, transfer).model_copy(
+                update={"last_turn_id": max(turn_id, current.last_turn_id)}
+            )
             await connection.execute(
                 update(sessions)
                 .where(sessions.c.call_id == call_id)

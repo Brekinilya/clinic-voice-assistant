@@ -30,3 +30,4 @@ result:
   stand: unchanged
   # полиса на стенде нет — он только передаётся регистратору в карточке
   card: {rule: R-07, params: {policy_number: "1234567890123456", specialty: хирург}}
+  fake_transfer: connected

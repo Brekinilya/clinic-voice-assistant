@@ -14,6 +14,8 @@ from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.cancellation.models import CancelState
 from app.contracts import NluSlots
 from app.dialogue.cancellation import CancellationConversation
+from app.dialogue.cross_scenario import CrossScenario
+from app.dialogue.cross_scenario import classify as classify_cross_scenario
 from app.dialogue.failures import mis_failure
 from app.dialogue.models import DialogueState, Phase, Reply, Turn, reply
 from app.dialogue.outbound import (
@@ -280,6 +282,8 @@ class ReminderConversation:
 
     async def _step(self, state, turn):
         text, answer = words(turn.text), parse_answer(turn.text)
+        if classify_cross_scenario(turn.text) == CrossScenario.THIRD_PARTY:
+            return await self.handoff(state, turn, "R-16")
         if state.phase == Phase.REMIND_VERIFY:
             if OPT_OUT.search(text):
                 # Номер нельзя продолжать обзванивать, но третье лицо не меняет карточку пациента.
@@ -323,6 +327,28 @@ class ReminderConversation:
             return await self.finish(state, turn, "MAYBE", "Всего доброго.")
         if answer == "repeat" and state.phase not in {Phase.CANCEL_RECONCILING, Phase.MOVE_PENDING}:
             return state, reply(state, turn.turn_id, *self.prompt(state), code="REMINDER_REPEATED")
+        if (
+            classify_cross_scenario(turn.text) == CrossScenario.OTHER_DAY
+            and state.purpose == "reschedule"
+            and state.phase in {Phase.MOVE_SOURCE, Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}
+        ):
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо. Какой новый день или время вам подходит?",
+                code="OTHER_DAY_REQUESTED",
+            )
+        if re.search(
+            r"\b(?:сколько|какая|какова)\b.*\b(?:стоит|стоимость|цена|цену)\b|\bцена\b.*\bпри[её]м\b",
+            text,
+        ):
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Точную стоимость приёма не могу назвать; её уточнит регистратор.",
+                *self.prompt(state),
+                code="PRICE_UNAVAILABLE",
+            )
         flags = self.conversation.safety.evaluate(state.call_id, turn).flags
         if flags & {"robot", "no_recording"}:
             state = state.model_copy(update={"authorization": None})

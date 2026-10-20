@@ -60,6 +60,7 @@ class DialogueService:
         self.interpreter = interpreter if interpreter is not None else CommandInterpreter()
         self.safety = safety
         self.conversation = conversation
+        self._handoffs = None
         self.handoffs = handoffs
         self.mis_turn_wait_s = mis_turn_wait_s
         self.mis_wait_limit_s = mis_wait_limit_s
@@ -71,6 +72,16 @@ class DialogueService:
             if reminder_actions is not None
             else None
         )
+
+    @property
+    def handoffs(self):
+        return self._handoffs
+
+    @handoffs.setter
+    def handoffs(self, value):
+        self._handoffs = value
+        if self.conversation is not None:
+            self.conversation.handoffs = value
 
     def _outbound_digest(self, call_id: str, kind: str, payload: str) -> str:
         return hmac.new(
@@ -229,11 +240,12 @@ class DialogueService:
                 if transfer is not None:
                     if self.handoffs is not None:
                         if source == "text" and self.handoffs.settings.enabled:
-                            await self.handoffs.create_text_request(
+                            await self.handoffs.ensure_request(
+                                call_id,
                                 transfer.route,
                                 transfer.priority,
-                                "Текстовый запрос сотруднику",
-                                call_id=call_id,
+                                current,
+                                source=source,
                             )
                         await self.handoffs.discard_draft(call_id)
                     current = await self.store.preempt(call_id, turn.turn_id, transfer)
@@ -241,17 +253,54 @@ class DialogueService:
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
             if current.phase == Phase.HANDOFF:
-                callback_result = await self.handoffs.callback_turn(call_id, turn)
-                if callback_result.phase == Phase.ENDED:
-                    state, saved_reply = await self.store.finish_handoff_turn(
-                        call_id, turn.turn_id, digest, current.version, callback_result
+                if not turn.is_final:
+                    return reply(
+                        current,
+                        turn.turn_id,
+                        "Ожидаю завершения команды.",
+                        code="CALLBACK_PARTIAL",
+                        kind="partial",
                     )
+                callback_result = await self.handoffs.callback_turn(call_id, turn)
+                if callback_result.code == "CALLBACK_STALE":
+                    return callback_result
+                if callback_result.phase == Phase.ENDED:
+                    try:
+                        state, saved_reply = await self.store.finish_handoff_turn(
+                            call_id, turn.turn_id, digest, current.version, callback_result
+                        )
+                    except DialogueError as error:
+                        if str(error) != "TURN_OUT_OF_ORDER":
+                            raise
+                        return reply(
+                            current,
+                            turn.turn_id,
+                            "Реплика устарела. Повторите ответ после последнего шага.",
+                            code="CALLBACK_STALE",
+                        )
                     if saved_reply is not None:
                         return saved_reply
                     if state.phase == Phase.HANDOFF:
                         return handoff_reply(state, turn.turn_id)
                     return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
-                return callback_result
+                try:
+                    state, saved_reply = await self.store.save_handoff_turn(
+                        call_id, turn.turn_id, digest, current.version, callback_result
+                    )
+                except DialogueError as error:
+                    if str(error) != "TURN_OUT_OF_ORDER":
+                        raise
+                    return reply(
+                        current,
+                        turn.turn_id,
+                        "Реплика устарела. Повторите ответ после последнего шага.",
+                        code="CALLBACK_STALE",
+                    )
+                if saved_reply is not None:
+                    return saved_reply
+                if state.phase == Phase.HANDOFF:
+                    return handoff_reply(state, turn.turn_id)
+                return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
         if not turn.is_final:
             state = await self.store.inspect(call_id)
             if state.phase == Phase.ENDED:
@@ -274,6 +323,18 @@ class DialogueService:
             with self._mis_demand(call_id, state, granted.append):
                 state, result = await self._process(state, turn)
             state, result = await self._settle_wait(state, turn, result, progressed=bool(granted))
+            if (
+                result.transfer is not None
+                and self.handoffs is not None
+                and self.handoffs.settings.enabled
+            ):
+                await self.handoffs.ensure_request(
+                    call_id,
+                    result.transfer.route,
+                    result.transfer.priority,
+                    state,
+                    source=source,
+                )
         except Exception as error:
             emit("dialogue.error", error=type(error).__name__)
             # Неизвестный сбой закрывает сценарий. Персональные данные исключения не возвращаем.
@@ -409,7 +470,26 @@ class DialogueService:
     async def start_callback(self, call_id: str, turn_id: int, outcome: str):
         if self.handoffs is None:
             return None
-        return await self.handoffs.start_callback(call_id, turn_id, outcome)
+        current = await self.store.inspect(call_id)
+        if current.phase != Phase.HANDOFF:
+            return None
+        result = await self.handoffs.start_callback(call_id, turn_id, outcome)
+        if result is None:
+            return None
+        digest = self._outbound_digest(call_id, "callback-prompt", f"{turn_id}\0{outcome}")
+        finish = (
+            self.store.finish_handoff_turn
+            if result.phase == Phase.ENDED
+            else self.store.save_handoff_turn
+        )
+        state, saved_reply = await finish(call_id, turn_id, digest, current.version, result)
+        if saved_reply is not None:
+            return saved_reply
+        # The caller hung up or the handoff state changed while the prompt was prepared.
+        await self.handoffs.discard_draft(call_id)
+        if state.phase == Phase.HANDOFF:
+            return handoff_reply(state, turn_id)
+        return reply(state, turn_id, "Разговор завершён.", code="CALL_ENDED")
 
     async def _release_call(self, call_id: str) -> None:
         if self.conversation is not None:
@@ -466,10 +546,6 @@ class DialogueService:
             if self.reminders is None:
                 raise DialogueError("OUTBOUND_NOT_CONFIGURED")
             return await self.reminders.step(state, turn)
-        if contextual_handler is not None:
-            contextual = await contextual_handler(state, turn)
-            if contextual is not None:
-                return contextual
         if state.phase == Phase.HELD and state.proposal is not None:
             action = await self.booking.store.get(state.proposal.action_id)
             if action.state in {

@@ -112,7 +112,25 @@ def authorize_write(
 
 def handoff_reply(state: DialogueState, turn_id: int):
     route = state.transfer.route if state.transfer else "R-08"
-    if route == "R-06" and state.transfer and state.transfer.reason == "mis_wait":
+    if route == "R-06" and state.transfer and state.transfer.reason == "mis_unknown":
+        phrases = (
+            load_phrasebook().get("transfer.mis_down").text,
+            "Неизвестный результат записи должен сверить сотрудник; повторный запрос в систему не отправляется.",
+        )
+    elif route in {"R-10", "R-14", "R-16"}:
+        phrase_key = {
+            "R-10": "transfer.paid",
+            "R-14": "transfer.administration",
+            "R-16": "transfer.pd_request",
+        }[route]
+        if route == "R-16" and state.transfer and state.transfer.reason == "privacy":
+            phrases = (
+                "Сведения о записях могу сообщить только самому пациенту.",
+                "Полномочия представителя проверит сотрудник. Запрос подготовлен.",
+            )
+        else:
+            phrases = (load_phrasebook().get(phrase_key).text,)
+    elif route == "R-06" and state.transfer and state.transfer.reason == "mis_wait":
         phrases = (
             "Система записи не освободилась. Автоматическая запись остановлена.",
             "Запрос регистратору подготовлен.",
@@ -131,6 +149,8 @@ def handoff_reply(state: DialogueState, turn_id: int):
         )
     elif route == "R-04":
         phrases = (load_phrasebook().get("transfer.medical").text,)
+    elif route == "R-08" and state.transfer and state.transfer.reason == "paper_referral":
+        phrases = (load_phrasebook().get("referral.paper").text,)
     else:
         phrases = ("Подготовлен запрос регистратору. Автоматическая запись остановлена.",)
     return reply(
@@ -139,6 +159,10 @@ def handoff_reply(state: DialogueState, turn_id: int):
         *phrases,
         code="EMERGENCY"
         if route == "R-01"
+        else "ESCALATED"
+        if route == "R-06" and state.transfer and state.transfer.reason == "mis_unknown"
+        else "PRIVACY_RESTRICTED"
+        if route == "R-16" and state.transfer and state.transfer.reason == "privacy"
         else "MIS_WAIT_EXPIRED"
         if route == "R-06" and state.transfer and state.transfer.reason == "mis_wait"
         else "MOVE_NEEDS_OPERATOR"

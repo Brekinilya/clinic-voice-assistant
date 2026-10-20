@@ -22,8 +22,20 @@ steps:
     intent: unknown
     say: transfer.not_understood
     transfer: {route: R-05, priority: P3}
+  - event: handoff_no_answer
+    say: callback.offer
+  - patient: Да
+    say: callback.contact
+    parse: {expect: yes_no, intent: "yes"}
+  - patient: "+79990000000"
+    say: callback.time
+  - patient: В ближайшее время
+    say: callback.confirm
+  - patient: Да
+    say: callback.created
 
 result:
-  code: ESCALATED
+  code: CALLBACK_QUEUED
   stand: unchanged
-  card: {rule: R-05}
+  card: {rule: R-05, priority: P3}
+  callback: {state: queued, deadline: "30.09.2026 10:45"}

@@ -115,6 +115,19 @@ async def test_only_unambiguous_addressee_answer_reveals_details(reminder_engine
         assert not actions.calls and emulator.patch_count == emulator.write_count == 0
 
 
+async def test_third_party_during_reminder_is_transferred_without_disclosure(reminder_engine):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context, verify=False)
+        result = await turn(client, 2, "Это не для меня, а для мамы")
+        assert result["code"] == "TRANSFER_REQUESTED"
+        assert result["transfer"]["route"] == "R-16"
+        assert result["reminder_result"]["outcome"] == "ESCALATED"
+        assert "терапевт" not in " ".join(result["utterances"])
+        assert not actions.calls and emulator.patch_count == emulator.write_count == 0
+        state = await service.store.inspect("scenario")
+        assert state.phase == Phase.HANDOFF and state.client_id is None
+
+
 async def test_first_yes_only_verifies_then_final_yes_calls_marks_once(reminder_engine):
     async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
         details = await opened(service, context)

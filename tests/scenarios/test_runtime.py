@@ -252,13 +252,14 @@ async def test_record_verification_detects_duplicate_visit(runtime):
 
 async def test_full_report_contains_every_dialog_and_blocks_incomplete_acceptance():
     results = await execute_suite()
-    assert len(results) == 57
+    expected_count = sum(len(scenario.dialogs) for scenario in load_scenarios()) + 1
+    assert len(results) == expected_count
     assert not any(f.kind in {"error", "critical"} for r in results for f in r.findings)
     assert not any(f.code.startswith("unmapped:") for r in results for f in r.findings)
     document = report(results)
     assert document["source"]["source_sha256"]
-    assert len(document["results"]) == 57
-    assert sum(document["counts"].values()) == 57
+    assert len(document["results"]) == expected_count
+    assert sum(document["counts"].values()) == expected_count
     assert accepted([replace(r, status="pass", findings=[]) for r in results], "all")
     assert not accepted([replace(r, status="pass", findings=[]) for r in results[:-2]], "all")
     assert not accepted([replace(r, status="pass", findings=[]) for r in results[:-1]], "all")

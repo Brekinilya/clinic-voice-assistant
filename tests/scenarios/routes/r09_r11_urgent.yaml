@@ -17,7 +17,7 @@ dialogs:
         safety: {flags: [dental_acute, red_b], rule: R-09}
         say: transfer.dental
         transfer: {route: R-09, priority: P2}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: температура не сбивается
     steps:
@@ -26,7 +26,7 @@ dialogs:
         safety: {flags: [red_b], rule: R-11}
         say: transfer.urgent
         transfer: {route: R-11, priority: P1}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: то же вне часов работы регистратуры
     setup: {now: "04.10.2026 23:40"}

@@ -338,6 +338,9 @@ async def test_explicit_operator_request_is_not_suppressed_by_a_question_about_h
     ],
 )
 def test_information_does_not_replace_actions_or_invent_a_doctors_schedule(question):
+    if question == "Когда принимает хирург?":
+        assert information_service().find(question) == "doctor_schedule_unavailable"
+        return
     assert information_service().find(question) is None
 
 

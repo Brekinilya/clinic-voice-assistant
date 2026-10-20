@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.dialogue.memory import MemoryDialogueStore
-from app.dialogue.models import Phase, TransferRequest, Turn
+from app.dialogue.models import Phase, TransferRequest, Turn, reply
 from app.dialogue.safety_adapter import RulesSafety
 from app.dialogue.service import DialogueService
 from app.handoffs.memory import MemoryHandoffStore
@@ -60,8 +60,8 @@ async def test_declined_callback_persists_terminal_dialogue_state():
     )
     await handoffs.transfer_started(event)
     await handoffs.transfer_result(SimpleNamespace(**vars(event), outcome="no_answer", reason=None))
-    await dialogue.start_callback(call, 1, "no_answer")
-    result = await dialogue.handle(call, Turn(turn_id=2, text="нет"))
+    await dialogue.start_callback(call, 2, "no_answer")
+    result = await dialogue.handle(call, Turn(turn_id=3, text="нет"))
     assert result.phase == Phase.ENDED
     assert (await dialogue.store.inspect(call)).phase == Phase.ENDED
 
@@ -71,7 +71,18 @@ async def test_new_final_text_revokes_pending_confirmation_without_skipping_turn
     """Даже отклонённая как несвоевременная новая фраза отзывает старое согласие."""
     handoffs, store, clock, event, request = await prepared_callback()
     dialogue_store = MemoryDialogueStore()
-    await dialogue_store.preempt(event.call_id, 1, TransferRequest(route="R-08", priority="P3"))
+    state = await dialogue_store.preempt(
+        event.call_id, 1, TransferRequest(route="R-08", priority="P3")
+    )
+    for turn_id in (2, 3, 4):
+        await dialogue_store.save_handoff_turn(
+            event.call_id,
+            turn_id,
+            f"callback-prompt-{turn_id}",
+            state.version,
+            reply(state, turn_id, "Продолжаем оформление обратного звонка."),
+        )
+        state = await dialogue_store.inspect(event.call_id)
     dialogue = DialogueService(
         None, dialogue_store, b"x" * 32, safety=RulesSafety(clock), handoffs=handoffs
     )

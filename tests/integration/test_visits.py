@@ -265,6 +265,8 @@ async def test_duplicate_identity_requires_retry_then_operator():
         await turn(client, 1, REQUEST)
         assert (await turn(client, 2, IDENTITY))["code"] == "IDENTIFICATION_REQUIRED"
         result = await turn(client, 3, IDENTITY)
+        assert result["code"] == "IDENTIFICATION_POLICY_REQUIRED" and result["visits"] == []
+        result = await turn(client, 4, "1234567890123456")
         assert result["transfer"]["route"] == "R-07" and result["visits"] == []
 
 

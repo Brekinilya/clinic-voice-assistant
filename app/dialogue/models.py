@@ -90,7 +90,17 @@ class TransferRequest(BookingModel):
     priority: Literal["P1", "P2", "P3"]
     status: Literal["requested"] = "requested"
     action_id: str | None = None
-    reason: Literal["move_create_rejected", "move_manual", "mis_wait"] | None = None
+    reason: (
+        Literal[
+            "move_create_rejected",
+            "move_manual",
+            "mis_wait",
+            "mis_unknown",
+            "privacy",
+            "paper_referral",
+        ]
+        | None
+    ) = None
 
 
 class DialogueState(BookingModel):
@@ -120,6 +130,16 @@ class DialogueState(BookingModel):
     # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.
     information_topic: str | None = None
     information_clarifying: bool = False
+    referral_fallback: bool = False
+    guardian_call: bool = False
+    guardian_relation: str | None = Field(default=None, max_length=24)
+    home_visit_stage: (
+        Literal["confirm", "identify", "address", "reason", "can_come", "contact"] | None
+    ) = None
+    home_visit_date: AwareDatetime | None = None
+    home_visit_payload_ciphertext: str | None = Field(default=None, repr=False)
+    home_visit_request_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    last_question: str | None = Field(default=None, max_length=500)
     transfer: TransferRequest | None = None
     visit_id: int | None = None
     purpose: Literal["booking", "visits", "cancel", "reschedule"] = "booking"
