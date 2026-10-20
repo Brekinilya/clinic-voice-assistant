@@ -143,6 +143,31 @@ async def test_first_yes_only_verifies_then_final_yes_calls_marks_once(reminder_
 
 
 @pytest.mark.parametrize(
+    "verify,utterance,expected_phase,expected_code",
+    [
+        (False, "Подождите минутку.", "remind_verify", "REMINDER_WAITING"),
+        (True, "Подождите минутку.", "remind_details", "REMINDER_WAITING"),
+        (False, "Спасибо, до свидания.", "ended", "MAYBE"),
+        (True, "Спасибо, до свидания.", "ended", "MAYBE"),
+    ],
+)
+async def test_wait_and_goodbye_do_not_mark_mis(
+    reminder_engine, verify, utterance, expected_phase, expected_code
+):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context, verify=verify)
+        result = await turn(client, 3 if verify else 2, utterance)
+
+        assert result["phase"] == expected_phase
+        assert result["code"] == expected_code
+        assert not actions.calls
+        assert emulator.write_count == emulator.patch_count == 0
+        if expected_phase == "ended":
+            assert result["reminder_result"]["outcome"] == "MAYBE"
+            assert result["reminder_result"]["mis_status"] == "not_required"
+
+
+@pytest.mark.parametrize(
     "answer", ["Нет, не звоните", "Не надо мне больше звонить", "Отключите обзвон"]
 )
 async def test_opt_out_before_identity_blocks_contact_but_cannot_patch_client(
