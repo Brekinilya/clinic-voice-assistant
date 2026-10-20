@@ -285,6 +285,77 @@ class ReminderConversation:
         cross_scenario = classify_cross_scenario(turn.text)
         if cross_scenario == CrossScenario.THIRD_PARTY:
             return await self.handoff(state, turn, "R-16")
+        if cross_scenario == CrossScenario.RESET and state.phase in {
+            Phase.REMIND_VERIFY,
+            Phase.REMIND_DETAILS,
+        }:
+            if state.phase == Phase.REMIND_VERIFY:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо, начнём сначала.",
+                    *self.prompt(state),
+                    code="REMINDER_RESTART",
+                )
+            if await self._pending(state):
+                return await self.handoff(state, turn, "R-16")
+            state = state.model_copy(
+                update={
+                    "authorization": None,
+                    "misunderstandings": 0,
+                    "reminder": state.reminder.model_copy(update={"declined": False}),
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо, вернёмся к вопросу о приёме.",
+                *self.prompt(state),
+                code="REMINDER_RESTART",
+            )
+        if cross_scenario == CrossScenario.MORE_OPTIONS and state.phase in {
+            Phase.REMIND_VERIFY,
+            Phase.REMIND_DETAILS,
+        }:
+            if state.phase == Phase.REMIND_VERIFY:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Сначала нужно уточнить, что я говорю с нужным человеком.",
+                    *self.prompt(state),
+                    code="REMINDER_VERIFY_REQUIRED",
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "По этой записи могу уточнить подтверждение, перенос или отмену.",
+                *self.prompt(state),
+                code="REMINDER_OPTIONS_CONTEXT",
+            )
+        if (
+            cross_scenario == CrossScenario.MORE_OPTIONS
+            and state.reminder is not None
+            and state.purpose == "reschedule"
+            and state.phase in {Phase.MOVE_SOURCE, Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}
+        ):
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Чтобы подобрать другой вариант, назовите день или время. Текущий вариант не подтверждён; прежняя запись сохранена.",
+                code="MOVE_MORE_OPTIONS_CONTEXT",
+            )
+        if cross_scenario == CrossScenario.RESET and state.phase not in {
+            Phase.CANCEL_RECONCILING,
+            Phase.MOVE_PENDING,
+        } and state.reminder is not None:
+            if await self._pending(state):
+                return await self.handoff(state, turn, "R-16")
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо. Текущий шаг по записи сохранён; скажите, хотите подтвердить, перенести или отменить её.",
+                code="REMINDER_RESTART_CONTEXT",
+            )
         if state.phase == Phase.REMIND_VERIFY:
             if OPT_OUT.search(text):
                 # Номер нельзя продолжать обзванивать, но третье лицо не меняет карточку пациента.
