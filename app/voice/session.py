@@ -7,7 +7,6 @@
 """
 
 import asyncio
-import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -23,12 +22,11 @@ from app.dialogue.outbound import OutboundEvent
 from app.nlu.parsers.answers import parse_answer
 from app.voice.audibility import split_audibility
 from app.voice.endpoint import FRAME_BYTES, Endpointer, EndpointSettings
+from app.voice.failures import failure
 from app.voice.fallback import load_fallback
 from app.voice.render import Renderer, default_renderer
 from app.voice.settings import VoiceSettings
 from app.voice.work import InferenceBusy, SpeechRuntime
-
-log = logging.getLogger(__name__)
 
 # Пауза между склеенными фразами (192 мс), если пациент договорил после того, как шлюз решил,
 # что он закончил
@@ -204,9 +202,15 @@ class CallSession:
                     self.dialogue.outbound_event(self.call_id, event),
                     self.settings.dialogue_timeout_s,
                 )
-        except Exception:
+        except TimeoutError as error:
             # Пациент взял трубку, а диалог не начался: молча кладём, попытка без исхода
-            log.error("диалог не открыл исходящий звонок")
+            failure("voice.outbound_open_timeout", error, call=self.call_id)
+            self._cause = "outbound_unavailable"
+            self.closing = True
+            self._spawn(self._finish("ended"))
+            return
+        except Exception as error:
+            failure("voice.outbound_open_failed", error, call=self.call_id)
             self._cause = "outbound_unavailable"
             self.closing = True
             self._spawn(self._finish("ended"))
@@ -287,20 +291,21 @@ class CallSession:
         self._outcome_sent = True
         try:
             await self._on_outcome(self._outcome, self._mis_status)
-        except Exception:
-            log.error("не удалось сообщить исход напоминания")
+        except Exception as error:
+            # Исход попытки остаётся у исполнителя T11: без него она уйдёт в ручную проверку
+            failure("voice.reminder_outcome_failed", error, call=self.call_id)
+
+    def _ended(self, done: asyncio.Task) -> None:
+        # Завершение диалога ждать некому: сбой только записываем, звонок уже закрыт
+        if not done.cancelled() and (error := done.exception()) is not None:
+            failure("voice.dialogue_end_failed", error, call=self.call_id)
 
     async def _end_dialogue(self) -> None:
         if self._end_request is None:
             self._end_request = asyncio.create_task(self.dialogue.end(self.call_id))
-            self._end_request.add_done_callback(
-                lambda done: None if done.cancelled() else done.exception()
-            )
-        done, _ = await asyncio.wait(
-            {self._end_request}, timeout=self.settings.input_started_timeout_s
-        )
-        if done and not self._end_request.cancelled() and self._end_request.exception():
-            log.error("не удалось завершить состояние диалога")
+            self._end_request.add_done_callback(self._ended)
+        # Сбой завершения записывает _ended; здесь только ограничиваем ожидание
+        await asyncio.wait({self._end_request}, timeout=self.settings.input_started_timeout_s)
 
     async def _phrase_started(self) -> None:
         if self.ended or self.closing:
@@ -318,8 +323,10 @@ class CallSession:
                 self.dialogue.input_started(self.call_id, self.turn_id),
                 timeout=self.settings.input_started_timeout_s,
             )
-        except Exception:
-            log.error("диалог не подтвердил начало новой речи")
+        except Exception as error:
+            # Без подтверждения прежнее «да» могло не отозваться: дальше не слушаем
+            code = "timeout" if isinstance(error, TimeoutError) else "failed"
+            failure(f"voice.input_started_{code}", error, call=self.call_id)
             await self._deliver(self.turn_id, None, cause="input_started")
             return
         self._next_partial_ms = self.settings.partial_ms
@@ -520,8 +527,11 @@ class CallSession:
                 if final
                 else await asyncio.wait_for(operation, self.settings.dialogue_timeout_s)
             )
-        except Exception:
-            log.error("диалог не ответил на реплику %s", turn)
+        except TimeoutError as error:
+            failure("voice.dialogue_timeout", error, call=self.call_id)
+            return None
+        except Exception as error:
+            failure("voice.dialogue_failed", error, call=self.call_id)
             return None
 
     async def _recognition_transfer(self, turn: int) -> None:
@@ -682,7 +692,9 @@ class CallSession:
                 )
                 if not pcm or rate <= 0:
                     raise ValueError("пустое аудио")
-            except Exception:
+            except Exception as error:
+                code = "timeout" if isinstance(error, TimeoutError) else "failed"
+                failure(f"voice.tts_{code}", error, call=self.call_id)
                 if not self.ended and turn == self.turn_id:
                     await self._voice_failure("tts_unavailable")
                 return False
@@ -766,8 +778,8 @@ class CallSession:
             )
         except TimeoutError:
             result = Transcription(RecognitionStatus.TIMED_OUT)
-        except Exception:
-            log.error("распознавание не удалось")
+        except Exception as error:
+            failure("voice.asr_failed", error, call=self.call_id)
             result = Transcription(RecognitionStatus.FAILED)
         if turn != self.turn_id or self.ended or self.closing:
             return Transcription(RecognitionStatus.STALE)

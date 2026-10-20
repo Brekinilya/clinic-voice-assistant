@@ -19,6 +19,7 @@ from app.main import create_app
 from app.resource_paths import config_directory
 from app.settings import Settings
 from app.voice.api import open_session, router
+from app.voice.failures import failure
 from app.voice.fallback import load_fallback
 from app.voice.settings import VoiceSettings
 from app.voice.telephony import TelephonySettings
@@ -214,8 +215,6 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
         app.state.reminder_executor = executor
 
         async def run_reminders():
-            import logging
-
             while True:
                 try:
                     # Входящий разговор не прерываем ради фонового обзвона.
@@ -223,8 +222,9 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
                         await executor.tick()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logging.getLogger(__name__).error("ошибка фонового обзвона", exc_info=False)
+                except Exception as error:
+                    # Граница фонового обзвона: следующий тик через 15 с, попытки ведёт исполнитель
+                    failure("voice.reminders_tick_failed", error)
                 await asyncio.sleep(15)
 
         worker = asyncio.create_task(run_reminders())

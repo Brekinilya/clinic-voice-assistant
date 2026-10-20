@@ -21,6 +21,7 @@ import httpx
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.voice.failures import failure
 from app.voice.rtp import CODECS, RATE, Codec, RtpEndpoint, Upsampler, open_endpoint
 
 log = logging.getLogger(__name__)
@@ -304,8 +305,9 @@ class Telephony:
                     await self.handle(event)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception("связь с ARI потеряна, переподключаюсь")
+            except Exception as error:
+                # Граница ARI: соединение восстановим, звонки в работе не трогаем
+                failure("voice.ari_events_failed", error, trace=True)
             await asyncio.sleep(2)
 
     async def handle(self, event: dict) -> None:
@@ -316,8 +318,9 @@ class Telephony:
                 await self._started(channel, event.get("args") or [])
             elif kind in ("StasisEnd", "ChannelDestroyed"):
                 await self._gone(channel, event.get("cause"))
-        except Exception:
-            log.exception("ошибка обработки %s", kind)
+        except Exception as error:
+            # Сбой одного события ARI не должен остановить приём остальных
+            failure(f"voice.ari_{kind}_failed", error, call=channel, trace=True)
 
     async def _started(self, channel: str, args: list[str]) -> None:
         if channel in self._media:
@@ -464,10 +467,10 @@ class Telephony:
                 if inspect.isawaitable(delivered):
                     await asyncio.wait_for(delivered, timeout=HANDOFF_JOURNAL_TIMEOUT_S)
                 call.handoff_journaled = True
-            except Exception:
-                log.exception("bounded transfer journal write failed")
+            except Exception as error:
                 # Журнал недоступен, но попытка соединения ещё впереди.
                 # Терминальный исход сообщаем после ответа ARI/оператора.
+                failure("voice.transfer_journal_failed", error, call=call.caller, trace=True)
         try:
             if call.caller not in self.calls:
                 return
@@ -504,8 +507,9 @@ class Telephony:
                 await call.rtp.drained()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception("operator wait prompt failed")
+            except Exception as error:
+                # Фраза ожидания не обязательна: оператор всё ещё дозванивается
+                failure("voice.operator_wait_prompt_failed", error, call=call.caller)
             finally:
                 if call.wait_prompts_active and self._operator_is_waiting(call, operator):
                     await self._music(call, True)
@@ -564,9 +568,9 @@ class Telephony:
             delivered = self.on_transfer(result)
             if inspect.isawaitable(delivered):
                 await asyncio.wait_for(delivered, timeout=HANDOFF_JOURNAL_TIMEOUT_S)
-        except Exception:
+        except Exception as error:
             # Получатель результата не должен ломать сам звонок
-            log.exception("не удалось передать исход перевода")
+            failure("voice.transfer_result_failed", error, call=call.caller, trace=True)
 
     async def _operator_failed(self, call: PhoneCall) -> None:
         # Раздел 7.5: на P1 повторяем 103/112 и завершаем. Обратный звонок для P2 и P3 должен
