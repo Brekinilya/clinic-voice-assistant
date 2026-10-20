@@ -66,10 +66,6 @@ async def test_declined_callback_persists_terminal_dialogue_state():
     assert (await dialogue.store.inspect(call)).phase == Phase.ENDED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Final text arriving while callback task creation is in flight still hits the contiguous-turn guard.",
-)
 @pytest.mark.asyncio
 async def test_new_final_text_revokes_pending_confirmation_without_skipping_turn(monkeypatch):
     """Даже отклонённая как несвоевременная новая фраза отзывает старое согласие."""
