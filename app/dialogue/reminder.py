@@ -282,7 +282,8 @@ class ReminderConversation:
 
     async def _step(self, state, turn):
         text, answer = words(turn.text), parse_answer(turn.text)
-        if classify_cross_scenario(turn.text) == CrossScenario.THIRD_PARTY:
+        cross_scenario = classify_cross_scenario(turn.text)
+        if cross_scenario == CrossScenario.THIRD_PARTY:
             return await self.handoff(state, turn, "R-16")
         if state.phase == Phase.REMIND_VERIFY:
             if OPT_OUT.search(text):
@@ -365,6 +366,18 @@ class ReminderConversation:
             )
         if "medical" in flags:
             return await self.handoff(state, turn, "R-04")
+        if cross_scenario == CrossScenario.GOODBYE:
+            if await self._pending(state):
+                return await self.handoff(state, turn, "R-16")
+            return await self.finish(state, turn, "MAYBE", "Всего доброго.")
+        if cross_scenario == CrossScenario.WAIT:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо, я подожду.",
+                *self.prompt(state),
+                code="REMINDER_WAITING",
+            )
         topic = self.conversation.information.service.find(turn.text)
         if topic and topic not in {"lab_status", "lab_terms"}:
             fact = self.conversation.information.service.fact(topic)
