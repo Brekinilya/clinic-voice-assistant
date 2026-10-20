@@ -66,9 +66,7 @@ class BookingService:
             and cached[1] <= date_from <= date_to <= cached[2]
         ):
             return tuple(
-                visit
-                for visit in cached[3]
-                if date_from <= visit.scheduled_at.date() <= date_to
+                visit for visit in cached[3] if date_from <= visit.scheduled_at.date() <= date_to
             )
         visits = tuple(
             await self.mis.visits(
@@ -194,9 +192,7 @@ class BookingService:
                 # Занятость читаем только за дни ближайших нужных вариантов этого врача:
                 # две недели загруженного врача — много страниц из бюджета на 8 запросов.
                 days = upcoming_days(eligible[index:], slot.doctor_id, limit)
-                visits = await self._option_visits(
-                    slot.doctor_id, min(days), max(days), call_id
-                )
+                visits = await self._option_visits(slot.doctor_id, min(days), max(days), call_id)
                 busy.update((v.doctor.id, v.scheduled_at) for v in visits)
                 checked.update(
                     (slot.doctor_id, min(days) + timedelta(days=offset))

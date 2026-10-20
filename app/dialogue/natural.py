@@ -8,9 +8,9 @@ from typing import Literal
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
-from app.clock import CLINIC_TIMEZONE
 from app.cancellation.models import CancelState
 from app.cancellation.service import CancellationService
+from app.clock import CLINIC_TIMEZONE
 from app.contracts import NluResult, SafetyDecision
 from app.diagnostics.recorder import emit
 from app.dialogue.cancellation import CancellationConversation
@@ -27,7 +27,6 @@ from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
 from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
-from app.policies.safety import operators_on_duty
 from app.dialogue.transitions import handoff_reply
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
@@ -35,6 +34,7 @@ from app.information.catalog import information_service
 from app.mis.ports import MisError
 from app.nlu.dictionaries import load_specialties
 from app.nlu.parsers.answers import parse_answer
+from app.policies.safety import operators_on_duty
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
 from app.scheduling.matching import profile_key
@@ -274,8 +274,7 @@ class BookingConversation:
                 priority,
                 state,
                 summary_override=(
-                    "Неизвестен результат записи; требуется сверка операции "
-                    f"{action_id}"
+                    f"Неизвестен результат записи; требуется сверка операции {action_id}"
                 ),
             )
         state = await self.store.preempt(
@@ -312,10 +311,7 @@ class BookingConversation:
             )
         ):
             return "R-16"
-        if any(
-            term in value
-            for term in ("медкомисси", "медицинскую комисси", "по дмс", "дмс")
-        ):
+        if any(term in value for term in ("медкомисси", "медицинскую комисси", "по дмс", "дмс")):
             return "R-10"
         return None
 
@@ -939,9 +935,7 @@ class BookingConversation:
             if str(error) != "IDENTIFICATION_REQUIRED":
                 raise
             attempts = state.identity_attempts + 1
-            state = state.model_copy(
-                update={"identity_attempts": attempts, "identity_draft": None}
-            )
+            state = state.model_copy(update={"identity_attempts": attempts, "identity_draft": None})
             prompt = (
                 load_phrasebook().get("ident.ask_policy").text
                 if attempts >= 2
@@ -1242,15 +1236,10 @@ class BookingConversation:
                         *(referral_done or (FOLLOW_UP_QUESTION,)),
                         code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                     )
-                if (
-                    action.state == ActionState.RECONCILING
-                    and operators_on_duty(
-                        self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
-                    )
+                if action.state == ActionState.RECONCILING and operators_on_duty(
+                    self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
                 ):
-                    return await self.transfer(
-                        state, turn, "R-06", "P3", reason="mis_unknown"
-                    )
+                    return await self.transfer(state, turn, "R-06", "P3", reason="mis_unknown")
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
                 return state, reply(
                     state,
@@ -1262,9 +1251,7 @@ class BookingConversation:
         if state.phase == Phase.RECONCILING:
             if "no" in intents or intents & {"I-01", "I-02", "I-03"}:
                 # Уже отправленная операция не отменяется местным снятием брони.
-                return await self.transfer(
-                    state, turn, "R-06", "P3", reason="mis_unknown"
-                )
+                return await self.transfer(state, turn, "R-06", "P3", reason="mis_unknown")
             return state, reply(
                 state,
                 turn.turn_id,
