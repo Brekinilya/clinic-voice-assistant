@@ -25,8 +25,21 @@ class ActiveQuestion(BaseModel):
 
 def active_question(state: DialogueState) -> ActiveQuestion | None:
     """Одна проекция для NLU, ответа и диагностики, без чтения МИС и ПДн."""
+    home_visit_questions = {
+        "confirm": ("home_visit_continue", "yes_no"),
+        "identify": ("patient_identity", "full_name"),
+        "address": ("home_visit_address", "free"),
+        "reason": ("home_visit_reason", "free"),
+        "can_come": ("home_visit_can_come", "yes_no"),
+        "contact": ("home_visit_contact", "yes_no"),
+    }
+    if state.home_visit_stage in home_visit_questions:
+        key, expect = home_visit_questions[state.home_visit_stage]
+        return ActiveQuestion(key=key, expect=expect)
     if state.information_clarifying:
         return ActiveQuestion(key="information_details", expect="free")
+    if state.information_topic == "referral_missing":
+        return ActiveQuestion(key="referral_missing", expect="yes_no")
     if state.information_topic is not None and state.phase in {
         "ready",
         "booked",

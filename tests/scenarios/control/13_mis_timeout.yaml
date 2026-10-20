@@ -48,5 +48,5 @@ dialogs:
       - patient: Да
         say: [wait.schedule, callback.mis_down]
     result:
-      code: CALLBACK
+      code: RECONCILING
       stand: {at_most_one: {client: smirnova_ov, doctor: kuznetsova, at: "05.10.2026 09:15"}}

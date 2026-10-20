@@ -1,8 +1,9 @@
-from datetime import date, time
+from datetime import date, datetime, time, timezone
 
 import pytest
 
 from app.contracts import DialogOption
+from app.visits.models import VisitSummary
 from app.voice.phrases import MAX_WORDS, load_phrasebook
 from app.voice.render import (
     Pronunciation,
@@ -12,6 +13,7 @@ from app.voice.render import (
     mark_focus,
     plain,
     say_date,
+    say_digits,
     say_options,
     say_person,
     say_specialty,
@@ -69,6 +71,12 @@ def test_new_year_without_year():
 )
 def test_time(at, form, words):
     assert say_time(at, form) == words
+
+
+def test_long_numbers_are_spoken_digit_by_digit():
+    assert say_digits("Номер +79991234567.", TODAY) == (
+        "Номер +семь девять девять девять один два три четыре пять шесть семь."
+    )
 
 
 @pytest.mark.parametrize(
@@ -276,6 +284,34 @@ def test_fitting_options():
     assert RENDERER.fitting_options("booking.offer", TODAY, late) == 2
     early = tuple(option(date(2026, 10, d), time(9)) for d in (1, 2, 5))
     assert RENDERER.fitting_options("booking.offer", TODAY, early) == 3
+
+
+def test_my_visits_many_renders_each_visit_as_specialty_doctor_date_and_time():
+    visits = (
+        VisitSummary(
+            visit_id=1,
+            doctor_id=10,
+            doctor_name="Кузнецова Анна Сергеевна",
+            specialty="терапевт",
+            scheduled_at=datetime(2026, 10, 2, 10, 30, tzinfo=timezone.utc),
+        ),
+        VisitSummary(
+            visit_id=2,
+            doctor_id=11,
+            doctor_name="Белова Ирина Олеговна",
+            specialty="невролог",
+            scheduled_at=datetime(2026, 10, 5, 11, 15, tzinfo=timezone.utc),
+        ),
+    )
+
+    said = RENDERER.render("my_visits.many", TODAY, patient="Ольга Викторовна", options=visits)
+
+    assert said.words <= MAX_WORDS
+    assert "терапевту" in said.text and "неврологу" in said.text
+    assert "Кузнецовой" in said.text and "Беловой" in said.text
+    assert "второго октября" in said.text and "пятого октября" in said.text
+    assert "в четырнадцать тридцать" in said.text
+    assert "в пятнадцать пятнадцать" in said.text
 
 
 TYPICAL = dict(

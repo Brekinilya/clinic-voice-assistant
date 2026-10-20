@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tests.scenarios.regressions import REGRESSION_LABEL, quota_regression
-from tests.scenarios.runner import DialogResult, run_dialog
+from tests.scenarios.runner import DialogResult, apply_voice_evidence, run_dialog
 from tests.scenarios.scenario_plan import CONTROL_IDS, HERE, load_scenarios
 
 ROOT = HERE.parents[1]
@@ -47,7 +47,7 @@ def source_receipt():
     }
 
 
-async def execute_suite():
+async def execute_suite(voice_evidence_path: Path | None = None):
     results = []
     for scenario in load_scenarios():
         for dialog in scenario.dialogs:
@@ -72,6 +72,8 @@ async def execute_suite():
         result = DialogResult("REG-T05", REGRESSION_LABEL, False)
         result.add("fixture_or_runner_error", type(error).__name__, "error")
         results.append(result.finish())
+    if voice_evidence_path is not None:
+        apply_voice_evidence(results, voice_evidence_path, source_receipt())
     return results
 
 
@@ -184,8 +186,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--require", choices=("all", "blocking"), default="all")
+    parser.add_argument("--voice-evidence", type=Path)
     args = parser.parse_args(argv)
-    results = asyncio.run(execute_suite())
+    results = asyncio.run(execute_suite(args.voice_evidence))
     document = report(results)
     if args.output_dir:
         args.output_dir.mkdir(parents=True, exist_ok=True)

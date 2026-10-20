@@ -1,6 +1,8 @@
 """Текстовый маршрутизатор: NLU Ильи, сценарии С-01/С-05 и правила действий backend."""
 
-from datetime import datetime
+import json
+import re
+from datetime import datetime, time, timedelta
 from typing import Literal
 
 from app.booking.models import ActionState, Approval, BookingError
@@ -29,12 +31,16 @@ from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
 from app.mis.ports import MisError
+from app.nlu.dictionaries import load_specialties
+from app.nlu.parsers.answers import parse_answer
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
 from app.scheduling.matching import profile_key
 from app.visits.models import VisitQuery
 from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
+from app.voice.phrases import load_phrasebook
+from app.voice.render import say_date, say_specialty
 
 FOLLOW_UP_QUESTION = "Могу ещё чем-то помочь?"
 
@@ -56,6 +62,7 @@ class BookingConversation:
         self.booking = booking
         self.store = store
         self.safety = safety
+        self.handoffs = None
         self.identity_drafts = identity_drafts
         if cancellation is not None and cancellation.operations is None:
             cancellation.operations = booking.operations
@@ -247,7 +254,8 @@ class BookingConversation:
         route: str,
         priority: Literal["P1", "P2", "P3"] = "P3",
         *,
-        reason: Literal["move_create_rejected", "move_manual", "mis_wait"] | None = None,
+        reason: Literal["move_create_rejected", "move_manual", "mis_wait", "paper_referral"]
+        | None = None,
     ) -> tuple[DialogueState, Reply]:
         state = await self.store.preempt(
             state.call_id,
@@ -277,6 +285,26 @@ class BookingConversation:
             return mis_failure(state, turn, self.booking.clock.now(), error)
         except BookingError as error:
             if str(error) == "ELIGIBILITY_UNKNOWN":
+                specialty = next(
+                    (
+                        item
+                        for key, item in load_specialties().items()
+                        if profile_key(key) == profile_key(state.specialty or "")
+                    ),
+                    None,
+                )
+                if specialty is not None and specialty.referral:
+                    state = state.model_copy(
+                        update={"information_topic": "referral_missing", "phase": Phase.IDENTIFIED}
+                    )
+                    message = (
+                        load_phrasebook()
+                        .get("referral.missing")
+                        .text.replace("{specialty:datv}", say_specialty(state.specialty, "datv"))
+                    )
+                    return state, reply(
+                        state, turn.turn_id, message, code="REFERRAL_REQUIRED"
+                    ).model_copy(update={"expect": "yes_no"})
                 return state, reply(
                     state,
                     turn.turn_id,
@@ -294,6 +322,24 @@ class BookingConversation:
             update={"options": options, "phase": Phase.OFFERED if options else Phase.IDENTIFIED}
         )
         if not options:
+            specialty = next(
+                (
+                    item
+                    for key, item in load_specialties().items()
+                    if profile_key(key) == profile_key(state.specialty or "")
+                ),
+                None,
+            )
+            if specialty is not None and specialty.referral:
+                state = state.model_copy(update={"information_topic": "referral_missing"})
+                message = (
+                    load_phrasebook()
+                    .get("referral.missing")
+                    .text.replace("{specialty:datv}", say_specialty(state.specialty, "datv"))
+                )
+                return state, reply(
+                    state, turn.turn_id, message, code="REFERRAL_REQUIRED"
+                ).model_copy(update={"expect": "yes_no"})
             return state, reply(
                 state,
                 turn.turn_id,
@@ -301,6 +347,26 @@ class BookingConversation:
                 code="NO_SLOTS",
             )
         offered, phrases = self.presenter.offer(options, doctors)
+        specialty = next(
+            (
+                item
+                for key, item in load_specialties().items()
+                if profile_key(key) == profile_key(state.specialty or "")
+            ),
+            None,
+        )
+        if (
+            specialty is not None
+            and specialty.referral
+            and getattr(self.booking.schedule, "access_state", lambda *_: None)(
+                state.client_id, options[0]
+            )
+            == "allowed"
+        ):
+            phrases = (
+                f"Вижу направление к {say_specialty(state.specialty, 'datv')}.",
+                *phrases,
+            )
         state = state.model_copy(
             update={
                 "options": offered,
@@ -316,9 +382,143 @@ class BookingConversation:
     async def cross_scenario_reply(
         self, state: DialogueState, turn: Turn, result: NluResult | None = None
     ) -> tuple[DialogueState, Reply] | None:
+        if state.home_visit_stage is not None:
+            return await self.home_visit_step(state, turn)
+        text = turn.text.casefold()
+        if "вызвать" in text and "врач" in text and "дом" in text:
+            if self.handoffs is None:
+                return await self.transfer(state, turn, "R-08")
+            now = self.booking.clock.now()
+            if now.time() < time(14):
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Уточнить возможность вызова на сегодня может регистратор.",
+                    "Могу перевести вас для проверки.",
+                    code="HOME_VISIT_CHECK_REQUIRED",
+                )
+            next_day = now.date() + timedelta(days=1)
+            state = state.model_copy(
+                update={
+                    "home_visit_stage": "confirm",
+                    "home_visit_date": datetime.combine(next_day, time.min, tzinfo=now.tzinfo),
+                }
+            )
+            phrase = (
+                load_phrasebook()
+                .get("home_visit.late")
+                .text.replace(
+                    "{next_day:short_accs}", say_date(next_day, "short_accs", today=now.date())
+                )
+            )
+            return state, reply(state, turn.turn_id, phrase, code="HOME_VISIT_CONTINUE").model_copy(
+                update={"expect": "yes_no"}
+            )
+        if "бумажн" in turn.text.casefold() and "направлен" in turn.text.casefold():
+            return await self.transfer(state, turn, "R-08", reason="paper_referral")
         kind = classify_cross_scenario(turn.text)
         if kind is None:
             return None
+        # These states have domain-owned retry behavior. Let cancellation,
+        # rescheduling, visit refresh, and medical-boundary handlers process
+        # a repeat before the generic cross-scenario shortcut.
+        if kind == CrossScenario.REPEAT and (
+            state.medical_boundary_pending
+            or state.phase
+            in {
+                Phase.CANCEL_CHOOSING,
+                Phase.CANCEL_OFFER,
+                Phase.CANCEL_CONFIRM,
+                Phase.CANCEL_RECONCILING,
+                Phase.MOVE_CHOOSING,
+                Phase.MOVE_CONFIRM,
+                Phase.MOVE_FINISH_CONFIRM,
+                Phase.MOVE_PENDING,
+                Phase.VISITS_SHOWN,
+            }
+        ):
+            return None
+        if kind == CrossScenario.REPEAT and state.information_topic is not None:
+            informational = await self.information.step(state, turn)
+            if informational is not None:
+                return informational
+        if kind == CrossScenario.PRICE and state.phase not in {
+            Phase.READY,
+            Phase.BOOKED,
+            Phase.RESCHEDULED,
+            Phase.CANCELLED,
+            Phase.ENDED,
+        }:
+            continuation = self.information.resume_question(state, turn)
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Точную стоимость приёма не могу назвать; её уточнит регистратор.",
+                *(continuation or ("Продолжим с текущего вопроса.",)),
+                code="PRICE_UNAVAILABLE",
+            )
+        if kind == CrossScenario.REPEAT:
+            if not state.last_question:
+                return None
+            return state, reply(
+                state,
+                turn.turn_id,
+                state.last_question,
+                code="QUESTION_REPEATED",
+            )
+        if (
+            kind == CrossScenario.OTHER_DAY
+            and state.purpose == "booking"
+            and state.phase in {Phase.OFFERED, Phase.HELD}
+        ):
+            if state.phase == Phase.HELD and state.proposal is not None:
+                action = await self.booking.store.get(state.proposal.action_id)
+                if action.state != ActionState.HELD:
+                    return None
+                await self.booking.store.release_call_holds(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.IDENTIFIED,
+                        "proposal": None,
+                        "options": (),
+                        "shown_option_keys": (),
+                        "authorization": None,
+                    }
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Конечно. Какой другой день вам удобен?",
+                code="OTHER_DAY_REQUESTED",
+            )
+        if (
+            kind == CrossScenario.OTHER_DAY
+            and state.purpose == "reschedule"
+            and state.phase
+            in {
+                Phase.IDENTIFYING,
+                Phase.MOVE_CHOOSING,
+                Phase.MOVE_SOURCE,
+                Phase.MOVE_OFFERED,
+                Phase.MOVE_CONFIRM,
+            }
+        ):
+            if state.phase in {Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}:
+                await self.rescheduling.service.store.release_call(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.MOVE_SOURCE,
+                        "move_proposal": None,
+                        "options": (),
+                        "authorization": None,
+                    }
+                )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Хорошо. Какой новый день или время вам подходит?",
+                code="OTHER_DAY_REQUESTED",
+            )
         if kind == CrossScenario.WAIT:
             return state, reply(
                 state,
@@ -511,11 +711,142 @@ class BookingConversation:
             return await self.visits.start(state, turn, result)
         return None
 
+    async def home_visit_step(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply]:
+        stage = state.home_visit_stage
+        answer = parse_answer(turn.text)
+        if stage == "confirm":
+            if answer == "no":
+                state = state.model_copy(update={"phase": Phase.ENDED, "home_visit_stage": None})
+                return state, reply(
+                    state, turn.turn_id, "Хорошо. Всего доброго.", code="CALL_ENDED"
+                )
+            if answer != "yes":
+                return state, reply(
+                    state, turn.turn_id, "Оформить вызов на завтра?", code="HOME_VISIT_CONFIRM"
+                ).model_copy(update={"expect": "yes_no"})
+            state = state.model_copy(
+                update={"home_visit_stage": "identify", "phase": Phase.IDENTIFYING}
+            )
+            phrases = (
+                load_phrasebook().get("home_visit.safety").text,
+                self.presenter.ask_patient(),
+            )
+            return state, reply(state, turn.turn_id, *phrases, code="HOME_VISIT_IDENTITY")
+        if stage == "identify":
+            parsed = await self.input.parse(state, turn)
+            slots = parsed.slots
+            if not (slots.last_name and slots.first_name and slots.birth_date):
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    self.presenter.ask_patient(),
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            patient = await self.booking.identify(
+                slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
+            )
+            state = state.model_copy(
+                update={
+                    "client_id": patient.id,
+                    "phase": Phase.IDENTIFIED,
+                    "home_visit_stage": "address",
+                }
+            )
+            phrase = load_phrasebook().get("home_visit.ask_address").text.replace("{patient}, ", "")
+            return state, reply(state, turn.turn_id, phrase, code="HOME_VISIT_ADDRESS").model_copy(
+                update={"expect": "free"}
+            )
+        if stage in {"address", "reason"}:
+            if self.handoffs is None:
+                return await self.transfer(state, turn, "R-08")
+            payload = (
+                json.loads(
+                    self.handoffs.cipher.decrypt(state.home_visit_payload_ciphertext.encode())
+                )
+                if state.home_visit_payload_ciphertext
+                else {}
+            )
+            payload["address" if stage == "address" else "reason"] = turn.text.strip()
+            ciphertext = self.handoffs.encrypt_home_visit_payload(payload)
+            next_stage = "reason" if stage == "address" else "can_come"
+            state = state.model_copy(
+                update={"home_visit_stage": next_stage, "home_visit_payload_ciphertext": ciphertext}
+            )
+            key = "home_visit.ask_reason" if stage == "address" else "home_visit.ask_can_come"
+            return state, reply(
+                state, turn.turn_id, load_phrasebook().get(key).text, code="HOME_VISIT_QUESTION"
+            ).model_copy(update={"expect": "free" if next_stage == "reason" else "yes_no"})
+        if stage == "can_come":
+            if answer == "yes":
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    load_phrasebook().get("home_visit.come_yourself").text,
+                    code="HOME_VISIT_SELF_VISIT",
+                )
+            if answer != "no":
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    load_phrasebook().get("home_visit.ask_can_come").text,
+                    code="HOME_VISIT_QUESTION",
+                ).model_copy(update={"expect": "yes_no"})
+            if self.handoffs is None or state.home_visit_payload_ciphertext is None:
+                return await self.transfer(state, turn, "R-08")
+            payload = json.loads(
+                self.handoffs.cipher.decrypt(state.home_visit_payload_ciphertext.encode())
+            )
+            payload["requested_date"] = state.home_visit_date.date().isoformat()
+            ciphertext = self.handoffs.encrypt_home_visit_payload(payload)
+            state = state.model_copy(
+                update={"home_visit_stage": "contact", "home_visit_payload_ciphertext": ciphertext}
+            )
+            request = await self.handoffs.create_home_visit_request(
+                state.call_id, state, ciphertext
+            )
+            state = state.model_copy(update={"home_visit_request_id": request.request_id})
+            phrase = (
+                load_phrasebook()
+                .get("home_visit.accepted")
+                .text.replace(
+                    "{date:short_accs}",
+                    say_date(
+                        state.home_visit_date.date(),
+                        "short_accs",
+                        today=self.booking.clock.now().date(),
+                    ),
+                )
+            )
+            return state, reply(
+                state, turn.turn_id, phrase, code="HOME_VISIT_REQUESTED"
+            ).model_copy(update={"expect": "yes_no"})
+        if stage == "contact":
+            if answer == "yes":
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.ENDED,
+                        "home_visit_stage": None,
+                        "home_visit_date": None,
+                        "home_visit_payload_ciphertext": None,
+                    }
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    load_phrasebook().get("home_visit.done").text,
+                    code="HOME_VISIT_REQUESTED",
+                )
+            return await self.transfer(state, turn, "R-08")
+        return await self.transfer(state, turn, "R-08")
+
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
-        state = state.model_copy(
-            update={"information_topic": None, "information_clarifying": False}
-        )
+        if state.information_topic != "referral_missing":
+            state = state.model_copy(
+                update={"information_topic": None, "information_clarifying": False}
+            )
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
@@ -531,6 +862,9 @@ class BookingConversation:
         cross_reply = await self.cross_scenario_reply(state, turn, result)
         if cross_reply is not None:
             return cross_reply
+        informational = await self.information.step(state, turn)
+        if informational is not None:
+            return informational
         if state.client_id is not None and (
             any(
                 getattr(result.slots, field) is not None
@@ -561,6 +895,23 @@ class BookingConversation:
         self, state: DialogueState, turn: Turn, result: NluResult, decision: SafetyDecision
     ) -> tuple[DialogueState, Reply]:
         slots, intents = result.slots, set(result.intents)
+        if state.information_topic == "referral_missing":
+            if "yes" in intents:
+                state = state.model_copy(
+                    update={
+                        "information_topic": None,
+                        "referral_fallback": True,
+                        "phase": Phase.IDENTIFIED,
+                        "specialty": "терапевт",
+                        "preferences": SlotPreferences(),
+                    }
+                )
+                return await self.offer(state, turn)
+            if "no" in intents:
+                state = await self.store.end(state.call_id)
+                return state, reply(
+                    state, turn.turn_id, "Хорошо. Всего доброго.", code="CALL_ENDED"
+                )
         if state.medical_boundary_pending:
             refinements = PREFERENCE_FIELDS & slots.model_fields_set
             if "repeat" in intents:
@@ -585,15 +936,48 @@ class BookingConversation:
                 state = state.model_copy(update={"medical_boundary_pending": False})
             elif refinements:
                 return self.medical.prompt(state, turn)
-        if slots.on_behalf in {"other", "child"} or (
-            requested_owner(turn.text) == "other"
+        child_booking_request = (
+            state.purpose == "booking"
+            and ("I-01" in intents or slots.specialty is not None)
             and (
-                state.purpose in {"visits", "cancel", "reschedule"}
-                or intents & {"I-02", "I-03", "I-04"}
-                or mentions_existing_visits(turn.text)
+                slots.on_behalf == "child"
+                or re.search(
+                    r"\b(доч\w*|сын\w*|реб[её]н\w*|несовершеннолетн\w*)\b",
+                    turn.text.casefold(),
+                )
+                is not None
+            )
+        )
+        if child_booking_request:
+            state = state.model_copy(update={"guardian_call": True})
+        if (
+            slots.on_behalf == "other"
+            or (slots.on_behalf == "child" and not child_booking_request)
+            or (
+                requested_owner(turn.text) == "other"
+                and (
+                    state.purpose in {"visits", "cancel", "reschedule"}
+                    or intents & {"I-02", "I-03", "I-04"}
+                    or mentions_existing_visits(turn.text)
+                )
             )
         ):
             return await self.visits.privacy_transfer(state, turn)
+        if state.guardian_call and state.client_id is not None and state.guardian_relation is None:
+            relation = re.search(
+                r"\b(мама|мать|папа|отец|опекун|попечитель|бабушка|дедушка)\b",
+                turn.text.casefold().replace("ё", "е"),
+            )
+            if relation is None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    self.presenter.renderer.render("ident.relation", self.presenter._today()).text,
+                    code="GUARDIAN_RELATION_REQUIRED",
+                )
+            state = state.model_copy(update={"guardian_relation": relation.group(1)})
+            if state.specialty:
+                return await self.offer(state, turn)
         # Сохраняем только зашифрованное ФИО. Общий шаг работает для записи, справки,
         # отмены и переноса; окончательная проверка пациента остаётся строгой.
         if state.phase == Phase.IDENTIFYING and self.identity_drafts is not None:
@@ -779,6 +1163,7 @@ class BookingConversation:
                 action = await self.booking.reconcile(state.proposal.action_id)
                 if action.state == ActionState.BOOKED:
                     confirmed = self.booked_phrase(action, state.proposal.doctor_name)
+                    referral_done = self._referral_done(state)
                     state = state.model_copy(
                         update={
                             "phase": Phase.BOOKED,
@@ -788,7 +1173,11 @@ class BookingConversation:
                         }
                     )
                     return state, reply(
-                        state, turn.turn_id, confirmed, FOLLOW_UP_QUESTION, code="BOOKED"
+                        state,
+                        turn.turn_id,
+                        confirmed,
+                        *(referral_done or (FOLLOW_UP_QUESTION,)),
+                        code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                     )
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
                 return state, reply(
@@ -810,7 +1199,9 @@ class BookingConversation:
             )
         if state.phase == Phase.BOOKED and not slots.model_fields_set:
             if intents == {"yes"}:
-                state = self.visits.booking_state(state)
+                state = self.visits.booking_state(state).model_copy(
+                    update={"referral_fallback": False}
+                )
                 return state, reply(
                     state, turn.turn_id, "Чем ещё могу помочь?", code="MORE_HELP_REQUIRED"
                 )
@@ -839,7 +1230,7 @@ class BookingConversation:
             "I-14",
         }:
             return await self.transfer(state, turn, "R-08")
-        if slots.on_behalf in {"other", "child"}:
+        if slots.on_behalf == "other" or (slots.on_behalf == "child" and not child_booking_request):
             return await self.transfer(state, turn, "R-16")
         if slots.policy_number is not None:
             return await self.transfer(state, turn, "R-07")
@@ -867,6 +1258,13 @@ class BookingConversation:
             state = state.model_copy(
                 update={"client_id": patient.id, "phase": Phase.IDENTIFIED, "misunderstandings": 0}
             )
+            if state.guardian_call:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    self.presenter.renderer.render("ident.relation", self.presenter._today()).text,
+                    code="GUARDIAN_RELATION_REQUIRED",
+                )
             if state.specialty:
                 return await self.offer(state, turn)
             return state, reply(
@@ -916,7 +1314,10 @@ class BookingConversation:
                 return state, reply(
                     state,
                     turn.turn_id,
-                    self.presenter.ask_patient(),
+                    self.presenter.renderer.render(
+                        "ident.ask_child" if state.guardian_call else "ident.ask_patient",
+                        self.presenter._today(),
+                    ).text,
                 )
             if state.specialty:
                 return await self.offer(state, turn)
@@ -962,6 +1363,7 @@ class BookingConversation:
             state = state.model_copy(update={"authorization": None})
             if action.state == ActionState.BOOKED:
                 confirmed = self.booked_phrase(action, state.proposal.doctor_name)
+                referral_done = self._referral_done(state)
                 state = state.model_copy(
                     update={
                         "phase": Phase.BOOKED,
@@ -974,8 +1376,8 @@ class BookingConversation:
                     state,
                     turn.turn_id,
                     confirmed,
-                    FOLLOW_UP_QUESTION,
-                    code="BOOKED",
+                    *(referral_done or (FOLLOW_UP_QUESTION,)),
+                    code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                 )
             if action.state in {ActionState.COMMITTING, ActionState.RECONCILING}:
                 state = state.model_copy(update={"phase": Phase.RECONCILING})
@@ -1035,6 +1437,22 @@ class BookingConversation:
             self.rooms.room(action.slot.doctor_id, action.slot.scheduled_at) if self.rooms else None
         )
         return self.presenter.completed(action.slot, doctor_name, room)
+
+    @staticmethod
+    def _referral_done(state: DialogueState) -> tuple[str, ...] | None:
+        specialty = next(
+            (
+                item
+                for key, item in load_specialties().items()
+                if profile_key(key) == profile_key(state.specialty or "")
+            ),
+            None,
+        )
+        return (
+            (load_phrasebook().get("referral.done").text,)
+            if specialty and specialty.referral
+            else None
+        )
 
     async def confirmation_phrase(self, state: DialogueState, turn: Turn) -> Reply:
         slot = state.proposal.slot

@@ -19,9 +19,10 @@ dialogs:
         say: complaint.ack
         transfer: {route: R-03, priority: P2}
     result:
-      code: COMPLAINT
+      code: TRANSFER_REQUESTED
       stand: unchanged
       card: {intent: I-12, rule: R-03, priority: P2}
+      fake_transfer: connected
 
   - name: вне часов — обратный звонок до 10:00 следующего рабочего дня
     setup: {now: "03.10.2026 18:30"}
@@ -30,7 +31,21 @@ dialogs:
       - patient: Я уже третий день не могу к вам дозвониться, это безобразие!
         intent: I-12
         safety: {flags: [complaint], rule: R-03}
-        say: complaint.callback
+        say: complaint.ack
+        transfer: {route: R-03, priority: P2}
+      - event: handoff_no_answer
+        say: callback.offer
+      - patient: Да
+        say: callback.contact
+        parse: {expect: yes_no, intent: "yes"}
+      - patient: "+79990000000"
+        say: callback.time
+      - patient: В ближайшее время
+        say: callback.confirm
+      - patient: Да
+        say: callback.created
     result:
-      code: COMPLAINT
-      callback: {before: "05.10.2026 10:00"}
+      code: CALLBACK_QUEUED
+      stand: unchanged
+      card: {intent: I-12, rule: R-03, priority: P2}
+      callback: {state: queued, deadline: "05.10.2026 10:00"}

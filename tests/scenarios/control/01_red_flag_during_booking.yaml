@@ -32,3 +32,4 @@ result:
   code: EMERGENCY
   stand: unchanged
   card: {intent: I-11, rule: R-01, priority: P1}
+  fake_transfer: no_answer

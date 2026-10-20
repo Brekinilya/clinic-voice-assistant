@@ -33,4 +33,4 @@ dialogs:
         intent: I-08
         say: transfer.paid
         transfer: {route: R-10, priority: P3}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}

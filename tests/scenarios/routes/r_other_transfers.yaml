@@ -17,7 +17,7 @@ dialogs:
         intent: I-14
         say: transfer.other
         transfer: {route: R-08, priority: P3}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: бумажное направление (R-08)
     steps:
@@ -27,7 +27,7 @@ dialogs:
         parse: {expect: free, slots: {specialty: кардиолог}}
         say: referral.paper
         transfer: {route: R-08, priority: P3}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: медкомиссия (R-10)
     steps:
@@ -36,7 +36,7 @@ dialogs:
         intent: I-08
         say: transfer.paid
         transfer: {route: R-10, priority: P3}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: лекарственное обеспечение (R-12)
     steps:
@@ -62,7 +62,7 @@ dialogs:
         say: transfer.administration
         transfer: {route: R-14, priority: P3}
         forbid: [записан, врач]
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: не справляется с разговором (R-15)
     steps:
@@ -71,7 +71,7 @@ dialogs:
         safety: {flags: [cant_cope], rule: R-15}
         say: transfer.assist
         transfer: {route: R-15, priority: P2}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
   - name: персональные данные (R-16)
     steps:
@@ -80,4 +80,4 @@ dialogs:
         intent: I-14
         say: transfer.pd_request
         transfer: {route: R-16, priority: P3}
-    result: {code: ESCALATED, stand: unchanged}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}

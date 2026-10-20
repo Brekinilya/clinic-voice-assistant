@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.clock import CLINIC_TIMEZONE
-from app.dialogue.models import Turn
+from app.dialogue.models import DialogueState, Turn
 from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.models import TransferState
 from app.handoffs.service import HandoffService, HandoffSettings
@@ -20,6 +20,19 @@ class Clock:
 class NoMis:
     async def create_escalation(self, payload):
         raise AssertionError("unknown caller must not create an MIS escalation")
+
+
+@pytest.mark.asyncio
+async def test_handoff_card_marks_verified_patient_calling_through_representative():
+    store = MemoryHandoffStore()
+    service = HandoffService(store, NoMis(), Clock(), b"x" * 32, HandoffSettings(enabled=True))
+    state = DialogueState(call_id="guardian-call", client_id=42, guardian_call=True)
+
+    request = await service.ensure_request("guardian-call", "R-08", "P3", state)
+
+    assert request.identity_status == "verified"
+    assert request.client_id == 42
+    assert request.caller_is_representative is True
 
 
 def test_escalation_payload_matches_the_primary_source_shape():

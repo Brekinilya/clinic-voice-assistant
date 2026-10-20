@@ -610,6 +610,7 @@ async def test_real_call_session_handles_fake_ari_no_answer(
         assert len(sessions) == 1
         return
 
+    await settled(lambda: not session.speaking())
     for words in (12, 14, 16, 18):
         previous_recognitions = len(recognizer.heard)
         await session.feed(phrase(words))
@@ -617,8 +618,9 @@ async def test_real_call_session_handles_fake_ari_no_answer(
         await settled(lambda: session._responder is not None and session._responder.done())
         if words < 18:
             await settled(lambda: not session.speaking())
-    await asyncio.sleep(0.05)
+    await settled(lambda: session.ended)
     if emergency_during_callback:
+        await settled(lambda: sum(call[0] == "originate" for call in line.ari.calls) == 2)
         originates = [call for call in line.ari.calls if call[0] == "originate"]
         assert len(originates) == 2
         assert originates[1][-1] == 20

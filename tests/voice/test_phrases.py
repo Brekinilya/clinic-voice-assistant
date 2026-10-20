@@ -87,7 +87,11 @@ def test_outbound_phrases_without_personal_data(book):
 
 def test_third_party_gets_no_details(book):
     # контрольный диалог 4
-    assert book.get("my_visits.third_party").placeholders() == []
+    third_party = book.get("my_visits.third_party")
+    assert third_party.placeholders() == []
+    assert "регистратора" in third_party.text.casefold()
+    assert "sms" not in third_party.text.casefold()
+    assert "my_visits.sms_sent" not in book.templates
 
 
 def test_honest_robot_answer(book):

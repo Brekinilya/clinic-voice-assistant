@@ -12,7 +12,7 @@ from app.booking.service import BookingService
 from app.demo import DemoClock, DemoSchedule, EmulatorBudget, demo_emulator
 from app.dialogue.input import Command, Operation
 from app.dialogue.memory import MemoryDialogueStore
-from app.dialogue.models import DialogueError, Phase, Turn
+from app.dialogue.models import DialogueError, Phase, TransferRequest, Turn, reply
 from app.dialogue.service import DialogueService
 from app.main import create_app
 from app.mis.http import HttpMedicalSystem
@@ -92,6 +92,31 @@ async def test_partial_is_not_saved_and_different_content_conflicts(dialogue):
     with pytest.raises(DialogueError, match="TURN_OUT_OF_ORDER"):
         await service.handle("call-1", Turn(turn_id=3, text="статус"))
     assert emulator.write_count == 0
+
+
+async def test_handoff_callback_turns_advance_and_replay_idempotently():
+    store = MemoryDialogueStore()
+    state = await store.preempt("handoff-call", 1, TransferRequest(route="R-02", priority="P2"))
+    assert state.phase == Phase.HANDOFF and state.last_turn_id == 1
+
+    callback_step = reply(state, 2, "Назовите номер телефона.", code="CALLBACK_STEP")
+    state, saved = await store.save_handoff_turn(
+        "handoff-call", 2, "callback-contact", state.version, callback_step
+    )
+    assert state.last_turn_id == 2 and state.version == 2
+    assert saved is not None and saved.turn_id == 2 and saved.version == state.version
+
+    replayed_state, replayed = await store.save_handoff_turn(
+        "handoff-call", 2, "callback-contact", 0, callback_step
+    )
+    assert replayed_state == state and replayed == saved
+
+    queued = reply(state, 3, "Задача сохранена.", code="CALLBACK_QUEUED")
+    ended, final = await store.finish_handoff_turn(
+        "handoff-call", 3, "callback-confirm", state.version, queued
+    )
+    assert ended.phase == Phase.ENDED and ended.last_turn_id == 3
+    assert final is not None and final.phase == Phase.ENDED and final.version == ended.version
 
 
 async def test_expiry_and_end_release_only_local_holds(dialogue):

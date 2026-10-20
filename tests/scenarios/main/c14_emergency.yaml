@@ -25,6 +25,7 @@ dialogs:
       code: EMERGENCY
       stand: unchanged
       card: {intent: I-11, rule: R-01, priority: P1}
+      fake_transfer: connected
 
   - name: скорую уже вызвали
     steps:
@@ -47,3 +48,4 @@ dialogs:
         transfer: {route: R-01, priority: P1}
     result:
       code: EMERGENCY
+      fake_transfer: connected

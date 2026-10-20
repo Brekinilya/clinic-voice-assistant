@@ -1,11 +1,16 @@
 """Выполняем YAML через HTTP API; ожидания не подставляются в NLU или ответы."""
 
+import json
 import re
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
+from app.clock import CLINIC_TIMEZONE
 from app.dialogue.models import Reply
+from app.handoffs.models import CallbackState, TransferState
 from app.mis.models import VisitStatus
 from tests.scenarios.runtime import TOKEN, ScenarioRuntime, moment
 
@@ -47,21 +52,12 @@ CODE_EXPECTATIONS = {
 }
 GAPS = {
     "labs.": "labs_status_source_T09",
-    "home_visit.": "home_visit_T09",
-    "callback.": "callback_T08",
     "waitlist.": "waitlist_T08",
     "attach.": "faq_T09",
-    "schedule.": "schedule_faq_T09",
     "silence.": "voice_event_channel_T03",
     "complaint.callback": "callback_T08",
     "transfer.outside_hours": "callback_T08",
-    "my_visits.sms_sent": "sms_delivery_T20",
-    "ident.relation": "guardian_T10",
-    "ident.ask_child": "guardian_T10",
-    "referral.": "referral_conversation_T09",
     "paid.price": "legacy_paid_catalog_outside_scope",
-    "transfer.ministry": "faq_T09",
-    "transfer.insurer": "faq_T09",
     "wait.schedule": "intermediate_wait_prompt_T03_T05",
 }
 
@@ -72,6 +68,18 @@ TEXT_REQUIREMENTS = {
 
 # Проверяем и происхождение, и содержание; одного INFO_GIVEN недостаточно.
 INFORMATION_EXPECTATIONS = {
+    "schedule.specialty": (
+        "doctor_schedule_unavailable",
+        (r"график|расписание", r"в справочнике нет|не указан|не могу подтвердить", r"регистратор"),
+    ),
+    "transfer.ministry": (
+        "medicine_benefits",
+        (r"колл-центр Минздрава", r"сто двадцать два"),
+    ),
+    "transfer.insurer": (
+        "insurance_policy",
+        (r"страховая компания", r"телефон указан на полисе"),
+    ),
     "attach.how": (
         "attachment",
         (r"Госуслуг", r"окне номер один", r"паспорт", r"полис", r"СНИЛС", r"трех рабочих дней"),
@@ -172,7 +180,7 @@ def templates(step):
     return [value] if isinstance(value, str) else value
 
 
-def verify_step(result, number, step, response):
+async def verify_step(result, number, step, response, runtime):
     text = " ".join(response.utterances).casefold().replace("ё", "е")
     public_data = response.model_dump_json().casefold().replace("ё", "е")
     for forbidden in step.get("forbid", ()):
@@ -219,6 +227,147 @@ def verify_step(result, number, step, response):
     ):
         result.add("slot_weekdays", "Предложен запрещённый день недели", step=number)
     for name in templates(step):
+        if name == "ident.ask_child":
+            if not re.search(r"реб[её]нка", text, re.IGNORECASE):
+                result.add("guardian_T10", "Не запрошены данные ребёнка", step=number)
+            continue
+        if name == "ident.relation":
+            state = await runtime.dialogue_store.inspect(runtime.call_id)
+            expected_child = runtime.client_ids.get("smirnova_ad")
+            if (
+                not re.search(r"кем вы приходитесь", text, re.IGNORECASE)
+                or state.client_id != expected_child
+                or not state.guardian_call
+            ):
+                result.add(
+                    "guardian_T10",
+                    "Не подтверждены идентификация ребёнка и вопрос о родстве звонящего",
+                    step=number,
+                )
+            continue
+        if name == "booking.offer_nearest" and result.scenario_id == "M-12":
+            state = await runtime.dialogue_store.inspect(runtime.call_id)
+            if not state.guardian_call or state.guardian_relation != "мама":
+                result.add("guardian_T10", "Не сохранена роль звонящего как матери", step=number)
+            continue
+        if name == "callback.offer":
+            if response.code != "CALLBACK_OFFERED":
+                result.add(
+                    "callback_offer_T08",
+                    "Не создано предложение обратного звонка через HandoffService",
+                    step=number,
+                )
+            continue
+        if name == "callback.created":
+            if response.code != "CALLBACK_QUEUED" or response.phase != "ended":
+                result.add(
+                    "callback_result_T08",
+                    "Ответ не подтверждает сохранённую задачу обратного звонка",
+                    step=number,
+                )
+            continue
+        if name == "callback.mis_down":
+            request = await runtime.handoff_store.request_for_call(runtime.call_id)
+            tasks = await runtime.handoff_store.list_callback_tasks(limit=10000, offset=0)
+            visit_posts = [
+                item
+                for item in runtime.emulator.requests
+                if item.method == "POST" and item.resource == "visits"
+            ]
+            if (
+                response.code != "RECONCILING"
+                or response.phase != "reconciling"
+                or runtime.emulator.write_count != 0
+                or len(visit_posts) != 1
+                or request is not None
+                or tasks
+            ):
+                result.add(
+                    "callback_mis_down_T08",
+                    "Неопределённый POST должен остаться на сверке без повтора и ложной callback-задачи",
+                    step=number,
+                )
+            continue
+        callback_steps = {
+            "callback.contact": (r"CALLBACK_STEP", r"номер телефона"),
+            "callback.time": (r"CALLBACK_STEP", r"удобное время|ближайшее время"),
+            "callback.confirm": (r"CALLBACK_STEP", r"сохранить|подтвердите"),
+        }
+        if name in callback_steps:
+            code, text_pattern = callback_steps[name]
+            if response.code != code or re.search(text_pattern, text, re.IGNORECASE) is None:
+                result.add(
+                    "callback_step_T08",
+                    "Не подтверждён ожидаемый шаг оформления callback",
+                    step=number,
+                )
+            continue
+        if name.startswith("referral."):
+            valid = True
+            if name == "referral.missing":
+                valid = (
+                    response.code == "REFERRAL_REQUIRED"
+                    and response.expect == "yes_no"
+                    and re.search(r"направлен|участков", text, re.IGNORECASE) is not None
+                )
+            elif name == "referral.found":
+                state = await runtime.dialogue_store.inspect(runtime.call_id)
+                client_id = state.client_id
+                valid = (
+                    bool(response.options)
+                    and client_id is not None
+                    and all(
+                        runtime.schedule.access_state(client_id, slot) == "allowed"
+                        for slot in response.options
+                    )
+                    and re.search(r"направлен", text, re.IGNORECASE) is not None
+                )
+            elif name == "referral.done":
+                valid = (
+                    response.code == "BOOKED"
+                    and response.phase == "booked"
+                    and re.search(r"паспорт", text, re.IGNORECASE) is not None
+                    and re.search(r"полис", text, re.IGNORECASE) is not None
+                )
+            elif name == "referral.paper":
+                valid = (
+                    response.transfer is not None
+                    and response.transfer.route == "R-08"
+                    and response.transfer.priority == "P3"
+                    and re.search(r"бумажн.*направлен|направлен.*регистратор", text, re.IGNORECASE)
+                    is not None
+                )
+            if not valid:
+                result.add(
+                    "referral:" + name,
+                    "Не подтверждён маршрут или результат работы с направлением",
+                    step=number,
+                )
+            continue
+        if name.startswith("home_visit."):
+            expected = {
+                "home_visit.late": ("HOME_VISIT_CONTINUE", r"завтра|среду"),
+                "home_visit.safety": ("HOME_VISIT_IDENTITY", r"сто три|сто 103"),
+                "home_visit.ask_address": ("HOME_VISIT_ADDRESS", r"адрес"),
+                "home_visit.ask_reason": ("HOME_VISIT_QUESTION", r"что случилось"),
+                "home_visit.ask_can_come": ("HOME_VISIT_QUESTION", r"сами прийти"),
+                "home_visit.accepted": ("HOME_VISIT_REQUESTED", r"заявка принята"),
+                "home_visit.done": ("HOME_VISIT_REQUESTED", r"выздоравливайте"),
+            }
+            code, phrase = expected[name]
+            if response.code != code or re.search(phrase, text, re.IGNORECASE) is None:
+                result.add(
+                    "home_visit_T09", "Не подтверждён ответ по вызову врача на дом", step=number
+                )
+            if name == "home_visit.accepted":
+                request = await runtime.handoff_store.request_for_call(runtime.call_id)
+                if request is None or request.home_visit_state != "pending_confirmation":
+                    result.add(
+                        "home_visit_T09",
+                        "Заявка не сохранена с ожидающим подтверждением",
+                        step=number,
+                    )
+            continue
         gap = next((value for prefix, value in GAPS.items() if name.startswith(prefix)), None)
         if name == "remind.details":
             if response.code != "REMINDER_DETAILS" or response.phase != "remind_details":
@@ -393,6 +542,216 @@ async def verify_reminder_result(result, runtime, reminder_result):
     }
 
 
+async def verify_handoff_card(result, runtime, response, expectation, number):
+    request = await runtime.handoff_store.request_for_call(runtime.call_id)
+    if request is None:
+        result.add("operator_card_T08", "HandoffService не сохранил карточку перевода", step=number)
+        return
+    expected_route = expectation.get("route", expectation.get("rule"))
+    expected_priority = expectation.get("priority")
+    if expected_route and request.route != expected_route:
+        result.add("operator_card_T08", "Маршрут карточки не совпадает с YAML", step=number)
+    if expected_priority and request.priority != expected_priority:
+        result.add("operator_card_T08", "Приоритет карточки не совпадает с YAML", step=number)
+    if (
+        response is not None
+        and response.transfer is not None
+        and (
+            request.route != response.transfer.route
+            or request.priority != response.transfer.priority
+        )
+    ):
+        result.add("operator_card_T08", "Карточка не совпадает с маршрутом ответа", step=number)
+    state = await runtime.dialogue_store.inspect(runtime.call_id)
+    expected_identity = "verified" if state.client_id is not None else "unknown"
+    if request.identity_status != expected_identity:
+        result.add(
+            "operator_card_T08",
+            "Статус идентификации карточки не совпадает с диалогом",
+            step=number,
+        )
+    if not request.summary.strip():
+        result.add("operator_card_T08", "В карточке отсутствует краткое содержание", step=number)
+    if request.identity_status == "verified":
+        if request.client_id != state.client_id:
+            result.add("operator_card_T08", "Карточка содержит неверный client_id", step=number)
+    elif request.client_id is not None:
+        result.add(
+            "operator_card_T08", "В карточке без идентификации указан client_id", step=number
+        )
+    tasks = await runtime.handoff_store.list_callback_tasks(limit=10000, offset=0)
+    request_tasks = [task for task in tasks if task.request_id == request.request_id]
+    if request.priority == "P1" and (request.callback_state is not None or request_tasks):
+        result.add("callback_T08", "Для P1 недопустима задача обратного звонка", step=number)
+    result.evidence["handoff_card"] = {
+        "route": request.route,
+        "priority": request.priority,
+        "identity_status": request.identity_status,
+        "summary_present": bool(request.summary.strip()),
+        "client_id_present": request.client_id is not None,
+        "caller_is_representative": request.caller_is_representative,
+        "transfer_state": request.transfer_state.value,
+    }
+
+
+def _expected_callback_deadline(now: datetime, priority: str) -> datetime:
+    """Independent scenario expectation for §7.6, including 2026 non-working days."""
+    now = now.astimezone(CLINIC_TIMEZONE)
+    if priority not in {"P2", "P3"}:
+        raise ValueError("callback is only valid for P2/P3")
+    holidays = {datetime(2026, 1, day).date() for day in range(1, 12)} | {
+        datetime(2026, month, day).date()
+        for month, days in {
+            2: (23,),
+            3: (9,),
+            5: (1, 9, 11),
+            6: (12,),
+            11: (4,),
+            12: (31,),
+        }.items()
+        for day in days
+    }
+
+    def hours(day):
+        if day.weekday() == 6 or day in holidays:
+            return None
+        return (8, 30, 15) if day.weekday() == 5 else (7, 0, 20)
+
+    opening = hours(now.date())
+    minutes = 15 if priority == "P2" else 30
+    candidate = now + timedelta(minutes=minutes)
+    if (
+        opening is not None
+        and (opening[0], opening[1]) <= (now.hour, now.minute)
+        and now.time()
+        < datetime(now.year, now.month, now.day, opening[2], tzinfo=now.tzinfo).time()
+        and candidate.date() == now.date()
+        and candidate.hour * 60 + candidate.minute <= opening[2] * 60
+    ):
+        return candidate
+    day = now.date() + timedelta(days=1)
+    while hours(day) is None:
+        day += timedelta(days=1)
+    return datetime(day.year, day.month, day.day, 10, 0, tzinfo=CLINIC_TIMEZONE)
+
+
+async def verify_callback_task(result, runtime, expectation, responses):
+    request = await runtime.handoff_store.request_for_call(runtime.call_id)
+    task = (
+        await runtime.handoff_store.get_callback_task_by_request(request.request_id)
+        if request is not None
+        else None
+    )
+    if request is None or task is None:
+        result.add("callback_task_T08", "HandoffService не сохранил задачу обратного звонка")
+        return
+    tasks = await runtime.handoff_store.list_callback_tasks(limit=10000, offset=0)
+    request_tasks = [item for item in tasks if item.request_id == request.request_id]
+    if len(request_tasks) != 1:
+        result.add(
+            "callback_task_T08", f"Ожидалась ровно одна задача, сохранено {len(request_tasks)}"
+        )
+        return
+    expected_state = expectation.get("state", "queued")
+    if task.state.value != expected_state or request.callback_state != CallbackState(
+        expected_state
+    ):
+        result.add("callback_task_T08", "Состояние задачи не совпадает с YAML")
+    if not task.contact_masked or not task.contact_ciphertext or task.priority != request.priority:
+        result.add("callback_task_T08", "В задаче не подтверждены номер и приоритет")
+    expected_deadline = _expected_callback_deadline(runtime.clock.now(), request.priority)
+    if task.deadline != expected_deadline or request.callback_deadline != expected_deadline:
+        result.add("callback_deadline_T08", "Сохранённый срок не совпадает с §7.6")
+    before = expectation.get("before")
+    exact = expectation.get("deadline")
+    if before and task.deadline > moment(before):
+        result.add("callback_deadline_T08", "Срок позже предела из YAML")
+    if exact and task.deadline != moment(exact):
+        result.add("callback_deadline_T08", "Срок не совпадает с YAML")
+    phrase = f"{task.deadline.day:02}.{task.deadline.month:02} в {task.deadline:%H:%M}"
+    spoken = " ".join(" ".join(reply.utterances) for reply in responses)
+    if phrase not in spoken:
+        result.add("callback_deadline_T08", "Ответ не называет срок обратного звонка")
+    result.evidence["callback_task"] = {
+        "state": task.state.value,
+        "priority": task.priority,
+        "contact_masked": task.contact_masked,
+        "deadline": task.deadline.isoformat(),
+        "deadline_spoken": phrase in spoken,
+        "task_count": len(request_tasks),
+    }
+
+
+async def record_fake_transfer(
+    result, runtime, *, outcome, number, start_callback, responses, turn_id=None
+):
+    request = await runtime.handoff_store.request_for_call(runtime.call_id)
+    if request is None:
+        result.add("handoff_completion_T08_T04", "Нет карточки для исхода перевода", step=number)
+        return None
+    if outcome not in {"no_answer", "busy", "connected", "failed"}:
+        result.add("handoff_completion_T08_T04", "Неизвестный fake outcome из YAML", step=number)
+        return None
+    stored_outcome = "failed" if outcome in {"busy", "failed"} else outcome
+    attempt_id = f"scenario-{number}"
+    state = await runtime.dialogue_store.inspect(runtime.call_id)
+    event = SimpleNamespace(
+        attempt_id=attempt_id,
+        call_id=runtime.call_id,
+        route=request.route,
+        priority=request.priority,
+    )
+    await runtime.handoffs.transfer_started(event, state)
+    await runtime.handoffs.transfer_result(
+        SimpleNamespace(
+            **vars(event),
+            outcome=stored_outcome,
+            reason="busy" if outcome == "busy" else "scenario",
+        )
+    )
+    saved = await runtime.handoff_store.request_for_call(runtime.call_id)
+    if saved is None or saved.transfer_state != TransferState(stored_outcome):
+        result.add(
+            "handoff_completion_T08_T04", "HandoffService не сохранил исход перевода", step=number
+        )
+        return None
+    transfer_replies = [reply for reply in responses if reply.transfer is not None]
+    if not transfer_replies or any(
+        reply.transfer.route != saved.route or reply.transfer.priority != saved.priority
+        for reply in transfer_replies
+    ):
+        result.add(
+            "handoff_completion_T08_T04",
+            "Диалоговый ответ не совпадает с фактически сохранённой карточкой",
+            step=number,
+        )
+    result.evidence["handoff_completion"] = {
+        "evidence": "fake_transfer",
+        "outcome": outcome,
+        "stored_state": saved.transfer_state.value,
+        "reason": saved.transfer_reason,
+    }
+    if outcome == "connected" or saved.priority == "P1":
+        tasks = await runtime.handoff_store.list_callback_tasks(limit=10000, offset=0)
+        if saved.callback_state is not None or any(t.request_id == saved.request_id for t in tasks):
+            result.add("callback_T08", "Для перевода без callback создана задача", step=number)
+        return None
+    if not start_callback:
+        result.add(
+            "callback_offer_T08",
+            "Для исхода без ответа не заданы шаги согласия, контакта и времени",
+            "unsupported",
+            number,
+        )
+        return None
+    turn_id = turn_id if turn_id is not None else state.last_turn_id + 1
+    callback_reply = await runtime.service.start_callback(runtime.call_id, turn_id, outcome)
+    if callback_reply is None:
+        result.add("callback_offer_T08", "HandoffService не предложил обратный звонок", step=number)
+        return None
+    return callback_reply
+
+
 def verify_records(result, runtime, expectation):
     actual = runtime.snapshot()
     initial = runtime.initial_records
@@ -456,6 +815,72 @@ def verify_records(result, runtime, expectation):
             result.add("duplicate_visit", "После отказа создано больше одного визита", "critical")
 
 
+VOICE_REQUIREMENTS = {
+    "event:silence": {"R-17"},
+    "intermediate_wait_prompt_T03_T05": {"D-13"},
+    "recording_engine_T13": {"D-15"},
+}
+
+
+def apply_voice_evidence(results, path: Path, source: dict) -> None:
+    document = json.loads(path.read_text("utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("source"), dict):
+        raise ValueError("voice evidence must contain a source object")
+    rows = document.get("results")
+    if not isinstance(rows, list):
+        raise ValueError("voice evidence must contain a results array")
+
+    evidence_source = document["source"]
+    evidence_commit = evidence_source.get("commit")
+    source_matches = bool(evidence_commit) and evidence_commit == source.get("commit")
+    if evidence_source.get("source_sha256") and source.get("source_sha256"):
+        source_matches = source_matches and (
+            evidence_source["source_sha256"] == source["source_sha256"]
+        )
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        requirement = row.get("requirement")
+        scenario_id = row.get("scenario_id")
+        if (
+            requirement not in VOICE_REQUIREMENTS
+            or scenario_id not in VOICE_REQUIREMENTS[requirement]
+        ):
+            continue
+        target = next(
+            (
+                result
+                for result in results
+                if result.scenario_id == scenario_id and result.label == row.get("label")
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        accepted = source_matches and row.get("verdict") == "ok"
+        target.evidence["voice_session"] = {
+            "evidence": "voice_session" if accepted else "unsupported",
+            "requirement": requirement,
+            "source_commit": evidence_source.get("commit"),
+            "verdict": row.get("verdict"),
+            "detail": (
+                "голосовое доказательство относится к другому исходному дереву"
+                if not source_matches
+                else row.get("detail", "голосовое доказательство не подтверждено")
+            ),
+        }
+        if not accepted:
+            target.finish()
+            continue
+        target.findings = [
+            finding
+            for finding in target.findings
+            if not (finding.kind == "unsupported" and finding.code == requirement)
+        ]
+        target.finish()
+
+
 async def run_dialog(dialog, *, blocking=False, runtime=None):
     runtime = runtime if runtime is not None else ScenarioRuntime(dialog)
     result = DialogResult(dialog.scenario, dialog.label, blocking)
@@ -463,6 +888,7 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
     started = time.perf_counter()
     beginning = runtime.clock.now()
     responses = []
+    next_turn_id = 1
     outbound = dialog.setup["channel"] == "outbound"
     try:
         async with runtime.application() as client:
@@ -472,6 +898,7 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     result.add("outbound_open", "Исполнитель не открыл исходящий диалог", "error")
                 else:
                     responses.append(opening)
+                    next_turn_id = opening.turn_id + 1
             for number, step in enumerate(dialog.steps, 1):
                 if "patient" not in step:
                     if "event" in step:
@@ -497,7 +924,54 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                                     "event": "voicemail",
                                 }
                             )
-                            verify_step(result, number, step, reply)
+                            await verify_step(result, number, step, reply, runtime)
+                        elif step["event"] in {"handoff_no_answer", "handoff_result"}:
+                            outcome = step.get("outcome", "no_answer")
+                            callback_reply = await record_fake_transfer(
+                                result,
+                                runtime,
+                                outcome=outcome,
+                                number=number,
+                                start_callback=True,
+                                responses=responses,
+                                turn_id=responses[-1].turn_id + 1 if responses else 1,
+                            )
+                            result.steps.append(
+                                {
+                                    "step": number,
+                                    "event": "handoff_result",
+                                    "outcome": outcome,
+                                    "evidence": "fake_transfer",
+                                }
+                            )
+                            if callback_reply is not None:
+                                responses.append(callback_reply)
+                                next_turn_id = max(next_turn_id, callback_reply.turn_id + 1)
+                                result.steps[-1].update(
+                                    {
+                                        "turn": callback_reply.turn_id,
+                                        "phase": callback_reply.phase,
+                                        "code": callback_reply.code,
+                                    }
+                                )
+                                await verify_step(result, number, step, callback_reply, runtime)
+                        elif step["event"] == "handoff_connected":
+                            await record_fake_transfer(
+                                result,
+                                runtime,
+                                outcome="connected",
+                                number=number,
+                                start_callback=False,
+                                responses=responses,
+                            )
+                            result.steps.append(
+                                {
+                                    "step": number,
+                                    "event": "handoff_result",
+                                    "outcome": "connected",
+                                    "evidence": "fake_transfer",
+                                }
+                            )
                         else:
                             result.add(
                                 "event:" + step["event"],
@@ -509,7 +983,8 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     continue
                 if step.get("advance_s"):
                     runtime.clock.value += timedelta(seconds=step["advance_s"])
-                turn = len(responses) + 1
+                turn = next_turn_id
+                next_turn_id += 1
                 mutations_before = (
                     runtime.emulator.write_count,
                     runtime.emulator.patch_count,
@@ -554,6 +1029,7 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         "options": len(reply.options),
                         "http_requests": len(runtime.emulator.requests) - requests_before,
                         "identified": state["client_id"] is not None,
+                        "said": list(reply.utterances),
                     }
                 )
                 if (
@@ -605,7 +1081,7 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                         "critical",
                         number,
                     )
-                verify_step(result, number, step, reply)
+                await verify_step(result, number, step, reply, runtime)
             if outbound and runtime.reminder_attempt_id is not None:
                 state = await runtime.dialogue_store.inspect(runtime.call_id)
                 reminder_result = state.reminder_result
@@ -617,20 +1093,42 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     )
                     await verify_reminder_result(result, runtime, reminder_result)
             verify_records(result, runtime, dialog.result.get("stand"))
+            configured_outcome = dialog.result.get("fake_transfer")
+            if configured_outcome:
+                outcome = (
+                    configured_outcome.get("outcome", "connected")
+                    if isinstance(configured_outcome, dict)
+                    else configured_outcome
+                )
+                await record_fake_transfer(
+                    result,
+                    runtime,
+                    outcome=outcome,
+                    number=len(dialog.steps) + 1,
+                    start_callback=False,
+                    responses=responses,
+                )
             expected_code = dialog.result.get("code")
             if expected_code == "ESCALATED" and any(r.transfer is not None for r in responses):
-                result.add(
-                    "handoff_completion_T08_T04",
-                    "Запрос перевода не доказывает состоявшееся соединение",
-                    "unsupported",
-                )
+                if "handoff_completion" not in result.evidence:
+                    result.add(
+                        "handoff_completion_T08_T04",
+                        "В YAML не задан исход перевода; результат связи не подтверждён",
+                        "unsupported",
+                    )
             elif expected_code and expected_code not in {r.code for r in responses}:
                 result.add("result_code", f"Не получен итоговый код {expected_code}")
+            if "card" in dialog.result:
+                card_response = next(
+                    (r for r in reversed(responses) if r.transfer is not None), None
+                )
+                await verify_handoff_card(
+                    result, runtime, card_response, dialog.result["card"], len(responses)
+                )
+            if "callback" in dialog.result:
+                await verify_callback_task(result, runtime, dialog.result["callback"], responses)
             for key, feature in {
-                "card": "operator_card_T08",
                 "sms": "sms_delivery_T20",
-                "callback": "callback_T08",
-                "home_visit": "home_visit_T09",
                 "waitlist": "waitlist_T08",
                 "recording": "recording_engine_T13",
             }.items():
@@ -638,6 +1136,31 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     result.add(
                         feature, "Нельзя подтвердить обязательный результат " + key, "unsupported"
                     )
+            if "home_visit" in dialog.result:
+                expected = dialog.result["home_visit"]
+                request = await runtime.handoff_store.request_for_call(runtime.call_id)
+                if request is None:
+                    result.add("home_visit_T09", "Заявка на вызов не найдена в локальном хранилище")
+                else:
+                    try:
+                        payload = runtime.handoffs.decrypt_home_visit_payload(request)
+                    except (ValueError, TypeError):
+                        payload = {}
+                    if (
+                        request.purpose != "home_visit"
+                        or request.home_visit_state != "pending_confirmation"
+                        or request.identity_status != "verified"
+                        or request.client_id != runtime.client_ids[expected["client"]]
+                        or payload.get("requested_date")
+                        != datetime.strptime(expected["date"], "%d.%m.%Y").date().isoformat()
+                        or request.priority != "P3"
+                        or payload.get("reason") != expected["reason"]
+                        or not payload.get("address")
+                        or len(runtime.handoff_store.requests) != 1
+                    ):
+                        result.add(
+                            "home_visit_T09", "Сохранённая заявка не совпадает с данными сценария"
+                        )
             # Наличие флага opt-out не доказывает физическое прекращение записи аудио.
             if dialog.result.get("recording") is False:
                 state = await runtime.dialogue_store.inspect(runtime.call_id)

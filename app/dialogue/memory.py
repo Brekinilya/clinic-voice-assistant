@@ -82,6 +82,13 @@ class MemoryDialogueStore:
                 update={
                     "last_turn_id": max(turn_id, state.started_turn_id - 1),
                     "pending_turn_id": None,
+                    "last_question": (
+                        result.utterances[-1]
+                        if state.reminder is None
+                        and result.question is not None
+                        and result.utterances
+                        else None
+                    ),
                 }
             )
             old = self.receipts[(state.call_id, turn_id)]
@@ -125,6 +132,32 @@ class MemoryDialogueStore:
                 }
             )
             saved_reply = result.model_copy(update={"phase": Phase.ENDED, "version": state.version})
+            self.states[call_id] = state
+            self.receipts[(call_id, turn_id)] = Receipt(digest=digest, reply=saved_reply)
+            return state, saved_reply
+
+    async def save_handoff_turn(self, call_id, turn_id, digest, expected_version, result):
+        async with self._lock:
+            state = self.states.get(call_id, DialogueState(call_id=call_id))
+            receipt = self.receipts.get((call_id, turn_id))
+            if receipt is not None:
+                if receipt.digest != digest:
+                    raise DialogueError("TURN_CONTENT_CONFLICT")
+                return state, receipt.reply
+            if state.phase != Phase.HANDOFF or state.version != expected_version:
+                return state, None
+            if turn_id != state.last_turn_id + 1:
+                raise DialogueError("TURN_OUT_OF_ORDER")
+            state = state.model_copy(
+                update={
+                    "version": state.version + 1,
+                    "last_turn_id": turn_id,
+                    "pending_turn_id": None,
+                }
+            )
+            saved_reply = result.model_copy(
+                update={"phase": Phase.HANDOFF, "version": state.version}
+            )
             self.states[call_id] = state
             self.receipts[(call_id, turn_id)] = Receipt(digest=digest, reply=saved_reply)
             return state, saved_reply
@@ -245,7 +278,9 @@ class MemoryDialogueStore:
             ):
                 return state
             pending = self.pending.pop(call_id, None)
-            state = preempt_state(state, transfer)
+            state = preempt_state(state, transfer).model_copy(
+                update={"last_turn_id": max(turn_id, state.last_turn_id)}
+            )
             self.states[call_id] = state
             if pending is not None:
                 old = self.receipts[(call_id, pending)]

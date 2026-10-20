@@ -56,6 +56,7 @@ class HandoffRequest(BookingModel):
     route: str = Field(min_length=1, max_length=16)
     priority: Literal["P1", "P2", "P3"]
     identity_status: Literal["verified", "unknown"] = "unknown"
+    caller_is_representative: bool = False
     client_id: MisId | None = None
     purpose: str = Field(default="unknown", max_length=32)
     summary: str = Field(default="", max_length=200)
@@ -71,6 +72,8 @@ class HandoffRequest(BookingModel):
     callback_preferred_at: datetime | None = None
     callback_attempts: int = Field(default=0, ge=0, le=3)
     callback_sms_pending: bool = False
+    home_visit_state: Literal["pending_confirmation"] | None = None
+    home_visit_payload_ciphertext: str | None = Field(default=None, repr=False)
     version: int = Field(default=1, ge=1)
 
 

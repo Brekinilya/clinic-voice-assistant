@@ -54,3 +54,88 @@ async def test_more_options_returns_a_new_page_without_repeating_slots():
             assert all(
                 (slot.doctor_id, slot.scheduled_at) not in previous for slot in result.options
             )
+
+
+async def test_other_day_during_slot_offer_stays_in_current_booking():
+    dialog = dialog_by_label("M-01")
+    runtime = ScenarioRuntime(dialog)
+    writes_before = runtime.emulator.write_count
+    async with runtime.application() as client:
+        for turn_id, step in enumerate(patient_steps(dialog)[:3], start=1):
+            await advance(client, runtime.call_id, turn_id, step["patient"])
+
+        result = await advance(client, runtime.call_id, 4, "А можно на другой день?")
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        assert result.code == "OTHER_DAY_REQUESTED"
+        assert result.phase == "offered" and state.purpose == "booking"
+        assert state.specialty == "терапевт" and state.options
+        assert runtime.emulator.write_count == writes_before
+
+
+async def test_other_day_at_booking_confirmation_releases_hold_without_reschedule():
+    dialog = dialog_by_label("M-01")
+    runtime = ScenarioRuntime(dialog)
+    writes_before = runtime.emulator.write_count
+    async with runtime.application() as client:
+        for turn_id, step in enumerate(patient_steps(dialog)[:4], start=1):
+            await advance(client, runtime.call_id, turn_id, step["patient"])
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+        action = await runtime.booking_store.get(state.proposal.action_id)
+
+        result = await advance(client, runtime.call_id, 5, "А можно на другой день?")
+        updated = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        assert result.code == "OTHER_DAY_REQUESTED"
+        assert updated.phase == "identified" and updated.proposal is None
+        assert (await runtime.booking_store.get(action.action_id)).state.value == "cancelled"
+        assert runtime.emulator.write_count == writes_before
+
+
+async def test_repeat_replays_last_active_question_without_changing_phase():
+    dialog = dialog_by_label("M-01")
+    runtime = ScenarioRuntime(dialog)
+    async with runtime.application() as client:
+        first = await advance(client, runtime.call_id, 1, patient_steps(dialog)[0]["patient"])
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        repeated = await advance(client, runtime.call_id, 2, "Повторите, пожалуйста.")
+        after = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        assert first.utterances[-1] == repeated.utterances[0] == state.last_question
+        assert repeated.code == "QUESTION_REPEATED"
+        assert after.phase == state.phase
+
+
+async def test_repeat_replays_reschedule_source_question():
+    dialog = dialog_by_label("M-03")
+    runtime = ScenarioRuntime(dialog)
+    async with runtime.application() as client:
+        for turn_id, step in enumerate(patient_steps(dialog)[:2], start=1):
+            await advance(client, runtime.call_id, turn_id, step["patient"])
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+        assert state.phase == "move_source"
+
+        repeated = await advance(client, runtime.call_id, 3, "Повторите, пожалуйста.")
+        after = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        assert repeated.code == "QUESTION_REPEATED"
+        assert repeated.utterances == (state.last_question,)
+        assert after.phase == state.phase
+
+
+async def test_price_aside_returns_to_the_same_booking_question():
+    dialog = dialog_by_label("M-01")
+    runtime = ScenarioRuntime(dialog)
+    async with runtime.application() as client:
+        for turn_id, step in enumerate(patient_steps(dialog)[:3], start=1):
+            await advance(client, runtime.call_id, turn_id, step["patient"])
+        before = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        result = await advance(client, runtime.call_id, 4, "Сколько стоит приём?")
+        after = await runtime.dialogue_store.inspect(runtime.call_id)
+
+        assert result.code == "PRICE_UNAVAILABLE"
+        assert "уточнит регистратор" in " ".join(result.utterances).casefold()
+        assert after.phase == before.phase == "offered"
+        assert after.specialty == before.specialty and after.options == before.options

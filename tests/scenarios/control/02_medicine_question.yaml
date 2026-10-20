@@ -26,3 +26,4 @@ result:
   code: ESCALATED
   stand: unchanged
   card: {intent: I-13, rule: R-04}
+  fake_transfer: connected

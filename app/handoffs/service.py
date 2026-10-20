@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import re
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
@@ -47,6 +48,39 @@ class HandoffService:
             base64.urlsafe_b64encode(hashlib.sha256(b"t08-callback\0" + hash_key).digest())
         )
 
+    def encrypt_home_visit_payload(self, payload: dict) -> str:
+        return self.cipher.encrypt(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+
+    def decrypt_home_visit_payload(self, request: HandoffRequest) -> dict:
+        if request.purpose != "home_visit" or not request.home_visit_payload_ciphertext:
+            raise ValueError("HOME_VISIT_PAYLOAD_UNAVAILABLE")
+        return json.loads(
+            self.cipher.decrypt(request.home_visit_payload_ciphertext.encode("ascii"))
+        )
+
+    async def create_home_visit_request(
+        self, call_id: str, state: DialogueState, payload_ciphertext: str
+    ) -> HandoffRequest:
+        if state.client_id is None:
+            raise ValueError("HOME_VISIT_IDENTITY_REQUIRED")
+        request = HandoffRequest(
+            request_id=uuid4().hex,
+            call_id=call_id,
+            created_at=self.clock.now().astimezone(CLINIC_TIMEZONE),
+            route="R-08",
+            priority="P3",
+            identity_status="verified",
+            client_id=state.client_id,
+            purpose="home_visit",
+            summary="Заявка на вызов врача на дом; ожидает подтверждения регистратора.",
+            recording_opt_out=state.recording_opt_out,
+            home_visit_state="pending_confirmation",
+            home_visit_payload_ciphertext=payload_ciphertext,
+        )
+        return await self.store.create_request(request)
+
     async def ensure_request(
         self,
         call_id: str,
@@ -83,6 +117,7 @@ class HandoffService:
             route=route,
             priority=priority,
             identity_status="verified" if known else "unknown",
+            caller_is_representative=state.guardian_call if state is not None else False,
             client_id=state.client_id if known else None,
             purpose=purpose,
             summary=summary,

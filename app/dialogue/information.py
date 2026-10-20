@@ -81,6 +81,16 @@ class InformationConversation:
         topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
         # Короткие ответы относятся к справочному вопросу, только пока он активен.
         answer = self.short_answer(turn.text)
+        tokens = tokenize(turn.text)
+        if (
+            state.information_topic is not None
+            and state.phase in IDLE
+            and tokens
+            and tokens[0] in {"нет", "не"}
+            and set(tokens[1:])
+            <= {"спасибо", "я", "сам", "сама", "самостоятельно", "на", "госуслугах"}
+        ):
+            answer = "no"
         if (
             topic is None
             and state.information_topic is not None

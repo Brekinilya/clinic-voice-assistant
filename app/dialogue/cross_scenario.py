@@ -5,6 +5,9 @@ from enum import StrEnum
 
 
 class CrossScenario(StrEnum):
+    REPEAT = "repeat"
+    OTHER_DAY = "other_day"
+    PRICE = "price"
     WAIT = "wait"
     GOODBYE = "goodbye"
     RESET = "reset"
@@ -17,6 +20,23 @@ class CrossScenario(StrEnum):
 
 
 _PATTERNS = (
+    (
+        CrossScenario.REPEAT,
+        re.compile(
+            r"^(?:повторите?(?:,? пожалуйста)?|что(?: вы сказали)?$|"
+            r"я не расслышал[а]?(?:,? что вы сказали)?|не расслышал[а]?)(?:\s|$)"
+        ),
+    ),
+    (
+        CrossScenario.OTHER_DAY,
+        re.compile(r"\b(?:можно|могу)\b.*\bна\s+(?:другой|другую)\s+день\b"),
+    ),
+    (
+        CrossScenario.PRICE,
+        re.compile(
+            r"\b(?:сколько|какая|какова)\b.*\b(?:стоит|стоимость|цена|цену)\b|\bцена\b.*\bпри[её]м\b"
+        ),
+    ),
     (
         CrossScenario.THIRD_PARTY,
         re.compile(r"\b(для мам|для ребен|для ребен|не для меня|за мам)\w*\b"),

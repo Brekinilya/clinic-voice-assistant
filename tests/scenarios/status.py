@@ -80,7 +80,7 @@ def markdown(document: dict, probes: dict) -> str:
     if delta:
         lines += [
             "",
-            f"## Изменения с `{delta['previous_commit'][:7]}`",
+            f"## Изменения с `{delta['previous_commit'][:7] if delta['previous_commit'] else 'SHA не записан'}`",
             "",
             f"- T07 стали pass: {', '.join(delta['t07_gained']) or '—'}",
             f"- T07 перестали проходить: {', '.join(delta['t07_lost']) or '—'}",
@@ -105,8 +105,8 @@ def markdown(document: dict, probes: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def collect():
-    results = await execute_suite()
+async def collect(voice_evidence_path: Path | None = None):
+    results = await execute_suite(voice_evidence_path)
     probes = context_matrix.load_probes()
     cells = await context_matrix.execute(probes)
     return results, probes, cells
@@ -116,8 +116,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--previous", type=Path, help="status.json прошлого прогона")
+    parser.add_argument("--voice-evidence", type=Path)
     args = parser.parse_args(argv)
-    results, probes, cells = asyncio.run(collect())
+    results, probes, cells = asyncio.run(collect(args.voice_evidence))
     document = {
         "schema_version": 1,
         "checked_at": datetime.now(timezone.utc).isoformat(),

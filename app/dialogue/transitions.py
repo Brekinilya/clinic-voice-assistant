@@ -131,6 +131,8 @@ def handoff_reply(state: DialogueState, turn_id: int):
         )
     elif route == "R-04":
         phrases = (load_phrasebook().get("transfer.medical").text,)
+    elif route == "R-08" and state.transfer and state.transfer.reason == "paper_referral":
+        phrases = (load_phrasebook().get("referral.paper").text,)
     else:
         phrases = ("Подготовлен запрос регистратору. Автоматическая запись остановлена.",)
     return reply(
