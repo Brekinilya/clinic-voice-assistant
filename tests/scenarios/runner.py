@@ -579,6 +579,22 @@ async def verify_handoff_card(result, runtime, response, expectation, number):
         result.add(
             "operator_card_T08", "В карточке без идентификации указан client_id", step=number
         )
+    expected_representative = expectation.get("caller_is_representative")
+    if expected_representative is not None:
+        if request.caller_is_representative is not expected_representative:
+            result.add(
+                "guardian_T10",
+                "В карточке перевода неверно отмечен звонок представителя",
+                step=number,
+            )
+        if expected_representative and (
+            not state.guardian_call or state.guardian_relation != "мама"
+        ):
+            result.add(
+                "guardian_T10",
+                "Не идентифицирован пациент или не сохранено родство звонящего",
+                step=number,
+            )
     tasks = await runtime.handoff_store.list_callback_tasks(limit=10000, offset=0)
     request_tasks = [task for task in tasks if task.request_id == request.request_id]
     if request.priority == "P1" and (request.callback_state is not None or request_tasks):

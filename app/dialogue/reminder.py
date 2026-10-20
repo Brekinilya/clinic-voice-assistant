@@ -282,6 +282,8 @@ class ReminderConversation:
 
     async def _step(self, state, turn):
         text, answer = words(turn.text), parse_answer(turn.text)
+        if classify_cross_scenario(turn.text) == CrossScenario.THIRD_PARTY:
+            return await self.handoff(state, turn, "R-16")
         if state.phase == Phase.REMIND_VERIFY:
             if OPT_OUT.search(text):
                 # Номер нельзя продолжать обзванивать, но третье лицо не меняет карточку пациента.

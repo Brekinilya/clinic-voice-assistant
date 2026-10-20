@@ -253,19 +253,49 @@ class DialogueService:
                     self.booking.clear_call_cache(call_id)
                     return handoff_reply(current, turn.turn_id)
             if current.phase == Phase.HANDOFF:
-                callback_result = await self.handoffs.callback_turn(call_id, turn)
-                if callback_result.phase == Phase.ENDED:
-                    state, saved_reply = await self.store.finish_handoff_turn(
-                        call_id, turn.turn_id, digest, current.version, callback_result
+                if not turn.is_final:
+                    return reply(
+                        current,
+                        turn.turn_id,
+                        "Ожидаю завершения команды.",
+                        code="CALLBACK_PARTIAL",
+                        kind="partial",
                     )
+                callback_result = await self.handoffs.callback_turn(call_id, turn)
+                if callback_result.code == "CALLBACK_STALE":
+                    return callback_result
+                if callback_result.phase == Phase.ENDED:
+                    try:
+                        state, saved_reply = await self.store.finish_handoff_turn(
+                            call_id, turn.turn_id, digest, current.version, callback_result
+                        )
+                    except DialogueError as error:
+                        if str(error) != "TURN_OUT_OF_ORDER":
+                            raise
+                        return reply(
+                            current,
+                            turn.turn_id,
+                            "Реплика устарела. Повторите ответ после последнего шага.",
+                            code="CALLBACK_STALE",
+                        )
                     if saved_reply is not None:
                         return saved_reply
                     if state.phase == Phase.HANDOFF:
                         return handoff_reply(state, turn.turn_id)
                     return reply(state, turn.turn_id, "Разговор завершён.", code="CALL_ENDED")
-                state, saved_reply = await self.store.save_handoff_turn(
-                    call_id, turn.turn_id, digest, current.version, callback_result
-                )
+                try:
+                    state, saved_reply = await self.store.save_handoff_turn(
+                        call_id, turn.turn_id, digest, current.version, callback_result
+                    )
+                except DialogueError as error:
+                    if str(error) != "TURN_OUT_OF_ORDER":
+                        raise
+                    return reply(
+                        current,
+                        turn.turn_id,
+                        "Реплика устарела. Повторите ответ после последнего шага.",
+                        code="CALLBACK_STALE",
+                    )
                 if saved_reply is not None:
                     return saved_reply
                 if state.phase == Phase.HANDOFF:

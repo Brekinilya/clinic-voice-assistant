@@ -1,0 +1,36 @@
+id: guardian_T10
+title: Перевод звонка матери с идентифицированным пациентом
+source: задание A7, T10
+blocking: false
+expected: Идентифицирован пациент, звонок представителя отмечен в карточке перевода
+covers: [С-12, С-01]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Мне нужно записать дочку к педиатру.
+    intent: I-01
+    general: {on_behalf: child}
+    parse: {expect: free, slots: {specialty: педиатр}}
+    say: ident.ask_child
+  - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого.
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+    say: ident.relation
+  - patient: Мама.
+    say: booking.offer_nearest
+    options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+  - patient: Соедините с оператором.
+    safety: {flags: [operator], rule: R-02}
+    say: transfer.operator
+    transfer: {route: R-02, priority: P2}
+
+result:
+  code: ESCALATED
+  stand: unchanged
+  card: {rule: R-02, priority: P2, caller_is_representative: true}
+  fake_transfer: connected
