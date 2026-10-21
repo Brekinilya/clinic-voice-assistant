@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 README = HERE / "README.md"
 FOLDERS = ("control", "main", "routes")
 STAND_TIME = "%d.%m.%Y %H:%M"
-CONTROL_IDS = [f"D-{n:02d}" for n in range(1, 17)]
+CONTROL_IDS = [f"D-{n:02d}" for n in range(1, 21)]
 BLOCKING = {"D-01", "D-02", "D-03", "D-04", "D-05"}  # помечены «!» в приложении Д
 
 SCENARIO_TITLES = {

@@ -1,5 +1,6 @@
 """Справка как короткое отступление: факты локальны, текущая операция не изменяется."""
 
+import re
 from collections.abc import Awaitable, Callable
 
 from app.booking.preferences import SlotPreferences
@@ -183,6 +184,11 @@ class InformationConversation:
         ):
             answer = "no"
         if (
+            state.information_topic == "lab_status"
+            and re.search(r"\bкак\b.*\bузна\w*", turn.text.casefold())
+        ):
+            topic = "lab_collection"
+        if (
             topic is None
             and state.information_topic is not None
             and state.phase in IDLE
@@ -216,8 +222,22 @@ class InformationConversation:
         )
         fact = self.service.fact(topic)
         phrases = fact.utterances
+        reference_topic = topic
         if topic == "lab_status":
-            phrases += self.service.fact("lab_terms").utterances
+            relative_request = re.search(
+                r"\b(мам\w*|матер\w*|пап\w*|отц\w*|бабуш\w*|дедуш\w*|доч\w*|сын\w*)\b",
+                turn.text.casefold().replace("ё", "е"),
+            ) and re.search(r"\b(мой|моя|мое|моего|моей|мою|у|за)\b", turn.text.casefold())
+            if relative_request:
+                collection = self.service.fact("lab_collection")
+                phrases = (
+                    "Эти сведения я могу сообщить только самому пациенту.",
+                    *collection.utterances,
+                )
+                fact = collection
+                reference_topic = "lab_collection"
+            else:
+                phrases += self.service.fact("lab_terms").utterances
         elif not clarifying:
             phrases += self.resume_question(state, turn)
         result = reply(
@@ -235,7 +255,7 @@ class InformationConversation:
                 "information": InformationReference(
                     document=self.service.catalog.document,
                     version=self.service.catalog.version,
-                    topic=topic,
+                    topic=reference_topic,
                     sections=fact.source,
                 )
             }

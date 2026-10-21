@@ -1,0 +1,75 @@
+id: D-20
+title: Формы ответа о родстве при записи ребёнка
+source: раздел 3.5; С-12
+blocking: false
+expected: Разговорный ответ матери или родителя принимается; запись остаётся только предложением до отдельного согласия
+covers: [С-01, С-12, "3.5"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: мама
+    steps:
+      - say: greeting.inbound
+      - patient: Мне нужно записать дочку к педиатру
+        say: ident.ask_child
+      - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого
+        parse:
+          expect: full_name
+          slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+        say: ident.relation
+      - patient: Мама
+        say: booking.offer_first
+        options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+    result:
+      stand: unchanged
+
+  - name: мамой
+    steps:
+      - say: greeting.inbound
+      - patient: Мне нужно записать дочку к педиатру
+        say: ident.ask_child
+      - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого
+        parse:
+          expect: full_name
+          slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+        say: ident.relation
+      - patient: Мамой
+        say: booking.offer_first
+        options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+    result:
+      stand: unchanged
+
+  - name: я родитель
+    steps:
+      - say: greeting.inbound
+      - patient: Мне нужно записать дочку к педиатру
+        say: ident.ask_child
+      - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого
+        parse:
+          expect: full_name
+          slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+        say: ident.relation
+      - patient: Я родитель
+        say: booking.offer_first
+        options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+    result:
+      stand: unchanged
+
+  - name: родителем
+    steps:
+      - say: greeting.inbound
+      - patient: Мне нужно записать дочку к педиатру
+        say: ident.ask_child
+      - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого
+        parse:
+          expect: full_name
+          slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+        say: ident.relation
+      - patient: Родителем
+        say: booking.offer_first
+        options: ["01.10.2026 09:00", "02.10.2026 11:40"]
+    result:
+      stand: unchanged

@@ -1,0 +1,41 @@
+id: D-19
+title: Вопрос «Вы робот?» во время подтверждения записи
+source: раздел 3.2; приложение Д, № 14
+blocking: false
+expected: Честный ответ, повтор предметного вопроса; только свежее согласие создаёт одну запись
+covers: [С-01, "3.2"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Запишите к терапевту
+    intent: I-01
+    parse: {expect: free, slots: {specialty: терапевт}}
+    say: ident.ask
+  - patient: Смирнова Ольга Викторовна, двенадцатое марта семьдесят восьмого
+    parse:
+      expect: full_name
+      slots: {last_name: Смирнова, first_name: Ольга, middle_name: Викторовна, birth_date: "1978-03-12"}
+    say: booking.offer_first
+    options: ["01.10.2026 08:45", "02.10.2026 10:30"]
+  - patient: Давайте завтра
+    parse: {expect: choice, options: ["01.10.2026 08:45", "02.10.2026 10:30"], choice_index: 1}
+    say: booking.confirm
+  - patient: А вы робот?
+    safety: {flags: [robot]}
+    say: robot.answer
+  - patient: Да, верно, записывайте
+    parse: {expect: yes_no, intent: "yes"}
+    say: booking.done
+  - patient: Нет, спасибо
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye
+    end: true
+
+result:
+  code: BOOKED
+  stand:
+    created: [{client: smirnova_ov, doctor: kuznetsova, at: "01.10.2026 08:45"}]

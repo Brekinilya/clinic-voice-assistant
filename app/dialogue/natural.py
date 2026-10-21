@@ -1110,6 +1110,22 @@ class BookingConversation:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
+        if (
+            state.guardian_call
+            and state.patient_under_15
+            and state.client_id is not None
+            and state.guardian_relation is None
+            and re.search(
+                r"\b(это\s+я|я\s+(сам|сама)|самостоятельно)\b",
+                turn.text.casefold().replace("ё", "е"),
+            )
+        ):
+            return state, reply(
+                state,
+                turn.turn_id,
+                self.presenter.renderer.render("ident.under_15", self.presenter._today()).text,
+                code="MINOR_BOOKING_REFUSED",
+            )
         cross_reply = await self.cross_scenario_reply(state, turn, result)
         if cross_reply is not None:
             return cross_reply
@@ -1741,8 +1757,18 @@ class BookingConversation:
             patient = await self.booking.identify(
                 slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
             )
+            today = self.presenter._today()
+            age = today.year - patient.birth_date.year - (
+                (today.month, today.day) < (patient.birth_date.month, patient.birth_date.day)
+            )
             state = state.model_copy(
-                update={"client_id": patient.id, "phase": Phase.IDENTIFIED, "misunderstandings": 0}
+                update={
+                    "client_id": patient.id,
+                    "phase": Phase.IDENTIFIED,
+                    "misunderstandings": 0,
+                    "patient_under_15": age < 15,
+                    "guardian_call": state.guardian_call or age < 15,
+                }
             )
             if state.guardian_call:
                 return state, reply(

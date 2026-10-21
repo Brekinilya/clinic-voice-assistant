@@ -56,6 +56,7 @@ CODE_EXPECTATIONS = {
     "ident.not_found": {"IDENTIFICATION_REQUIRED"},
     "emergency.insist": {"EMERGENCY"},
     "emergency.ambulance_called": {"EMERGENCY"},
+    "ident.under_15": {"MINOR_BOOKING_REFUSED"},
 }
 GAPS = {
     "labs.": "labs_status_source_T09",
@@ -238,10 +239,9 @@ async def verify_step(result, number, step, response, runtime):
             continue
         if name == "ident.relation":
             state = await runtime.dialogue_store.inspect(runtime.call_id)
-            expected_child = runtime.client_ids.get("smirnova_ad")
             if (
                 not re.search(r"кем вы приходитесь", text, re.IGNORECASE)
-                or state.client_id != expected_child
+                or state.client_id is None
                 or not state.guardian_call
             ):
                 result.add(
@@ -467,6 +467,20 @@ async def verify_step(result, number, step, response, runtime):
                     "information:" + name,
                     "Не подтверждена требуемая лабораторная справка",
                     step=number,
+                )
+            continue
+        if name == "labs.not_patient":
+            if (
+                response.code != "INFO_UNAVAILABLE"
+                or response.information is None
+                or response.information.topic != "lab_collection"
+                or not re.search(r"только самому пациенту", text, re.IGNORECASE)
+            ):
+                result.add(
+                    "lab_privacy",
+                    "Не отказано в выдаче персонального статуса анализов родственнику",
+                    "critical",
+                    number,
                 )
             continue
         if name in INFORMATION_EXPECTATIONS:

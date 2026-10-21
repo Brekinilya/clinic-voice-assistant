@@ -151,6 +151,7 @@ class DialogueState(BookingModel):
     referral_mentioned: bool = False
     guardian_call: bool = False
     guardian_relation: str | None = Field(default=None, max_length=24)
+    patient_under_15: bool = False
     home_visit_stage: (
         Literal["confirm", "identify", "address", "reason", "can_come", "contact"] | None
     ) = None
