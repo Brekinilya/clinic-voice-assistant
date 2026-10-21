@@ -183,9 +183,8 @@ class InformationConversation:
             <= {"спасибо", "я", "сам", "сама", "самостоятельно", "на", "госуслугах"}
         ):
             answer = "no"
-        if (
-            state.information_topic == "lab_status"
-            and re.search(r"\bкак\b.*\bузна\w*", turn.text.casefold())
+        if state.information_topic == "lab_status" and re.search(
+            r"\bкак\b.*\bузна\w*", turn.text.casefold()
         ):
             topic = "lab_collection"
         if (

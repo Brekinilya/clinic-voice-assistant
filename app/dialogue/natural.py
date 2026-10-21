@@ -1758,8 +1758,10 @@ class BookingConversation:
                 slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
             )
             today = self.presenter._today()
-            age = today.year - patient.birth_date.year - (
-                (today.month, today.day) < (patient.birth_date.month, patient.birth_date.day)
+            age = (
+                today.year
+                - patient.birth_date.year
+                - ((today.month, today.day) < (patient.birth_date.month, patient.birth_date.day))
             )
             state = state.model_copy(
                 update={
