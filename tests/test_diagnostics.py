@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select, text, update
 
+from app.booking.preferences import SlotPreferences
 from app.diagnostics.recorder import EventStore, Recorder, observe
 from app.main import create_app
 from app.mis.http import HttpMedicalSystem
@@ -17,6 +18,7 @@ from app.mis.ports import BudgetExhausted
 from app.settings import Settings
 from app.storage.booking import migrate
 from app.storage.schema import SCHEMA_VERSION, debug_events, schema_versions
+from app.waitlist.models import WaitlistRequest
 from tests.integration.fixture_bridge import pipeline, turn
 
 KEY = b"diagnostic-test-key-not-a-secret!!"
@@ -69,6 +71,7 @@ async def test_debug_ui_and_api_require_login_and_are_disabled_by_default():
                     assert "Распознавание" in response.text
                     assert (await client.get("/debug/panel.js")).status_code == 200
                     assert (await client.get("/debug/unknown")).status_code == 404
+                    assert (await client.get("/api/debug/waitlist")).status_code == 200
                     assert (
                         await client.get("/api/debug/calls/call-1/events?limit=10000")
                     ).status_code == 422
@@ -81,6 +84,34 @@ async def test_debug_ui_and_api_require_login_and_are_disabled_by_default():
                         "events"
                     ]
                     assert any(e["kind"] == "dialogue.reply" for e in events)
+
+
+async def test_debug_panel_lists_saved_waitlist_requests():
+    app = create_app(settings())
+    async with app.router.lifespan_context(app):
+        store = app.state.dialogue.conversation.waitlist_store
+        await store.create(
+            WaitlistRequest(
+                request_id="a" * 64,
+                call_id="waitlist-call",
+                turn_id=4,
+                client_id=71,
+                specialty="невролог",
+                preferences=SlotPreferences(time_from="07:30", time_to="12:00"),
+                created_at=datetime(2026, 10, 21, 10, tzinfo=timezone.utc),
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            client.auth = ("clinic", "fictional-password-at-least-24-bytes")
+            response = await client.get("/api/debug/waitlist")
+
+    assert response.status_code == 200
+    entry = response.json()["requests"][0]
+    assert entry["client_id"] == 71
+    assert entry["specialty"] == "невролог"
+    assert entry["call_id"] == "waitlist-call"
 
 
 async def test_trace_follows_real_dialogue_and_mis_without_changing_result():

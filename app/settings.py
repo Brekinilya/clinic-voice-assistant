@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     schedule_path: Path | None = None
     schedule_index_path: Path | None = None
     schedule_access_path: Path | None = None
+    paid_prices_path: Path | None = Path("config/paid_prices.yaml")
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:

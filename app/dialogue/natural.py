@@ -6,6 +6,8 @@ import re
 from datetime import datetime, time, timedelta
 from typing import Literal, Mapping
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
 from app.booking.service import BookingService
@@ -224,6 +226,15 @@ class BookingConversation:
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
         if needs_urgent_screening(turn.text):
+            parsed = await self.input.parse(state, turn)
+            if "I-01" in parsed.intents or parsed.slots.specialty is not None:
+                state = state.model_copy(
+                    update={
+                        "purpose": "booking",
+                        "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
+                        "specialty": parsed.slots.specialty or state.specialty,
+                    }
+                )
             state = state.model_copy(
                 update={
                     "medical_boundary_pending": False,
@@ -244,15 +255,27 @@ class BookingConversation:
                 return await self.medical.decline(state, turn)
             if answer == "repeat":
                 return self.medical.prompt(state, turn)
-        if state.information_topic == "paid_price":
+        if state.information_topic == "paid_price_followup":
             answer = parse_answer(turn.text)
-            if answer == "no" or turn.text.casefold().lstrip().startswith("нет"):
+            if answer == "no":
                 ended = await self.store.end(state.call_id)
                 return ended, reply(
                     ended,
                     turn.turn_id,
                     "Хорошо. Спасибо за звонок. До свидания.",
                     code="CALL_ENDED",
+                )
+            state = state.model_copy(update={"information_topic": None})
+            if answer == "yes":
+                return state, reply(
+                    state, turn.turn_id, "Скажите, чем ещё могу помочь?", code="HELP_REQUESTED"
+                )
+        if state.information_topic == "paid_price":
+            answer = parse_answer(turn.text)
+            if answer == "no" or turn.text.casefold().lstrip().startswith("нет"):
+                state = state.model_copy(update={"information_topic": "paid_price_followup"})
+                return state, reply(
+                    state, turn.turn_id, "Хорошо. Могу ещё чем-то помочь?", code="HELP_OFFERED"
                 )
             if answer == "yes":
                 return await self.transfer(state, turn, "R-10")
@@ -1091,6 +1114,14 @@ class BookingConversation:
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
         if needs_urgent_screening(turn.text):
+            if "I-01" in result.intents or result.slots.specialty is not None:
+                state = state.model_copy(
+                    update={
+                        "purpose": "booking",
+                        "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
+                        "specialty": result.slots.specialty or state.specialty,
+                    }
+                )
             state, _ = await self.medical.question(state, turn)
             state = state.model_copy(
                 update={
@@ -1187,7 +1218,7 @@ class BookingConversation:
             state = state.model_copy(
                 update={"distress_question_pending": False, "misunderstandings": 0}
             )
-            return await self.medical.question(state, turn)
+            return await self.medical.question(state, turn, after_triage=True)
         if state.misunderstandings == 0:
             state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
             return state, reply(
@@ -1315,7 +1346,7 @@ class BookingConversation:
             )
             try:
                 await self.waitlist_store.create(request)
-            except (OSError, ValueError):
+            except (OSError, ValueError, SQLAlchemyError):
                 return await self.transfer(state, turn, "R-08")
             state = state.model_copy(
                 update={
@@ -1401,10 +1432,11 @@ class BookingConversation:
                     Phase.MOVE_FINISH_CONFIRM,
                 }:
                     return await self.transfer(state, turn, "R-08")
+                specialty = slots.specialty or state.specialty or "терапевт"
                 state = self.visits.booking_state(state).model_copy(
-                    update={"medical_boundary_pending": False, "specialty": None}
+                    update={"medical_boundary_pending": False, "specialty": specialty}
                 )
-                slots = slots.model_copy(update={"specialty": slots.specialty or "терапевт"})
+                slots = slots.model_copy(update={"specialty": specialty})
                 intents.add("I-01")
             elif intents & {"I-01", "I-02", "I-04"} or slots.specialty or slots.doctor:
                 state = state.model_copy(update={"medical_boundary_pending": False})

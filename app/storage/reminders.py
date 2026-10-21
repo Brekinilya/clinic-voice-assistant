@@ -21,7 +21,10 @@ from app.reminders.models import (
     ReminderJob,
     ReminderMark,
 )
+from app.storage.outbox import decode as decode_outbox
+from app.storage.outbox import values as outbox_values
 from app.storage.schema import dialogue_sessions
+from app.storage.schema import outbox_jobs as event_jobs
 from app.storage.schema import reminder_attempts as attempts
 from app.storage.schema import reminder_client_locks as locks
 from app.storage.schema import reminder_confirmations as confirmations
@@ -199,9 +202,6 @@ class PostgresReminderStore:
                 if reminder is None:
                     raise RuntimeError("напоминание исчезло при завершении попытки")
                 event = reminder_sms_event(reminder.id, reminder.client_id, now)
-                from app.storage.outbox import values as outbox_values
-                from app.storage.schema import outbox_jobs as event_jobs
-
                 await connection.execute(
                     insert(event_jobs)
                     .values(**outbox_values(event))
@@ -212,9 +212,6 @@ class PostgresReminderStore:
             return True
 
     async def outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
-        from app.storage.outbox import decode as decode_outbox
-        from app.storage.schema import outbox_jobs as event_jobs
-
         async with self.engine.connect() as connection:
             rows = (
                 await connection.execute(

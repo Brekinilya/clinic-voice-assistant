@@ -763,6 +763,11 @@ templates:
     expect: yes_no
     src: "3.8"
 
+  medical.boundary_after_triage:
+    text: Медицинские советы может дать только врач. Записать вас к {specialty:datv}?
+    expect: yes_no
+    src: "3.8"
+
   medical.which_doctor:
     text: Начните с приёма у {specialty:gent} — он осмотрит и при необходимости направит к нужному специалисту. Записать вас?
     expect: yes_no

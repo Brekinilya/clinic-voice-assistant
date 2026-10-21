@@ -24,3 +24,11 @@ class MemoryWaitlistStore:
     async def by_call(self, call_id: str) -> tuple[WaitlistRequest, ...]:
         async with self._lock:
             return tuple(item for item in self.requests.values() if item.call_id == call_id)
+
+    async def recent(self, limit: int = 100) -> tuple[WaitlistRequest, ...]:
+        async with self._lock:
+            return tuple(
+                sorted(self.requests.values(), key=lambda item: item.created_at, reverse=True)[
+                    :limit
+                ]
+            )

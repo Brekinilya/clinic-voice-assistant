@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.backend import backend_engine
 from app.dialogue.composition import assemble_dialogue
+from app.dialogue.prices import load_paid_prices
 from app.handoffs.service import HandoffWorker
 from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
@@ -61,6 +62,7 @@ async def open_live_backend(settings: Settings, clock):
                 PostgresCancellationStore(engine),
                 PostgresMoveStore(engine),
                 settings.dialogue_hash_key.get_secret_value().encode(),
+                paid_prices=load_paid_prices(settings.paid_prices_path),
             )
             if service.handoffs is not None:
                 async with HandoffWorker(service.handoffs):

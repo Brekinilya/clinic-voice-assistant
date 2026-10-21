@@ -139,6 +139,20 @@ async def test_paid_service_without_a_configured_price_uses_paid_department_rout
         assert emulator.write_count == emulator.patch_count == 0
 
 
+async def test_paid_service_reads_price_from_configured_catalog_and_offers_more_help():
+    async with pipeline(paid_prices={"УЗИ щитовидной железы": 1300}) as (client, _, emulator, *_):
+        result = await turn(client, 1, "Сколько стоит УЗИ щитовидной железы?")
+        assert result["code"] == "INFO_GIVEN"
+        assert "1300" in spoken(result) and result["transfer"] is None
+
+        declined = await turn(client, 2, "Нет")
+        assert declined["code"] == "HELP_OFFERED" and "чем-то помочь" in spoken(declined)
+        assert declined["phase"] != "ended"
+        ended = await turn(client, 3, "Нет")
+        assert ended["code"] == "CALL_ENDED" and ended["phase"] == "ended"
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 @pytest.mark.parametrize(
     ("question", "term"),
     [

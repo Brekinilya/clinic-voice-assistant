@@ -191,6 +191,27 @@ async def test_negative_distress_screen_moves_to_safe_booking_boundary():
         assert result["transfer"] is None and emulator.write_count == 0
 
 
+async def test_triage_keeps_booking_request_and_does_not_repeat_emergency_number():
+    async with pipeline() as (client, service, emulator, *_):
+        first = await turn(client, 1, "У меня болит горло, запишите к терапевту")
+        assert first["code"] == "DISTRESS_TRIAGE_REQUIRED", first
+        assert "103" in spoken(first)
+
+        boundary = await turn(client, 2, "Нет")
+        assert boundary["code"] == "MEDICAL_BOUNDARY", boundary
+        assert boundary["expect"] == "yes_no"
+        assert "103" not in spoken(boundary)
+
+        state = await service.store.inspect("scenario")
+        assert state.purpose == "booking" and state.specialty == "терапевт"
+        assert not state.distress_question_pending and state.medical_boundary_pending
+        assert emulator.write_count == 0
+
+        followup = await turn(client, 3, "Да")
+        assert followup["code"] != "CALL_ENDED", followup
+        assert followup["phase"] in {"identifying", "ready"}
+
+
 async def test_medical_partial_during_preflight_prevents_post():
     async with pipeline() as (client, service, emulator, *_):
         await turn(client, 1, "Запишите к терапевту")

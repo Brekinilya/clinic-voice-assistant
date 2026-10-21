@@ -239,9 +239,16 @@ async def verify_step(result, number, step, response, runtime):
             continue
         if name == "ident.relation":
             state = await runtime.dialogue_store.inspect(runtime.call_id)
+            expected_identity = step.get("parse", {}).get("slots", {})
+            patient = runtime.emulator.clients[TOKEN].get(state.client_id)
+            child_matches = patient is not None and all(
+                str(getattr(patient, field, None)) == str(value)
+                for field, value in expected_identity.items()
+                if field in {"last_name", "first_name", "middle_name", "birth_date"}
+            )
             if (
                 not re.search(r"кем вы приходитесь", text, re.IGNORECASE)
-                or state.client_id is None
+                or not child_matches
                 or not state.guardian_call
             ):
                 result.add(

@@ -60,3 +60,4 @@ async def test_postgres_waitlist_creation_is_idempotent(pg_engine):
     replay = await store.create(request(created_at=NOW + timedelta(minutes=1)))
     assert replay == first
     assert await store.by_call("waitlist-call") == (first,)
+    assert await store.recent() == (first,)

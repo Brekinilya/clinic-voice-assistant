@@ -66,6 +66,26 @@ async def calls(request: Request):
     )
 
 
+@router.get("/api/debug/waitlist")
+async def waitlist(request: Request, limit: Annotated[int, Query(ge=1, le=500)] = 100):
+    recorder(request)
+    service = getattr(request.app.state, "dialogue", None)
+    store = getattr(getattr(service, "conversation", None), "waitlist_store", None)
+    if store is None:
+        raise HTTPException(404, "Лист ожидания не включён")
+    import asyncio
+
+    try:
+        async with asyncio.timeout(2):
+            requests = await store.recent(limit)
+    except Exception:
+        raise HTTPException(503, "Лист ожидания временно недоступен") from None
+    return JSONResponse(
+        jsonable_encoder({"requests": requests}),
+        headers=HEADERS,
+    )
+
+
 @router.get("/api/debug/calls/{call_id}/events")
 async def events(
     request: Request,
