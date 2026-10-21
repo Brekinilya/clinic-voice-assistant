@@ -5,7 +5,7 @@ from sqlalchemy import insert, select
 
 from app.booking.preferences import SlotPreferences
 from app.storage.booking import migrate
-from app.storage.schema import metadata, schema_versions, waitlist_requests
+from app.storage.schema import SCHEMA_VERSION, metadata, schema_versions, waitlist_requests
 from app.storage.waitlist import PostgresWaitlistStore
 from app.waitlist.memory import MemoryWaitlistStore
 from app.waitlist.models import WaitlistRequest
@@ -42,7 +42,7 @@ async def test_memory_waitlist_is_idempotent_and_detects_request_reuse():
 
 
 @pytest.mark.asyncio
-async def test_migration_ten_to_eleven_adds_waitlist_without_data_loss(pg_blank_engine):
+async def test_migration_ten_to_current_adds_waitlist_without_data_loss(pg_blank_engine):
     old_tables = [table for table in metadata.sorted_tables if table is not waitlist_requests]
     async with pg_blank_engine.begin() as connection:
         await connection.run_sync(lambda sync: metadata.create_all(sync, tables=old_tables))
@@ -50,7 +50,7 @@ async def test_migration_ten_to_eleven_adds_waitlist_without_data_loss(pg_blank_
 
     await migrate(pg_blank_engine)
     async with pg_blank_engine.connect() as connection:
-        assert await connection.scalar(select(schema_versions.c.version)) == 11
+        assert await connection.scalar(select(schema_versions.c.version)) == SCHEMA_VERSION
 
 
 @pytest.mark.asyncio
