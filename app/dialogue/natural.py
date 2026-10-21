@@ -1100,12 +1100,31 @@ class BookingConversation:
             return await self.transfer(state, turn, "R-08")
         return await self.transfer(state, turn, "R-08")
 
+    async def _distress_triage(self, state: DialogueState, turn: Turn):
+        state, _ = await self.medical.question(state, turn)
+        state = state.model_copy(
+            update={
+                "medical_boundary_pending": False,
+                "distress_question_pending": True,
+                "misunderstandings": 0,
+            }
+        )
+        return state, reply(
+            state,
+            turn.turn_id,
+            "При резком ухудшении или сильной боли позвоните 103 или 112.",
+            "Есть ли сейчас непосредственная угроза жизни? Ответьте «да» или «нет».",
+            code="DISTRESS_TRIAGE_REQUIRED",
+        ).model_copy(update={"expect": "yes_no"})
+
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
         if state.information_topic != "referral_missing":
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
             )
+        if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
+            return await self._distress_triage(state, turn)
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
@@ -1125,21 +1144,7 @@ class BookingConversation:
                         "specialty": result.slots.specialty or state.specialty,
                     }
                 )
-            state, _ = await self.medical.question(state, turn)
-            state = state.model_copy(
-                update={
-                    "medical_boundary_pending": False,
-                    "distress_question_pending": True,
-                    "misunderstandings": 0,
-                }
-            )
-            return state, reply(
-                state,
-                turn.turn_id,
-                "При резком ухудшении или сильной боли позвоните 103 или 112.",
-                "Есть ли сейчас непосредственная угроза жизни? Ответьте «да» или «нет».",
-                code="DISTRESS_TRIAGE_REQUIRED",
-            ).model_copy(update={"expect": "yes_no"})
+            return await self._distress_triage(state, turn)
         if "medical" in decision.flags or "I-13" in result.intents:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
