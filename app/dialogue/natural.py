@@ -509,9 +509,8 @@ class BookingConversation:
             today = self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date()
             requested_start = state.preferences.date_from
             requested_end = state.preferences.date_to
-            if (
-                (requested_start is not None and requested_start > today + timedelta(days=13))
-                or (requested_end is not None and requested_end < today)
+            if (requested_start is not None and requested_start > today + timedelta(days=13)) or (
+                requested_end is not None and requested_end < today
             ):
                 return state, reply(
                     state,
