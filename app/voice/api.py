@@ -7,15 +7,14 @@
 
 import asyncio
 import json
-import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.clock import ClinicClock
 from app.dialogue.models import CallId
+from app.voice.failures import failure
 from app.voice.session import CallSession
 
-log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -90,12 +89,15 @@ async def voice_call(socket: WebSocket, call_id: CallId) -> None:
         for task in done:
             task.result()
     except (WebSocketDisconnect, RuntimeError):
+        # Клиент ушёл: Starlette сообщает это WebSocketDisconnect или RuntimeError на receive
         pass
-    except Exception:
-        log.exception("голосовой звонок прерван")
+    except Exception as error:
+        # Граница звонка: сессия закрывается в finally, процесс продолжает принимать звонки
+        failure("voice.call_failed", error, call=call_id)
     finally:
         await session.close()
         try:
             await socket.close()
-        except RuntimeError:
+        except (WebSocketDisconnect, RuntimeError):
+            # Клиент уже ушёл: Starlette сообщает об этом WebSocketDisconnect(1006)
             pass

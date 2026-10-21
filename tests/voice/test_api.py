@@ -1,5 +1,6 @@
 """Голосовой стенд целиком: приложение app.main, шлюз и WebSocket — с подставными моделями."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.settings import Settings
+from app.voice import api
 from app.voice.api import router
 from app.voice.server import create_voice_app
 from app.voice.settings import VoiceSettings
@@ -87,3 +89,37 @@ def test_voice_needs_engines_and_dialogue():
             with pytest.raises(WebSocketDisconnect) as closed:
                 socket.receive_text()
     assert closed.value.code == 1013
+
+
+async def test_server_hangup_after_client_left_does_not_escape(monkeypatch):
+    # Шлюз закончил звонок, а клиент уже отключился: close() — WebSocketDisconnect(1006)
+    class Gone:
+        app = SimpleNamespace(state=SimpleNamespace(voice=object(), dialogue=object()))
+        closed = 0
+
+        async def accept(self):
+            pass
+
+        async def receive(self):
+            await asyncio.Event().wait()
+
+        async def close(self, code=1000, reason=None):
+            self.closed += 1
+            raise WebSocketDisconnect(code=1006)
+
+    class Finished:
+        def __init__(self):
+            self.finished = asyncio.Event()
+            self.closed = False
+
+        async def start(self):
+            self.finished.set()
+
+        async def close(self):
+            self.closed = True
+
+    session = Finished()
+    monkeypatch.setattr(api, "open_session", lambda state, call_id, channel: session)
+    socket = Gone()
+    await api.voice_call(socket, "call-1")
+    assert session.closed and socket.closed == 1

@@ -5,6 +5,7 @@ import hashlib
 import json
 from importlib.metadata import PackageNotFoundError, version
 
+from app.voice.failures import failure
 from app.voice.settings import VoiceSettings
 
 
@@ -34,6 +35,8 @@ def check(settings: VoiceSettings, *, warm_up=False):
             pass
         files.append(item)
     result = {
+        # Распознавание и синтез только локально: другое значение настройка не примет
+        "speech_processing": settings.speech_processing,
         "packages": packages,
         "models": files,
         "inputs_present": False,
@@ -49,6 +52,8 @@ def check(settings: VoiceSettings, *, warm_up=False):
             load_engines(settings)
             result["inference_checked"] = True
         except Exception as error:
+            # Граница проверки: любая ошибка загрузки — ответ «модели не готовы», а не падение
+            failure("voice.preflight_failed", error, trace=True)
             result.update(inference_error=type(error).__name__)
     return result
 

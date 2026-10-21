@@ -90,10 +90,13 @@ class InferenceQueue:
     def _complete(self, job: _Job, native: Future, loop: asyncio.AbstractEventLoop) -> None:
         self._running = False
         if not job.result.done():
-            try:
-                job.result.set_result(native.result())
-            except Exception as error:
+            # Результат или исключение потока передаём ожидающему без перехвата
+            if native.cancelled():
+                job.result.cancel()
+            elif (error := native.exception()) is not None:
                 job.result.set_exception(error)
+            else:
+                job.result.set_result(native.result())
         if self._pending and not self._closed:
             following = min(self._pending, key=lambda item: (item.priority, item.number))
             self._pending.remove(following)

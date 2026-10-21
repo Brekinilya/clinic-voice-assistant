@@ -1,0 +1,66 @@
+# Полный прогон проверок одной командой, без .env и без внешнего PostgreSQL:
+#
+#   docker compose -f compose.test.yaml run --rm tests
+#   docker compose -f compose.test.yaml run --rm -e PYTEST_ARGS="tests/voice -x" tests
+#
+# То же, что CI: ruff, форматирование и весь pytest — с настоящим PostgreSQL и голосовыми
+# зависимостями (модели не скачиваются). База одноразовая, в памяти, порт наружу не открыт:
+# локальная PostgreSQL и рабочие данные не затрагиваются. Проверяется текущая рабочая копия:
+# она подключена только для чтения и копируется без .env, .venv, models и data — как чистый
+# checkout в CI, без настроек стенда. Зависимости ставятся по uv.lock в отдельный том и при
+# повторном запуске не скачиваются.
+# Убрать всё за собой: docker compose -f compose.test.yaml down -v
+name: clinic-tests
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # Одноразовая база тестов внутри сети compose, как сервис в CI
+      POSTGRES_USER: clinic
+      POSTGRES_PASSWORD: clinic_test
+      POSTGRES_DB: clinic_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clinic -d clinic_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  tests:
+    build: deploy/test
+    working_dir: /work
+    volumes:
+      - .:/src:ro
+      - venv:/venv
+      - uv-cache:/root/.cache/uv
+    environment:
+      APP_MODE: offline_test
+      TELEPHONY_ENABLED: "false"
+      TEST_DATABASE_URL: postgresql+asyncpg://clinic:clinic_test@postgres:5432/clinic_test
+      # Окружение Linux — в своём томе: .venv рабочей копии (например, Windows) не трогаем
+      UV_PROJECT_ENVIRONMENT: /venv
+      UV_LINK_MODE: copy
+      PYTHONDONTWRITEBYTECODE: "1"
+      RUFF_CACHE_DIR: /tmp/ruff
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - |
+        mkdir -p /work
+        tar -C /src -cf - \
+          --exclude=./.env --exclude=./.venv --exclude=./models --exclude=./data \
+          --exclude=./deploy/voice/voice.env --exclude=__pycache__ \
+          --exclude=.pytest_cache --exclude=.ruff_cache . | tar -C /work -xf -
+        uv sync --locked --extra voice
+        uv run --no-sync ruff check .
+        uv run --no-sync ruff format --check .
+        uv run --no-sync pytest -q -p no:cacheprovider $${PYTEST_ARGS:-}
+
+volumes:
+  venv:
+  uv-cache:
