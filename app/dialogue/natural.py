@@ -226,15 +226,18 @@ class BookingConversation:
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
         if needs_urgent_screening(turn.text):
-            parsed = await self.input.parse(state, turn)
-            if "I-01" in parsed.intents or parsed.slots.specialty is not None:
-                state = state.model_copy(
-                    update={
-                        "purpose": "booking",
-                        "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
-                        "specialty": parsed.slots.specialty or state.specialty,
-                    }
-                )
+            if wants_new_booking(turn.text):
+                parsed = await self.input.parse(state, turn)
+                if "I-01" in parsed.intents or parsed.slots.specialty is not None:
+                    state = state.model_copy(
+                        update={
+                            "purpose": "booking",
+                            "phase": Phase.IDENTIFYING
+                            if state.client_id is None
+                            else Phase.IDENTIFIED,
+                            "specialty": parsed.slots.specialty or state.specialty,
+                        }
+                    )
             state = state.model_copy(
                 update={
                     "medical_boundary_pending": False,

@@ -143,7 +143,7 @@ async def test_paid_service_reads_price_from_configured_catalog_and_offers_more_
     async with pipeline(paid_prices={"УЗИ щитовидной железы": 1300}) as (client, _, emulator, *_):
         result = await turn(client, 1, "Сколько стоит УЗИ щитовидной железы?")
         assert result["code"] == "INFO_GIVEN"
-        assert "1300" in spoken(result) and result["transfer"] is None
+        assert "тысячу триста" in spoken(result) and result["transfer"] is None
 
         declined = await turn(client, 2, "Нет")
         assert declined["code"] == "HELP_OFFERED" and "чем-то помочь" in spoken(declined)
