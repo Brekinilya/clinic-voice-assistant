@@ -176,6 +176,23 @@ def markdown(document: dict, data: dict) -> str:
     lines.append("|---|---:|---:|---:|---:|")
     for name, row in s["by_state"].items():
         lines.append(f"| {name} | {row['n']} | {row['ok']} | {row['gap']} | {row['wrong']} |")
+    not_ok = [c for c in document["cells"] if c["verdict"] != "ok"]
+    if not_ok:
+        lines += [
+            "",
+            "## Реплики, требующие доработки",
+            "",
+            "| Диалог · фаза | Класс реплики | Реплика | Исход | Код | Ответ |",
+            "|---|---|---|---|---|---|",
+        ]
+        for cell in not_ok:
+            probe = data["probes"][cell["probe"]]["title"].replace("|", "/")
+            text = cell["text"].replace("|", "/")
+            answer = cell["answer"].replace("|", "/")[:90]
+            lines.append(
+                f"| {cell['base']} · {cell['phase']} | {probe} | {text} | "
+                f"{cell['outcome']} | {cell['code'] or '—'} | {answer} |"
+            )
     wrong = [c for c in document["cells"] if c["verdict"] == "wrong"]
     if wrong:
         lines += [
