@@ -42,6 +42,31 @@ async def test_explicit_year_outside_the_horizon_does_not_offer_this_year():
         assert emulator.write_count == emulator.patch_count == 0
 
 
+@pytest.mark.parametrize(
+    "relation",
+    ["Мама.", "Мамой.", "Я родитель.", "Родителем."],
+)
+async def test_child_booking_accepts_parent_relation_inflections(relation):
+    async with pipeline() as (client, service, emulator, *_):
+        started = await turn(client, 1, "Мне нужно записать дочку к педиатру")
+        assert started["phase"] == "identifying", started
+
+        identified = await turn(
+            client,
+            2,
+            "Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого",
+        )
+        assert identified["code"] == "GUARDIAN_RELATION_REQUIRED"
+
+        offered = await turn(client, 3, relation)
+        state = await service.store.inspect("scenario")
+        assert offered["phase"] in {"identified", "offered", "waitlist_consent"}, offered
+        assert offered["transfer"] is None
+        assert state.guardian_call and state.client_id is not None
+        assert state.guardian_relation is not None
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 @pytest.mark.parametrize("ending", ["", " в десять тридцать"])
 async def test_numeric_date_inside_the_horizon_can_be_booked(ending):
     async with pipeline() as (client, service, emulator, *_):
@@ -118,7 +143,9 @@ async def test_cancel_and_move_choose_the_correct_existing_visit(purpose, select
         assert emulator.write_count == emulator.patch_count == 0
         if state.purpose == "cancel":
             await turn(client, 4, "Нет")  # Отказываемся от предложения переноса.
-            result = await turn(client, 5, "Да")
+            clarified = await turn(client, 5, "Отмените запись")
+            assert clarified["code"] == "CANCEL_CONFIRMATION_REQUIRED"
+            result = await turn(client, 6, "Да")
             assert result["code"] == "CANCELLED", result
             assert emulator.records["demo"][1].status == VisitStatus.CANCELLED
             assert emulator.records["demo"][2].status == VisitStatus.PLANNED

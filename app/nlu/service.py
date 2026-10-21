@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from datetime import date, time
 
 from app.contracts import NluRequest, NluResult, NluSlots
+from app.nlu.dictionaries import service_lexicon
 from app.nlu.intents import classify
 from app.nlu.parsers import Option, parse_answer, parse_digits, parse_expected
 from app.policies.safety import check
@@ -46,6 +47,11 @@ class RulesNlu:
         intents = [parsed.intent] if parsed.intent else []
         if topic and topic[0] not in intents:
             intents.append(topic[0])
+        if "I-08" in intents and "service" not in slots:
+            service = service_lexicon().best(request.text)
+            if service is not None:
+                slots["service"] = service.key
+                evidence["service"] = request.text.strip()
         if request.expect == "free" and not intents:
             # «Нет, спасибо» на «Что-нибудь ещё?»; при названной цели короткий ответ лишний
             answer = parse_answer(request.text)

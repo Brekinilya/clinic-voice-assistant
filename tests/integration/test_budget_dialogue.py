@@ -17,6 +17,18 @@ async def reserve(client):
     return await turn(client, 3, "В десять тридцать")
 
 
+async def test_booking_without_a_specialty_asks_the_specialty_before_identity():
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, "Запишите меня")
+        assert result["code"] == "SPECIALTY_REQUIRED"
+        assert result["phase"] == "ready"
+        assert "к какому специалисту" in " ".join(result["utterances"]).casefold()
+        state = await service.store.inspect("scenario")
+        assert state.client_id is None and state.phase.value == "ready"
+        assert all(entry[1:3] == ("GET", "doctors") for entry in emulator.log)
+        assert emulator.write_count == 0
+
+
 def directory_reads(emulator, since: int) -> list:
     return [entry for entry in emulator.log[since:] if entry[2] == "doctors"]
 

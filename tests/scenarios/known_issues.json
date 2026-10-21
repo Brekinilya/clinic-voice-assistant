@@ -17,19 +17,13 @@
     },
     "D-13 в часы работы регистратуры — перевод": {
       "status": "unsupported",
-      "reason": "T08: маршрут R-06/P3 и карточка созданы; промежуточная голосовая фраза ожидания не подтверждена текстовым сценарием",
+      "reason": "T08: маршрут R-06/P3, карточка и синтетический исход соединения проверяются; промежуточная фраза ожидания подтверждается только голосовым прогоном",
       "findings": [
         {
           "code": "intermediate_wait_prompt_T03_T05",
           "detail": "Не подключено требование: wait.schedule",
           "kind": "unsupported",
           "step": 5
-        },
-        {
-          "code": "handoff_completion_T08_T04",
-          "detail": "В YAML не задан исход перевода; результат связи не подтверждён",
-          "kind": "unsupported",
-          "step": null
         }
       ]
     },
@@ -65,96 +59,6 @@
           "code": "recording_engine_T13",
           "detail": "Нельзя подтвердить обязательный результат recording",
           "kind": "unsupported",
-          "step": null
-        }
-      ]
-    },
-    "M-09 цена из справочника": {
-      "status": "fail",
-      "reason": "T09: платный справочный маршрут не завершён; оплату не разрабатываем",
-      "findings": [
-        {
-          "code": "legacy_paid_catalog_outside_scope",
-          "detail": "Не подключено требование: paid.price",
-          "kind": "unsupported",
-          "step": 2
-        },
-        {
-          "code": "phase:closing.goodbye_short",
-          "detail": "Получено состояние handoff",
-          "kind": "fail",
-          "step": 3
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код INFO_GIVEN",
-          "kind": "fail",
-          "step": null
-        }
-      ]
-    },
-    "M-11 времени нет при записи": {
-      "status": "fail",
-      "reason": "T08: реальная заявка листа ожидания отсутствует",
-      "findings": [
-        {
-          "code": "waitlist_T08",
-          "detail": "Не подключено требование: waitlist.offer",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "waitlist_T08",
-          "detail": "Не подключено требование: waitlist.ask_when",
-          "kind": "unsupported",
-          "step": 4
-        },
-        {
-          "code": "waitlist_T08",
-          "detail": "Не подключено требование: waitlist.done",
-          "kind": "unsupported",
-          "step": 5
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код WAITLISTED",
-          "kind": "fail",
-          "step": null
-        },
-        {
-          "code": "waitlist_T08",
-          "detail": "Нельзя подтвердить обязательный результат waitlist",
-          "kind": "unsupported",
-          "step": null
-        }
-      ]
-    },
-    "M-11 пациент сам просит лист ожидания": {
-      "status": "fail",
-      "reason": "T08: реальная заявка листа ожидания отсутствует",
-      "findings": [
-        {
-          "code": "phase:ident.ask",
-          "detail": "Получено состояние handoff",
-          "kind": "fail",
-          "step": 2
-        },
-        {
-          "code": "waitlist_T08",
-          "detail": "Не подключено требование: waitlist.ask_when",
-          "kind": "unsupported",
-          "step": 3
-        },
-        {
-          "code": "waitlist_T08",
-          "detail": "Не подключено требование: waitlist.done",
-          "kind": "unsupported",
-          "step": 4
-        },
-        {
-          "code": "result_code",
-          "detail": "Не получен итоговый код WAITLISTED",
-          "kind": "fail",
           "step": null
         }
       ]

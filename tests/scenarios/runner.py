@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from datetime import time as datetime_time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,8 +38,14 @@ PHASES = {
     "my_visits.third_party": {"verifying_owner"},
     "closing.goodbye": {"ended"},
     "closing.goodbye_short": {"ended"},
+    "waitlist.offer": {"waitlist_consent"},
+    "waitlist.ask_when": {"waitlist_preferences"},
+    "waitlist.done": {"identified"},
 }
 CODE_EXPECTATIONS = {
+    "waitlist.offer": {"WAITLIST_CONSENT_REQUIRED"},
+    "waitlist.ask_when": {"WAITLIST_PREFERENCES_REQUIRED"},
+    "waitlist.done": {"WAITLISTED"},
     "medical.boundary": {"MEDICAL_BOUNDARY"},
     "robot.answer": {"ROBOT_DISCLOSED"},
     "recording.off": {"RECORDING_OPT_OUT"},
@@ -52,12 +59,10 @@ CODE_EXPECTATIONS = {
 }
 GAPS = {
     "labs.": "labs_status_source_T09",
-    "waitlist.": "waitlist_T08",
     "attach.": "faq_T09",
     "silence.": "voice_event_channel_T03",
     "complaint.callback": "callback_T08",
     "transfer.outside_hours": "callback_T08",
-    "paid.price": "legacy_paid_catalog_outside_scope",
     "wait.schedule": "intermediate_wait_prompt_T03_T05",
 }
 
@@ -341,6 +346,37 @@ async def verify_step(result, number, step, response, runtime):
                 result.add(
                     "referral:" + name,
                     "Не подтверждён маршрут или результат работы с направлением",
+                    step=number,
+                )
+            continue
+        if name == "paid.price":
+            configured = next(
+                (
+                    item
+                    for item in runtime.dialog.setup.get("prices", ())
+                    if item["service"].casefold() in text
+                ),
+                None,
+            )
+            expected_text = (
+                runtime.service.conversation.presenter.renderer.render(
+                    "paid.price",
+                    runtime.service.booking.clock.now().date(),
+                    service=configured["service"],
+                    price=configured["price"],
+                ).text
+                if configured is not None
+                else None
+            )
+            if (
+                response.code != "INFO_GIVEN"
+                or expected_text is None
+                or expected_text.casefold() not in text
+                or response.phase != "ready"
+            ):
+                result.add(
+                    "paid_price_T09",
+                    "Не подтверждён ответ по цене из настроенного справочника",
                     step=number,
                 )
             continue
@@ -901,6 +937,46 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
         target.finish()
 
 
+async def verify_waitlist(result, runtime, expectation):
+    store = runtime.service.conversation.waitlist_store
+    entries = await store.by_call(runtime.call_id)
+    if not entries:
+        result.add("waitlist_T08", "Заявка отсутствует в хранилище")
+        return
+    if len(entries) != 1:
+        result.add("waitlist_T08", "Для одного запроса создано несколько заявок")
+        return
+    entry = entries[0]
+    if expectation is None:
+        return
+    if expectation.get("client"):
+        client_id = runtime.client_ids[expectation["client"]]
+        if entry.client_id != client_id:
+            result.add("waitlist_T08", "В заявке указан другой пациент")
+    if (
+        expectation.get("specialty")
+        and entry.specialty.casefold() != expectation["specialty"].casefold()
+    ):
+        result.add("waitlist_T08", "В заявке указана другая специальность")
+    for key in ("time_from", "time_to"):
+        if key in expectation:
+            actual = getattr(entry.preferences, key)
+            expected = datetime_time.fromisoformat(expectation[key])
+            if actual != expected:
+                result.add("waitlist_T08", f"В заявке не сохранено пожелание {key}")
+    if "exclude_weekdays" in expectation and tuple(entry.preferences.exclude_weekdays) != tuple(
+        expectation["exclude_weekdays"]
+    ):
+        result.add("waitlist_T08", "В заявке не сохранены исключённые дни недели")
+    result.evidence["waitlist"] = {
+        "request_id": entry.request_id,
+        "client_reference_present": True,
+        "specialty": entry.specialty,
+        "preferences": entry.preferences.model_dump(mode="json"),
+        "persisted": True,
+    }
+
+
 async def run_dialog(dialog, *, blocking=False, runtime=None):
     runtime = runtime if runtime is not None else ScenarioRuntime(dialog)
     result = DialogResult(dialog.scenario, dialog.label, blocking)
@@ -1147,15 +1223,20 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                 )
             if "callback" in dialog.result:
                 await verify_callback_task(result, runtime, dialog.result["callback"], responses)
-            for key, feature in {
-                "sms": "sms_delivery_T20",
-                "waitlist": "waitlist_T08",
-                "recording": "recording_engine_T13",
-            }.items():
-                if key in dialog.result:
-                    result.add(
-                        feature, "Нельзя подтвердить обязательный результат " + key, "unsupported"
-                    )
+            if "sms" in dialog.result:
+                result.add(
+                    "sms_delivery_T20",
+                    "Нельзя подтвердить обязательный результат sms",
+                    "unsupported",
+                )
+            if "waitlist" in dialog.result or expected_code == "WAITLISTED":
+                await verify_waitlist(result, runtime, dialog.result.get("waitlist"))
+            if "recording" in dialog.result:
+                result.add(
+                    "recording_engine_T13",
+                    "Нельзя подтвердить обязательный результат recording",
+                    "unsupported",
+                )
             if "home_visit" in dialog.result:
                 expected = dialog.result["home_visit"]
                 request = await runtime.handoff_store.request_for_call(runtime.call_id)

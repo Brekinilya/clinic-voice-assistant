@@ -1,7 +1,9 @@
 """Справка как короткое отступление: факты локальны, текущая операция не изменяется."""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
+from app.booking.preferences import SlotPreferences
+from app.dialogue.introduction import classify_introduction
 from app.dialogue.models import DialogueState, InformationReference, Phase, Reply, Turn, reply
 from app.dialogue.presentation import BookingPresenter
 from app.dialogue.visits import VisitConversation
@@ -41,9 +43,11 @@ class InformationConversation:
         presenter: BookingPresenter,
         store,
         continuation: Callable[[DialogueState, Turn], tuple[str, ...]],
+        release_call_holds: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.service, self.presenter, self.store = service, presenter, store
         self.continuation = continuation
+        self.release_call_holds = release_call_holds
 
     @staticmethod
     def short_answer(text: str) -> str | None:
@@ -78,6 +82,93 @@ class InformationConversation:
         )
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
+        introduction = classify_introduction(turn.text)
+        if introduction == "booking_abandoned":
+            if state.purpose != "booking" or state.phase in IDLE:
+                introduction = "general_help"
+            elif state.phase in {
+                Phase.RECONCILING,
+                Phase.CANCEL_RECONCILING,
+                Phase.MOVE_PENDING,
+            }:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Конечно. Результат прежней операции ещё уточняется; повторять её не буду.",
+                    "Какой общий вопрос вас интересует?",
+                    code="BOOKING_TASK_PENDING",
+                )
+            else:
+                # Отказ от намерения записи освобождает только локальную бронь.
+                # Неопределённые внешние операции выше намеренно не сбрасываются.
+                if self.release_call_holds is not None:
+                    await self.release_call_holds(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.READY,
+                        "purpose": "booking",
+                        "client_id": None,
+                        "specialty": None,
+                        "preferences": SlotPreferences(),
+                        "options": (),
+                        "proposal": None,
+                        "authorization": None,
+                        "shown_option_keys": (),
+                        "identity_attempts": 0,
+                        "identity_draft": None,
+                        "misunderstandings": 0,
+                        "last_question": None,
+                        "suspended_booking": None,
+                        "information_topic": None,
+                        "information_clarifying": False,
+                    }
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Конечно. Не будем продолжать запись.",
+                    "Могу ответить на общий вопрос. Что именно вас интересует?",
+                    code="BOOKING_TASK_ABANDONED",
+                )
+        if introduction is not None:
+            phrases = {
+                "capabilities": (
+                    "Я виртуальный помощник регистратуры. Могу помочь с записью,"
+                    " проверкой ваших приёмов, отменой или переносом записи и общей справкой.",
+                    "Если нужен сотрудник, скажите «оператор».",
+                ),
+                "booking_guidance": (
+                    "Чтобы начать запись, скажите, к какому специалисту хотите попасть.",
+                    "Я сначала проверю расписание и условия приёма. Личные данные понадобятся"
+                    " только для проверки доступности записи.",
+                ),
+                "general_help": (
+                    "Могу подсказать часы работы, адрес, расписание врача, информацию об анализах"
+                    " или порядок записи.",
+                    "Что именно вас интересует?",
+                ),
+                "unsupported_service": (
+                    "В каталоге помощника нет расписания массажиста, поэтому оформить такую запись"
+                    " автоматически я не могу.",
+                    "Могу помочь с записью к врачу, общей справкой или запросом сотруднику.",
+                ),
+            }[introduction]
+            continuation = self.resume_question(state, turn)
+            if state.phase in IDLE:
+                continuation = () if introduction == "general_help" else continuation
+            codes = {
+                "capabilities": "CAPABILITIES_GIVEN",
+                "booking_guidance": "BOOKING_GUIDANCE_GIVEN",
+                "general_help": "GENERAL_HELP_REQUIRED",
+                "unsupported_service": "SERVICE_UNAVAILABLE",
+            }
+            return state, reply(
+                state,
+                turn.turn_id,
+                *phrases,
+                *continuation,
+                code=codes[introduction],
+            )
         topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
         # Короткие ответы относятся к справочному вопросу, только пока он активен.
         answer = self.short_answer(turn.text)

@@ -1,9 +1,10 @@
 """Текстовый маршрутизатор: NLU Ильи, сценарии С-01/С-05 и правила действий backend."""
 
+import hashlib
 import json
 import re
 from datetime import datetime, time, timedelta
-from typing import Literal
+from typing import Literal, Mapping
 
 from app.booking.models import ActionState, Approval, BookingError
 from app.booking.preferences import PREFERENCE_FIELDS, SlotPreferences
@@ -21,13 +22,23 @@ from app.dialogue.failures import mis_failure
 from app.dialogue.identity import IdentityDrafts
 from app.dialogue.information import InformationConversation
 from app.dialogue.medical import MedicalConversation
-from app.dialogue.models import DialogueState, Phase, Proposal, Reply, TransferRequest, Turn, reply
+from app.dialogue.models import (
+    DialogueState,
+    Phase,
+    Proposal,
+    Reply,
+    SuspendedBooking,
+    TransferRequest,
+    Turn,
+    reply,
+)
 from app.dialogue.nlu_adapter import RulesInput
 from app.dialogue.ports import DialogueStore, NluInterpreter, SafetyChecker
 from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
+from app.dialogue.triage import needs_urgent_screening
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
@@ -43,6 +54,9 @@ from app.visits.ports import DoctorRooms
 from app.visits.service import VisitService
 from app.voice.phrases import load_phrasebook
 from app.voice.render import say_date, say_specialty
+from app.waitlist.memory import MemoryWaitlistStore
+from app.waitlist.models import WaitlistRequest
+from app.waitlist.ports import WaitlistStore
 
 FOLLOW_UP_QUESTION = "Могу ещё чем-то помочь?"
 
@@ -60,25 +74,37 @@ class BookingConversation:
         rescheduling: RescheduleService | None = None,
         presenter: BookingPresenter | None = None,
         identity_drafts: IdentityDrafts | None = None,
+        waitlist_store: WaitlistStore | None = None,
+        paid_prices: Mapping[str, int] | None = None,
     ) -> None:
         self.booking = booking
         self.store = store
         self.safety = safety
         self.handoffs = None
         self.identity_drafts = identity_drafts
+        self.waitlist_store = waitlist_store or MemoryWaitlistStore()
+        self.paid_prices = {profile_key(name): price for name, price in (paid_prices or {}).items()}
         if cancellation is not None and cancellation.operations is None:
             cancellation.operations = booking.operations
         self.rooms = rooms
         self.presenter = presenter if presenter is not None else BookingPresenter(booking.clock)
         self.information = InformationConversation(
-            information_service(), self.presenter, store, self.information_continuation
+            information_service(),
+            self.presenter,
+            store,
+            self.information_continuation,
+            booking.store.release_call_holds,
         )
         self.input = (
             nlu if nlu is not None else RulesInput(booking.mis, booking.clock, booking.schedule)
         )
         self.names = DoctorNames(booking.mis, booking.schedule)
         self.visits = VisitConversation(
-            booking, store, VisitService(booking.mis, booking.clock, rooms), self.transfer
+            booking,
+            store,
+            VisitService(booking.mis, booking.clock, rooms),
+            self.transfer,
+            self.resume_booking_detour,
         )
         self.cancellation = (
             CancellationConversation(booking, cancellation, store, self.transfer)
@@ -106,6 +132,71 @@ class BookingConversation:
         if self.rescheduling is not None:
             await self.rescheduling.service.store.release_call(call_id)
 
+    async def resume_booking_detour(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply]:
+        suspended = state.suspended_booking
+        if suspended is None:
+            return state, reply(state, turn.turn_id, "Продолжим. Чем могу помочь?")
+        saved_phase = suspended.phase
+        phase = "identified" if saved_phase in {"offered", "held"} else saved_phase
+        state = state.model_copy(
+            update={
+                "purpose": "booking",
+                "phase": Phase(phase),
+                "specialty": suspended.specialty,
+                "preferences": suspended.preferences,
+                "identity_attempts": suspended.identity_attempts,
+                "identity_draft": suspended.identity_draft,
+                "misunderstandings": suspended.misunderstandings,
+                "last_question": suspended.last_question,
+                "referral_fallback": suspended.referral_fallback,
+                "referral_mentioned": suspended.referral_mentioned,
+                "suspended_booking": None,
+                "authorization": None,
+                "proposal": None,
+                "options": (),
+                "shown_option_keys": (),
+                "visit_items": (),
+                "visit_cursor": None,
+                "visit_has_more": False,
+                "query_for_self": False,
+                "visit_query": VisitQuery(),
+            }
+        )
+        if saved_phase in {"offered", "held"} and state.specialty:
+            if state.client_id is None:
+                state = state.model_copy(update={"phase": Phase.IDENTIFYING})
+            else:
+                state, result = await self.offer(state, turn)
+                return state, result.model_copy(
+                    update={"utterances": ("Вернёмся к подбору времени.", *result.utterances)}
+                )
+        if state.phase == Phase.IDENTIFYING:
+            prompt = (
+                "Назовите дату рождения, пожалуйста."
+                if state.identity_draft
+                else self.presenter.ask_patient()
+            )
+            return state, reply(
+                state, turn.turn_id, "Вернёмся к записи.", prompt, code="BOOKING_RESUMED"
+            )
+        if state.specialty:
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Вернёмся к записи.",
+                "Скажите, на какой день хотите подобрать время?",
+                code="BOOKING_RESUMED",
+            )
+        return state, reply(
+            state,
+            turn.turn_id,
+            "Вернёмся к записи.",
+            "К какому специалисту хотите записаться?",
+            code="BOOKING_RESUMED",
+        )
+
     async def short_reply(
         self, state: DialogueState, turn: Turn
     ) -> tuple[DialogueState, Reply] | None:
@@ -122,12 +213,55 @@ class BookingConversation:
             )
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
+        if (
+            self.cancellation is not None
+            and state.purpose == "cancel"
+            and state.phase == Phase.CANCEL_OFFER
+            and parse_answer(turn.text) == "no"
+        ):
+            result = await self.input.parse(state, turn)
+            return await self.cancellation.step(state, turn, result)
+        if state.distress_question_pending:
+            return await self.distress_answer(state, turn)
+        if needs_urgent_screening(turn.text):
+            state = state.model_copy(
+                update={
+                    "medical_boundary_pending": False,
+                    "distress_question_pending": True,
+                    "misunderstandings": 0,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "При резком ухудшении или сильной боли позвоните 103 или 112.",
+                "Есть ли сейчас непосредственная угроза жизни? Ответьте «да» или «нет».",
+                code="DISTRESS_TRIAGE_REQUIRED",
+            ).model_copy(update={"expect": "yes_no"})
         if state.medical_boundary_pending and not state.information_clarifying:
             answer = self.information.short_answer(turn.text)
             if answer == "no":
                 return await self.medical.decline(state, turn)
             if answer == "repeat":
                 return self.medical.prompt(state, turn)
+        if state.information_topic == "paid_price":
+            answer = parse_answer(turn.text)
+            if answer == "no" or turn.text.casefold().lstrip().startswith("нет"):
+                ended = await self.store.end(state.call_id)
+                return ended, reply(
+                    ended,
+                    turn.turn_id,
+                    "Хорошо. Спасибо за звонок. До свидания.",
+                    code="CALL_ENDED",
+                )
+            if answer == "yes":
+                return await self.transfer(state, turn, "R-10")
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Соединить вас с платным отделением?",
+                code="PAID_TRANSFER_REQUIRED",
+            ).model_copy(update={"expect": "yes_no"})
         return await self.information.step(state, turn)
 
     async def service_question(
@@ -372,6 +506,19 @@ class BookingConversation:
             update={"options": options, "phase": Phase.OFFERED if options else Phase.IDENTIFIED}
         )
         if not options:
+            today = self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date()
+            requested_start = state.preferences.date_from
+            requested_end = state.preferences.date_to
+            if (
+                (requested_start is not None and requested_start > today + timedelta(days=13))
+                or (requested_end is not None and requested_end < today)
+            ):
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "На эту дату запись пока недоступна. Можно выбрать дату в ближайшие две недели.",
+                    code="NO_SLOTS",
+                )
             specialty = next(
                 (
                     item
@@ -380,7 +527,7 @@ class BookingConversation:
                 ),
                 None,
             )
-            if specialty is not None and specialty.referral:
+            if specialty is not None and specialty.referral and not state.referral_mentioned:
                 state = state.model_copy(update={"information_topic": "referral_missing"})
                 message = (
                     load_phrasebook()
@@ -390,12 +537,20 @@ class BookingConversation:
                 return state, reply(
                     state, turn.turn_id, message, code="REFERRAL_REQUIRED"
                 ).model_copy(update={"expect": "yes_no"})
+            state = state.model_copy(
+                update={"phase": Phase.WAITLIST_CONSENT, "waitlist_stage": "consent"}
+            )
+            offer_text = (
+                load_phrasebook()
+                .get("waitlist.offer")
+                .text.replace("{specialty:datv}", say_specialty(state.specialty, "datv"))
+            )
             return state, reply(
                 state,
                 turn.turn_id,
-                "Подходящих подтверждённых слотов нет. Уточните предпочтения или попросите регистратора.",
-                code="NO_SLOTS",
-            )
+                offer_text,
+                code="WAITLIST_CONSENT_REQUIRED",
+            ).model_copy(update={"expect": "yes_no"})
         offered, phrases = self.presenter.offer(options, doctors)
         specialty = next(
             (
@@ -744,6 +899,8 @@ class BookingConversation:
                     "Для отмены обратитесь в регистратуру.",
                     code="REMINDER_SCOPE",
                 )
+            if state.purpose == "cancel" and state.phase == Phase.CANCEL_OFFER:
+                return None
             if result is None or self.cancellation is None:
                 return None
             return await self.cancellation.start(state, turn, result)
@@ -758,6 +915,33 @@ class BookingConversation:
                         code="REMINDER_SCOPE",
                     )
                 return None
+            if (
+                state.purpose == "booking"
+                and state.suspended_booking is None
+                and state.phase in {Phase.IDENTIFYING, Phase.IDENTIFIED, Phase.OFFERED, Phase.HELD}
+            ):
+                saved_phase = "offered" if state.phase == Phase.HELD else state.phase.value
+                if state.phase == Phase.HELD:
+                    await self.booking.store.release_call_holds(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "suspended_booking": SuspendedBooking(
+                            phase=saved_phase,
+                            specialty=state.specialty,
+                            preferences=state.preferences,
+                            identity_attempts=state.identity_attempts,
+                            identity_draft=state.identity_draft,
+                            misunderstandings=state.misunderstandings,
+                            last_question=state.last_question,
+                            referral_fallback=state.referral_fallback,
+                            referral_mentioned=state.referral_mentioned,
+                        ),
+                        "phase": Phase.IDENTIFIED if state.phase == Phase.HELD else state.phase,
+                        "proposal": None,
+                        "authorization": None,
+                        "options": () if state.phase == Phase.HELD else state.options,
+                    }
+                )
             return await self.visits.start(state, turn, result)
         return None
 
@@ -905,6 +1089,24 @@ class BookingConversation:
         transfer = route_for(decision)
         if transfer:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
+        if state.distress_question_pending:
+            return await self.distress_answer(state, turn)
+        if needs_urgent_screening(turn.text):
+            state, _ = await self.medical.question(state, turn)
+            state = state.model_copy(
+                update={
+                    "medical_boundary_pending": False,
+                    "distress_question_pending": True,
+                    "misunderstandings": 0,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "При резком ухудшении или сильной боли позвоните 103 или 112.",
+                "Есть ли сейчас непосредственная угроза жизни? Ответьте «да» или «нет».",
+                code="DISTRESS_TRIAGE_REQUIRED",
+            ).model_copy(update={"expect": "yes_no"})
         if "medical" in decision.flags or "I-13" in result.intents:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
@@ -948,10 +1150,210 @@ class BookingConversation:
                 code="IDENTIFICATION_REQUIRED",
             )
 
+    async def distress_answer(self, state: DialogueState, turn: Turn):
+        answer = parse_answer(turn.text)
+        if answer == "yes":
+            await self.release_call(state.call_id)
+            ended = state.model_copy(
+                update={
+                    "phase": Phase.ENDED,
+                    "distress_question_pending": False,
+                    "identity_draft": None,
+                    "authorization": None,
+                }
+            )
+            return ended, reply(
+                ended,
+                turn.turn_id,
+                "Позвоните 103 или 112 сейчас. Я не могу вызвать скорую этим звонком.",
+                code="EMERGENCY_GUIDANCE",
+            )
+        if answer == "no":
+            state = state.model_copy(
+                update={"distress_question_pending": False, "misunderstandings": 0}
+            )
+            return await self.medical.question(state, turn)
+        if state.misunderstandings == 0:
+            state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Не удалось понять ответ. Если угроза жизни есть — скажите «да»; если нет — «нет».",
+                "При опасном или быстро ухудшающемся состоянии позвоните 103 или 112.",
+                code="DISTRESS_TRIAGE_CLARIFICATION",
+            ).model_copy(update={"expect": "yes_no"})
+        state = state.model_copy(
+            update={"distress_question_pending": False, "misunderstandings": 0}
+        )
+        return await self.medical.question(state, turn)
+
+    async def waitlist_preferences_question(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply]:
+        state = state.model_copy(
+            update={"phase": Phase.WAITLIST_PREFERENCES, "waitlist_stage": "preferences"}
+        )
+        return state, reply(
+            state,
+            turn.turn_id,
+            "В какие дни и время вам удобно прийти, если освободится место?",
+            code="WAITLIST_PREFERENCES_REQUIRED",
+        )
+
+    async def waitlist_turn(self, state, turn, slots, intents):
+        stage = state.waitlist_stage
+        if stage == "specialty":
+            if slots.specialty is None:
+                return state, reply(
+                    state, turn.turn_id, "Назовите специальность врача, пожалуйста."
+                )
+            state = state.model_copy(
+                update={
+                    "specialty": slots.specialty,
+                    "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
+                    "waitlist_stage": "identity" if state.client_id is None else "preferences",
+                }
+            )
+            if state.client_id is None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Назовите фамилию, имя, отчество и дату рождения пациента.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            return await self.waitlist_preferences_question(state, turn)
+        if stage == "consent":
+            if "yes" in intents:
+                if state.client_id is None:
+                    state = state.model_copy(
+                        update={"phase": Phase.IDENTIFYING, "waitlist_stage": "identity"}
+                    )
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Назовите фамилию, имя, отчество и дату рождения пациента.",
+                        code="IDENTIFICATION_REQUIRED",
+                    )
+                return await self.waitlist_preferences_question(state, turn)
+            if "no" in intents:
+                state = state.model_copy(update={"phase": Phase.IDENTIFIED, "waitlist_stage": None})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Хорошо, заявку создавать не буду. Могу подобрать другой вариант или соединить с регистратурой.",
+                    code="WAITLIST_DECLINED",
+                )
+            return state, reply(
+                state, turn.turn_id, "Оставить заявку в листе ожидания? Ответьте «да» или «нет»."
+            )
+        if stage == "identity":
+            if not (slots.last_name and slots.first_name and slots.birth_date):
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Назовите полные ФИО и дату рождения пациента.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            try:
+                patient = await self.booking.identify(
+                    slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
+                )
+            except MisError as error:
+                return mis_failure(state, turn, self.booking.clock.now(), error)
+            except BookingError:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Пациента не удалось однозначно найти. Повторите полные ФИО и дату рождения.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            state = state.model_copy(
+                update={
+                    "client_id": patient.id,
+                    "identity_attempts": 0,
+                    "waitlist_stage": "preferences",
+                }
+            )
+            return await self.waitlist_preferences_question(state, turn)
+        if stage == "preferences":
+            fields = PREFERENCE_FIELDS & slots.model_fields_set
+            if not fields:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Уточните удобные дни и время, например: «в любой день утром».",
+                )
+            preferences = state.preferences.model_copy(
+                update={field: getattr(slots, field) for field in fields}
+            )
+            request_id = hashlib.sha256(
+                f"waitlist\0{state.call_id}\0{turn.turn_id}".encode("utf-8")
+            ).hexdigest()
+            request = WaitlistRequest(
+                request_id=request_id,
+                call_id=state.call_id,
+                turn_id=turn.turn_id,
+                client_id=state.client_id,
+                specialty=state.specialty,
+                preferences=preferences,
+                created_at=self.booking.clock.now(),
+            )
+            try:
+                await self.waitlist_store.create(request)
+            except (OSError, ValueError):
+                return await self.transfer(state, turn, "R-08")
+            state = state.model_copy(
+                update={
+                    "phase": Phase.IDENTIFIED,
+                    "waitlist_stage": None,
+                    "preferences": preferences,
+                    "authorization": None,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                load_phrasebook().get("waitlist.done").text,
+                code="WAITLISTED",
+            )
+        return await self.transfer(state, turn, "R-08")
+
     async def advance(
         self, state: DialogueState, turn: Turn, result: NluResult, decision: SafetyDecision
     ) -> tuple[DialogueState, Reply]:
         slots, intents = result.slots, set(result.intents)
+        if state.waitlist_stage is not None:
+            return await self.waitlist_turn(state, turn, slots, intents)
+        if "I-09" in intents:
+            if state.phase in {Phase.RECONCILING, Phase.CANCEL_RECONCILING, Phase.MOVE_PENDING}:
+                return await self.transfer(state, turn, "R-06", "P3", reason="mis_unknown")
+            state = state.model_copy(
+                update={
+                    "purpose": "booking",
+                    "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
+                    "specialty": slots.specialty,
+                    "preferences": SlotPreferences(),
+                    "options": (),
+                    "proposal": None,
+                    "authorization": None,
+                    "waitlist_stage": "identity" if slots.specialty else "specialty",
+                    "referral_mentioned": False,
+                    "visit_items": (),
+                    "suspended_booking": None,
+                }
+            )
+            if state.waitlist_stage == "specialty":
+                return state, reply(
+                    state, turn.turn_id, "К какому специалисту поставить вас в лист ожидания?"
+                )
+            if state.client_id is None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Назовите фамилию, имя, отчество и дату рождения пациента.",
+                    code="IDENTIFICATION_REQUIRED",
+                )
+            return await self.waitlist_preferences_question(state, turn)
         if state.information_topic == "referral_missing":
             if "yes" in intents:
                 state = state.model_copy(
@@ -1022,7 +1424,8 @@ class BookingConversation:
             return await self.visits.privacy_transfer(state, turn)
         if state.guardian_call and state.client_id is not None and state.guardian_relation is None:
             relation = re.search(
-                r"\b(мама|мать|папа|отец|опекун|попечитель|бабушка|дедушка)\b",
+                r"\b(мам\w*|мат\w*|пап\w*|отц\w*|родител\w*|опекун\w*|попечител\w*|"
+                r"бабушк\w*|дедушк\w*)\b",
                 turn.text.casefold().replace("ё", "е"),
             )
             if relation is None:
@@ -1154,6 +1557,13 @@ class BookingConversation:
         if self.cancellation is not None and (state.purpose == "cancel" or "I-03" in intents):
             if (
                 state.purpose == "cancel"
+                and state.phase == Phase.CANCEL_OFFER
+                and "I-02" in intents
+                and self.rescheduling is not None
+            ):
+                return await self.rescheduling.start(state, turn, result)
+            if (
+                state.purpose == "cancel"
                 and "I-04" in intents
                 and "I-03" not in intents
                 and state.phase != Phase.CANCEL_RECONCILING
@@ -1280,6 +1690,19 @@ class BookingConversation:
         subroute = self._catalog_route(turn.text)
         if subroute is not None:
             return await self.transfer(state, turn, subroute)
+        if "I-08" in intents:
+            service = slots.service
+            price = self.paid_prices.get(profile_key(service or ""))
+            if service and price is not None:
+                state = state.model_copy(update={"information_topic": "paid_price"})
+                phrase = self.presenter.renderer.render(
+                    "paid.price", self.presenter._today(), service=service, price=price
+                ).text
+                return state, reply(state, turn.turn_id, phrase, code="INFO_GIVEN").model_copy(
+                    update={"expect": "yes_no"}
+                )
+            # I-08 without a configured price source goes to the paid department.
+            return await self.transfer(state, turn, "R-10")
         if intents & {
             "I-02",
             "I-03",
@@ -1336,6 +1759,31 @@ class BookingConversation:
             )
         preference_fields = PREFERENCE_FIELDS & slots.model_fields_set
         if (
+            "I-01" in intents
+            and slots.specialty is None
+            and slots.doctor is None
+            and state.phase in {Phase.READY, Phase.IDENTIFIED}
+        ):
+            state = state.model_copy(
+                update={
+                    "purpose": "booking",
+                    "phase": Phase.IDENTIFIED if state.client_id is not None else Phase.READY,
+                    "preferences": state.preferences.model_copy(
+                        update={
+                            field: getattr(slots, field)
+                            for field in PREFERENCE_FIELDS & slots.model_fields_set
+                        }
+                    ),
+                    "authorization": None,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "К какому специалисту вы хотите записаться?",
+                code="SPECIALTY_REQUIRED",
+            )
+        if (
             slots.specialty is not None
             or slots.doctor is not None
             or preference_fields
@@ -1366,7 +1814,13 @@ class BookingConversation:
                     slots.specialty
                 ):
                     state = state.model_copy(update={"preferences": SlotPreferences()})
-                state = state.model_copy(update={"specialty": slots.specialty})
+                state = state.model_copy(
+                    update={
+                        "specialty": slots.specialty,
+                        "referral_mentioned": state.referral_mentioned
+                        or "направлен" in turn.text.casefold(),
+                    }
+                )
             state = state.model_copy(
                 update={
                     "preferences": state.preferences.model_copy(update=changes),

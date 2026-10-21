@@ -17,7 +17,10 @@ def requested_owner(text: str) -> Literal["self", "other", "unknown"]:
     )
     if other:
         return "other"
-    if re.search(r"\b(?:я|мне|меня|мою|моя|мой|мои|мое)\b", normalized):
+    if re.search(
+        r"\b(?:я|мне|меня|мою|моя|мой|мои|мое|мои|свой|своя|свое|свои|свою|своего|своей)\b",
+        normalized,
+    ):
         return "self"
     return "unknown"
 

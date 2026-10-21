@@ -265,10 +265,15 @@ class CancellationConversation:
             if state.visit_has_more and "дальше" in turn.text.casefold():
                 return await self.identify_or_list(state, turn, next_page=True)
         if state.phase == Phase.CANCEL_OFFER:
-            if "I-02" in intents:
-                return await self.transfer(state, turn, "R-08")
-            if "I-03" in intents or "no" in intents:
+            if "I-03" in intents:
                 return await self.prepare(state, turn)
+            if "no" in intents or "yes" in intents:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Не переносить, а отменить выбранную запись, или оставить её без изменений?",
+                    code="CANCEL_ACTION_REQUIRED",
+                )
         if state.phase == Phase.CANCEL_CONFIRM:
             if "repeat" in intents:
                 return self.confirmation(state, turn)

@@ -14,6 +14,8 @@ from app.scheduling.index import SqliteSchedule
 from app.storage.booking import PostgresBookingStore
 from app.storage.handoffs import PostgresHandoffStore
 from app.storage.recovery import PostgresRecoveryStore
+from app.storage.waitlist import PostgresWaitlistStore
+from app.waitlist.memory import MemoryWaitlistStore
 
 
 def assemble_dialogue(
@@ -28,6 +30,7 @@ def assemble_dialogue(
     hash_key,
     *,
     reminder_actions=None,
+    paid_prices=None,
 ):
     recovery_store = (
         PostgresRecoveryStore(booking_store.engine)
@@ -53,6 +56,12 @@ def assemble_dialogue(
             cancellation=CancellationService(mis, cancellation_store, clock),
             rescheduling=RescheduleService(booking, move_store),
             identity_drafts=IdentityDrafts(hash_key),
+            waitlist_store=(
+                PostgresWaitlistStore(booking_store.engine)
+                if isinstance(booking_store, PostgresBookingStore)
+                else MemoryWaitlistStore()
+            ),
+            paid_prices=paid_prices,
         )
         if safety is not None
         else None
