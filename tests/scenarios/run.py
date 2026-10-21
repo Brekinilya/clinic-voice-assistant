@@ -23,7 +23,13 @@ ROOT = HERE.parents[1]
 
 def source_receipt():
     digest = hashlib.sha256()
-    for folder in (ROOT / "app", ROOT / "config", HERE):
+    for folder in (
+        ROOT / "app",
+        ROOT / "bench" / "voice",
+        ROOT / "config",
+        HERE,
+        ROOT / "tests" / "voice",
+    ):
         for path in sorted(folder.rglob("*")):
             if path.is_file() and path.suffix in {".py", ".yaml", ".json", ".md"}:
                 digest.update(

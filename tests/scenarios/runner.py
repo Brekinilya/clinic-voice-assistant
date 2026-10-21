@@ -901,7 +901,13 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
 
     evidence_source = document["source"]
     evidence_commit = evidence_source.get("commit")
-    source_matches = bool(evidence_commit) and evidence_commit == source.get("commit")
+    evidence_hash = evidence_source.get("source_sha256")
+    source_matches = (
+        bool(evidence_commit)
+        and evidence_commit == source.get("commit")
+        and bool(evidence_hash)
+        and evidence_hash == source.get("source_sha256")
+    )
 
     for row in rows:
         if not isinstance(row, dict):
@@ -930,6 +936,7 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
             "evidence": "voice_session" if accepted else "unsupported",
             "requirement": requirement,
             "source_commit": evidence_source.get("commit"),
+            "source_sha256": evidence_hash,
             "verdict": row.get("verdict"),
             "detail": (
                 "голосовое доказательство относится к другому исходному дереву"

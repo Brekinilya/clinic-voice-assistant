@@ -109,3 +109,32 @@ def test_voice_evidence_from_another_source_stays_unsupported(tmp_path):
     assert result.status == "unsupported"
     assert result.findings[0].code == "event:silence"
     assert "другому исходному дереву" in result.evidence["voice_session"]["detail"]
+
+
+def test_voice_evidence_from_same_commit_but_different_tree_stays_unsupported(tmp_path):
+    result = DialogResult("R-17", "R-17", False)
+    result.add("event:silence", "silence needs voice evidence", "unsupported")
+    source = source_receipt()
+    path = tmp_path / "voice_evidence.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source": {**source, "source_sha256": "different-tree"},
+                "results": [
+                    {
+                        "scenario_id": "R-17",
+                        "label": "R-17",
+                        "requirement": "event:silence",
+                        "verdict": "ok",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    apply_voice_evidence([result], path, source)
+
+    assert result.status == "unsupported"
+    assert result.findings[0].code == "event:silence"
+    assert "другому исходному дереву" in result.evidence["voice_session"]["detail"]
