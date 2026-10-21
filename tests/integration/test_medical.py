@@ -54,6 +54,7 @@ def test_priorities_follow_regulation_table(routes, priority):
         ("Сильно болит зуб", "R-09", "P2"),
         ("Я вас плохо слышу", "R-15", "P2"),
         ("Температура сорок", "R-11", "P1"),
+        ("Невыносимо болит живот", "R-11", "P1"),
         ("Что мне выпить, не могу дышать", "R-01", "P1"),
     ],
 )
@@ -160,56 +161,48 @@ async def test_medical_flag_from_nlu_also_gets_boundary_before_handoff():
         assert result["transfer"]["route"] == "R-04" and emulator.write_count == 0
 
 
-@pytest.mark.parametrize("phrase", ["Побаливает живот", "Я умираю", "Мне очень плохо"])
-async def test_unclear_distress_is_screened_before_booking_or_unknown(phrase):
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Побаливает живот",
+        "Мне очень плохо",
+        "Нужно ли вызывать врача, если температура?",
+    ],
+)
+async def test_unspecified_symptoms_go_to_staff_without_patient_self_triage(phrase):
     async with pipeline() as (client, service, emulator, *_):
         result = await turn(client, 1, phrase)
-        assert result["code"] == "DISTRESS_TRIAGE_REQUIRED", result
-        assert result["expect"] == "yes_no"
-        assert "103" in spoken(result) and "112" in spoken(result)
+        assert result["transfer"]["route"] == "R-08", result
+        assert "угроз" not in spoken(result).casefold()
+        assert "103" not in spoken(result) and "112" not in spoken(result)
         state = await service.store.inspect("scenario")
-        assert state.distress_question_pending and not state.medical_boundary_pending
         assert state.client_id is None and emulator.log == [] and emulator.write_count == 0
 
 
-async def test_affirmative_distress_screen_only_gives_emergency_instructions():
+async def test_explicit_life_threat_goes_to_emergency_route_without_screening_question():
     async with pipeline() as (client, service, emulator, *_):
-        await turn(client, 1, "Мне очень плохо")
-        result = await turn(client, 2, "Да")
-        assert result["code"] == "EMERGENCY_GUIDANCE" and result["phase"] == "ended"
-        assert "не могу вызвать скорую" in spoken(result).casefold()
-        assert result["transfer"] is None and emulator.write_count == emulator.patch_count == 0
+        result = await turn(client, 1, "Мне трудно дышать")
+        assert result["transfer"]["route"] == "R-01" and result["transfer"]["priority"] == "P1"
+        assert "угроз" not in spoken(result).casefold()
+        assert emulator.write_count == emulator.patch_count == 0
 
 
-async def test_negative_distress_screen_moves_to_safe_booking_boundary():
+async def test_generic_abdominal_pain_is_referred_without_self_assessment():
     async with pipeline() as (client, service, emulator, *_):
-        await turn(client, 1, "У меня болит живот")
-        result = await turn(client, 2, "Нет")
-        assert result["code"] == "MEDICAL_BOUNDARY" and result["expect"] == "yes_no"
-        assert result["phase"] == "ready"
-        assert not (await service.store.inspect("scenario")).distress_question_pending
-        assert result["transfer"] is None and emulator.write_count == 0
-
-
-async def test_triage_keeps_booking_request_and_does_not_repeat_emergency_number():
-    async with pipeline() as (client, service, emulator, *_):
-        first = await turn(client, 1, "У меня болит горло, запишите к терапевту")
-        assert first["code"] == "DISTRESS_TRIAGE_REQUIRED", first
-        assert "103" in spoken(first)
-
-        boundary = await turn(client, 2, "Нет")
-        assert boundary["code"] == "MEDICAL_BOUNDARY", boundary
-        assert boundary["expect"] == "yes_no"
-        assert "103" not in spoken(boundary)
-
-        state = await service.store.inspect("scenario")
-        assert state.purpose == "booking" and state.specialty == "терапевт"
-        assert not state.distress_question_pending and state.medical_boundary_pending
+        result = await turn(client, 1, "У меня болит живот")
+        assert result["transfer"]["route"] == "R-08"
+        assert "угроз" not in spoken(result).casefold()
+        assert (await service.store.inspect("scenario")).client_id is None
         assert emulator.write_count == 0
 
-        followup = await turn(client, 3, "Да")
-        assert followup["code"] != "CALL_ENDED", followup
-        assert followup["phase"] in {"identifying", "ready"}
+
+async def test_symptoms_during_booking_are_handed_to_staff_with_the_request_context():
+    async with pipeline() as (client, service, emulator, *_):
+        first = await turn(client, 1, "У меня болит горло, запишите к терапевту")
+        assert first["transfer"]["route"] == "R-08", first
+        assert "угроз" not in spoken(first).casefold()
+        state = await service.store.inspect("scenario")
+        assert state.client_id is None and emulator.write_count == 0
 
 
 async def test_medical_partial_during_preflight_prevents_post():

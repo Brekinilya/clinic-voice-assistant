@@ -12,8 +12,15 @@ _PAIN = re.compile(
     r"|\b(?:живот|голова|грудь|сердце|спина|горло|рука|нога|глаз|ухо)\b"
     r".{0,24}\b(?:болит|болят|побаливает|побаливают|больно)\b"
 )
+_ASSESSMENT_REQUEST = re.compile(
+    r"\b(?:нужно|надо|стоит)\s+ли\s+(?:вызывать|звать)\s+(?:врача|доктора)\b"
+)
 
 
 def needs_urgent_screening(text: str) -> bool:
     normalized = " ".join(text.casefold().replace("ё", "е").split())
-    return bool(_DISTRESS.search(normalized) or _PAIN.search(normalized))
+    return bool(
+        _DISTRESS.search(normalized)
+        or _PAIN.search(normalized)
+        or _ASSESSMENT_REQUEST.search(normalized)
+    )
