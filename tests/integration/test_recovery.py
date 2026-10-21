@@ -396,7 +396,9 @@ async def test_reminder_executor_and_recovery_worker_share_postgres_budget(pg_en
                 pg_engine,
                 "fictional-t11-recovery-shared-budget",
                 limit=1,
-                window_s=1,
+                # The shared database budget stays conservative across its clock boundary
+                # with the independently clocked MIS emulator.
+                window_s=2,
                 clock=budget_clock,
             ),
         )
@@ -406,7 +408,7 @@ async def test_reminder_executor_and_recovery_worker_share_postgres_budget(pg_en
                 pg_engine,
                 "fictional-t11-recovery-shared-budget",
                 limit=1,
-                window_s=1,
+                window_s=2,
                 clock=budget_clock,
             ),
         )
