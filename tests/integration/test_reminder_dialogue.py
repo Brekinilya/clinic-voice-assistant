@@ -397,9 +397,7 @@ async def test_reschedule_reuses_real_services_and_preserves_old_until_final_yes
         assert emulator.records["demo"][1].status == VisitStatus.CANCELLED
 
 
-@pytest.mark.parametrize(
-    "answer", ["Не знаю.", "Ну да, наверное."]
-)
+@pytest.mark.parametrize("answer", ["Не знаю.", "Ну да, наверное."])
 @pytest.mark.parametrize("phase", ["move_offered", "move_confirm"])
 async def test_uncertain_move_answer_clarifies_without_ending_or_mutating(
     reminder_engine, phase, answer

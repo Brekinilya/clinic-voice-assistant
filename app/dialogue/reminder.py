@@ -398,9 +398,7 @@ class ReminderConversation:
             if state.misunderstandings >= 1:
                 return await self.handoff(state, turn, "R-05")
             if state.phase in {Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}:
-                state = state.model_copy(
-                    update={"misunderstandings": 1, "authorization": None}
-                )
+                state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
                 if state.phase == Phase.MOVE_CONFIRM:
                     clarification = (
                         "Я не буду переносить запись без точного подтверждения. "
