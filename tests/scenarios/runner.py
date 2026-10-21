@@ -524,10 +524,22 @@ async def verify_reminder_result(result, runtime, reminder_result):
     outcome = reminder_result.outcome
     attempt = await runtime.reminder_store.attempt(runtime.reminder_attempt_id)
     reminder_job = await runtime.reminder_store.job(attempt.job_id)
+    sms_events = await runtime.reminder_store.outbox_events(reminder_job.id)
     if attempt.result != outcome:
         result.add("reminder_attempt", "Исполнитель не сохранил фактический исход звонка")
     if outcome in {"NO_ANSWER", "WRONG_PERSON"} and not reminder_job.sms_pending:
         result.add("reminder_sms_pending", "Для исхода звонка не создано ожидающее SMS-действие")
+    expected_sms_event = reminder_job.sms_pending
+    if (expected_sms_event and len(sms_events) != 1) or (not expected_sms_event and sms_events):
+        result.add(
+            "reminder_sms_event", "Исход напоминания не создал ровно одно событие SMS в outbox"
+        )
+    if sms_events and (
+        sms_events[0].payload.kind != "reminder_sms"
+        or sms_events[0].payload.client_id != reminder_job.client_id
+        or sms_events[0].state != "pending"
+    ):
+        result.add("reminder_sms_event", "Событие SMS имеет неверного адресата или состояние")
     client_id = runtime.client_ids[runtime.dialog.setup["call"]["client"]]
     client = runtime.emulator.clients[TOKEN][client_id]
     if outcome == "CONFIRMED":
@@ -571,6 +583,7 @@ async def verify_reminder_result(result, runtime, reminder_result):
         "attempt_state": attempt.state,
         "outcome": outcome,
         "sms_pending": reminder_job.sms_pending,
+        "sms_event_state": sms_events[0].state if sms_events else None,
         "mis_status": reminder_result.mis_status,
         "mark_state": mark.state if mark is not None else None,
         "client_comment_patches": runtime.emulator.client_patch_count,

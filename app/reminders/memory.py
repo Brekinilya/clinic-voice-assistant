@@ -4,6 +4,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 
 from app.dialogue.reminder_guard import check_reminder_guard
+from app.outbox.models import OutboxJob, reminder_sms_event
 from app.recovery.models import OwnershipLost
 from app.reminders.models import (
     AttemptResult,
@@ -30,6 +31,7 @@ class MemoryReminderStore:
         self.marks: dict[str, ReminderMark] = {}
         self.locks: dict[int, tuple[str, datetime]] = {}
         self.days: set[date] = set()
+        self.outbox: dict[str, OutboxJob] = {}
         self._lock = asyncio.Lock()
 
     async def planned(self, call_day: date) -> bool:
@@ -141,7 +143,14 @@ class MemoryReminderStore:
             self.jobs[attempt.job_id] = current.model_copy(
                 update={**job, "version": current.version + 1}
             )
+            saved = self.jobs[attempt.job_id]
+            if saved.sms_pending:
+                event = reminder_sms_event(saved.id, saved.client_id, now)
+                self.outbox.setdefault(event.event_id, event)
             return True
+
+    async def outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
+        return tuple(event for event in self.outbox.values() if event.source_id == source_id)
 
     async def stale(self, now: datetime) -> list[ReminderAttempt]:
         return [a for a in self.attempts.values() if a.state in ACTIVE and a.lease_until <= now]

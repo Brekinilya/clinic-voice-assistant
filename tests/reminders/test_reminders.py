@@ -281,6 +281,7 @@ async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
     await stand.executor.finished(stand.dialer.calls[0][0], "NO_ANSWER", "q850_19")
     job = await stand.job(visit.id)
     assert (job.state, job.next_at) == ("waiting_retry", at(19, 12, 5))
+    assert await stand.store.outbox_events(job.id) == ()
     stand.clock.value = at(19, 12, 4)
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 1
@@ -292,6 +293,9 @@ async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
     await stand.executor.finished(second, "NO_ANSWER")
     job = await stand.job(visit.id)
     assert (job.state, job.outcome, job.sms_pending) == ("done", "NO_ANSWER", True)
+    [sms_event] = await stand.store.outbox_events(job.id)
+    assert sms_event.payload.kind == "reminder_sms"
+    assert sms_event.state == "pending"
     stand.clock.value = at(19, 16)
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 2
@@ -311,6 +315,9 @@ async def test_wrong_person_is_final_and_needs_sms(stand):
     await stand.executor.finished(stand.dialer.calls[0][0], "WRONG_PERSON")
     job = await stand.job(visit.id)
     assert (job.state, job.sms_pending) == ("done", True)
+    [sms_event] = await stand.store.outbox_events(job.id)
+    assert sms_event.payload.kind == "reminder_sms"
+    assert sms_event.state == "pending"
 
 
 async def test_visit_changed_before_the_call_is_not_called(stand):

@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 debug_events = Table(
     "backend_debug_events",
@@ -151,7 +151,7 @@ outbox_jobs = Table(
     "backend_outbox_jobs",
     metadata,
     Column("event_id", String(32), primary_key=True),
-    Column("source_id", String(32), ForeignKey(cancellations.c.action_id), nullable=False),
+    Column("source_id", String(128), nullable=False),
     Column("kind", String(30), nullable=False),
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -164,7 +164,7 @@ outbox_jobs = Table(
     # SQL NULL означает отсутствие квитанции; JSON null нарушил бы проверку состояния.
     Column("receipt", JSONB(none_as_null=True)),
     CheckConstraint(
-        "kind IN ('cancellation_sms','slot_released','reschedule_sms')",
+        "kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms')",
         name="backend_outbox_kind_allowed",
     ),
     CheckConstraint(

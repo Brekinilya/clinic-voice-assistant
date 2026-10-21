@@ -65,13 +65,14 @@ async def migrate(engine: AsyncEngine) -> None:
             [8],
             [9],
             [10],
+            [11],
             [SCHEMA_VERSION],
         ):
             raise RuntimeError("неподдерживаемая версия схемы backend")
         if not versions:
             await connection.execute(insert(schema_versions).values(version=SCHEMA_VERSION))
         elif versions != [SCHEMA_VERSION]:
-            if versions in ([1], [2], [3], [4]):
+            if versions in ([1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11]):
                 checks = await connection.run_sync(
                     lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
                 )
@@ -82,16 +83,35 @@ async def migrate(engine: AsyncEngine) -> None:
                 ]
                 if len(kinds) != 1:
                     raise RuntimeError("неизвестное ограничение видов событий")
-                if "reschedule_sms" not in kinds[0]["sqltext"]:
+                if "reminder_sms" not in kinds[0]["sqltext"]:
                     name = connection.dialect.identifier_preparer.quote(kinds[0]["name"])
                     await connection.execute(
                         text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
                     )
                     await connection.execute(
                         text(
-                            "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+                            "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms'))"
                         )
                     )
+                foreign_keys = await connection.run_sync(
+                    lambda sync: inspect(sync).get_foreign_keys("backend_outbox_jobs")
+                )
+                source_fk = [
+                    fk
+                    for fk in foreign_keys
+                    if fk["constrained_columns"] == ["source_id"]
+                    and fk["referred_table"] == "backend_visit_cancellations"
+                ]
+                if len(source_fk) > 1 or any(not fk["name"] for fk in source_fk):
+                    raise RuntimeError("неизвестная связь источника события outbox")
+                if source_fk:
+                    name = connection.dialect.identifier_preparer.quote(source_fk[0]["name"])
+                    await connection.execute(
+                        text(f"ALTER TABLE backend_outbox_jobs DROP CONSTRAINT {name}")
+                    )
+                await connection.execute(
+                    text("ALTER TABLE backend_outbox_jobs ALTER COLUMN source_id TYPE VARCHAR(128)")
+                )
             # Версия 6: талоны бюджета МИС в прежней таблице окна.
             await connection.execute(
                 text("ALTER TABLE mis_budget_requests ADD COLUMN IF NOT EXISTS owner VARCHAR(128)")

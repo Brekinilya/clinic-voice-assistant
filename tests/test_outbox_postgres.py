@@ -4,7 +4,7 @@ from argparse import Namespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, inspect, select, text, update
 from test_outbox import enqueue
 from test_outbox import outbox_context as outbox_context
 from test_outbox import outbox_engine as outbox_engine
@@ -73,6 +73,48 @@ async def test_migration_three_preserves_cancellation_without_retroactive_jobs(
             SCHEMA_VERSION
         ]
         assert list((await connection.execute(select(delivery_journal))).all()) == []
+
+
+@pytest.mark.postgres
+async def test_migration_eleven_allows_reminder_sms_sources(pg_engine):
+    async with pg_engine.begin() as connection:
+        await connection.execute(update(schema_versions).values(version=11))
+        await connection.execute(
+            text("ALTER TABLE backend_outbox_jobs DROP CONSTRAINT backend_outbox_kind_allowed")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed "
+                "CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms'))"
+            )
+        )
+        await connection.execute(
+            text("ALTER TABLE backend_outbox_jobs ALTER COLUMN source_id TYPE VARCHAR(32)")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_jobs_source_id_fkey "
+                "FOREIGN KEY (source_id) REFERENCES backend_visit_cancellations(action_id)"
+            )
+        )
+    await migrate(pg_engine)
+    async with pg_engine.connect() as connection:
+        foreign_keys = await connection.run_sync(
+            lambda sync: inspect(sync).get_foreign_keys("backend_outbox_jobs")
+        )
+        columns = await connection.run_sync(
+            lambda sync: inspect(sync).get_columns("backend_outbox_jobs")
+        )
+        checks = await connection.run_sync(
+            lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
+        )
+        version = await connection.scalar(select(schema_versions.c.version))
+    source_column = next(column for column in columns if column["name"] == "source_id")
+    kind_constraint = next(check for check in checks if "reminder_sms" in check["sqltext"])
+    assert version == SCHEMA_VERSION
+    assert not any("source_id" in fk["constrained_columns"] for fk in foreign_keys)
+    assert source_column["type"].length == 128
+    assert "reschedule_sms" in kind_constraint["sqltext"]
 
 
 @pytest.mark.postgres

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.reminders.models import Contact, ReminderJob
 from app.storage.booking import migrate
+from app.storage.outbox import PostgresOutboxStore
 from app.storage.reminders import PostgresReminderStore
 from app.storage.schema import SCHEMA_VERSION, schema_versions
 from tests.reminders.test_reminders import at
@@ -47,6 +48,26 @@ async def test_same_visit_and_time_is_one_job(pg_engine):
     assert not await store.add_job(job())
     moved = job().model_copy(update={"id": "moved", "scheduled_at": at(21, 10)})
     assert await store.add_job(moved)
+
+
+@pytest.mark.postgres
+async def test_wrong_person_finishes_and_queues_sms_in_one_store(pg_engine):
+    store = PostgresReminderStore(pg_engine)
+    item = job()
+    assert await store.add_job(item)
+    attempt = await store.claim(item.id, "vm-1", at(19, 10, 5), LEASE)
+    assert await store.finish(
+        attempt.id,
+        "WRONG_PERSON",
+        None,
+        at(19, 10, 6),
+        {"state": "done", "outcome": "WRONG_PERSON", "sms_pending": True},
+    )
+    [event] = await store.outbox_events(item.id)
+    [persisted] = await PostgresOutboxStore(pg_engine).list()
+    assert event == persisted
+    assert event.payload.kind == "reminder_sms"
+    assert event.state == "pending"
 
 
 @pytest.mark.postgres
