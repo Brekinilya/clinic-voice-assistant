@@ -75,15 +75,18 @@ class InformationService:
     def find(self, text: str, *, clarify_lab: bool = False) -> str | None:
         intent = classify(text, by_place=False)
         hit = self._topics.best(text)
-        if re.search(r"\b(есть\s+ли|имеется\s+ли|наличие)\b.*\b(вакцин\w*|прививк\w*)", text.casefold()):
+        normalized = text.casefold().replace("ё", "е")
+        if re.search(r"\b(есть\s+ли|имеется\s+ли|наличие)\b.*\b(вакцин\w*|прививк\w*)", normalized):
             return "vaccine_availability"
         if intent is not None and intent[0] == "I-09":
             # Вопрос «почему нет талонов?» — справочный. Просьба позвонить при
             # появлении времени остаётся настоящим действием листа ожидания.
             if hit is None or hit.key != "no_slots" or WAITLIST_ACTION.find(tokenize(text), 24):
                 return None
-        if intent is not None and intent[0] == "I-08" and (
-            hit is None or hit.key != "paid_transfer"
+        if (
+            intent is not None
+            and intent[0] == "I-08"
+            and (hit is None or hit.key != "paid_transfer")
         ):
             # Вопрос о ДМС или цене идёт в платное отделение, но справочный вопрос
             # «как дозвониться» можно безопасно закрыть известным номером и добавочным.

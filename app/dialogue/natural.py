@@ -40,7 +40,7 @@ from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
-from app.dialogue.triage import needs_urgent_screening
+from app.dialogue.triage import is_explicit_distress, needs_urgent_screening
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
@@ -224,6 +224,12 @@ class BookingConversation:
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
         if (
+            state.purpose == "reschedule"
+            and state.phase not in {Phase.READY, Phase.BOOKED, Phase.CANCELLED, Phase.RESCHEDULED}
+            and self.information.service.find(turn.text) == "choose_doctor"
+        ):
+            return None
+        if (
             self.cancellation is not None
             and state.purpose == "cancel"
             and state.phase == Phase.CANCEL_OFFER
@@ -232,10 +238,10 @@ class BookingConversation:
             result = await self.input.parse(state, turn)
             return await self.cancellation.step(state, turn, result)
         if state.distress_question_pending:
-            # Миграция старого активного диалога: не просим пациента оценивать
-            # угрозу жизни, а передаём ситуацию сотруднику.
-            return await self.transfer(state, turn, "R-08")
-        if needs_urgent_screening(turn.text):
+            return await self.distress_answer(state, turn)
+        if is_explicit_distress(turn.text):
+            return await self.transfer(state, turn, "R-01", "P1")
+        if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
             return await self.transfer(state, turn, "R-08")
         if state.medical_boundary_pending and not state.information_clarifying:
             answer = self.information.short_answer(turn.text)
@@ -1104,8 +1110,8 @@ class BookingConversation:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
             )
-        if needs_urgent_screening(turn.text):
-            return await self._distress_triage(state, turn)
+        if is_explicit_distress(turn.text):
+            return await self.transfer(state, turn, "R-01", "P1")
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
@@ -1115,14 +1121,25 @@ class BookingConversation:
         if transfer:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
         if state.distress_question_pending:
-            return await self.transfer(state, turn, "R-08")
-        if needs_urgent_screening(turn.text):
+            return await self.distress_answer(state, turn)
+        if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
             return await self._distress_triage(state, turn)
+        if needs_urgent_screening(turn.text) and wants_new_booking(turn.text):
+            if "I-01" in result.intents or result.slots.specialty is not None:
+                state = state.model_copy(
+                    update={
+                        "purpose": "booking",
+                        "phase": Phase.IDENTIFYING if state.client_id is None else Phase.IDENTIFIED,
+                        "specialty": result.slots.specialty or state.specialty,
+                        "medical_boundary_pending": False,
+                    }
+                )
         if self.information.service.find(turn.text) == "vaccine_availability":
             informational = await self.information.step(state, turn)
             if informational is not None:
                 return informational
-        if "medical" in decision.flags or "I-13" in result.intents:
+        explicit_booking = "I-01" in result.intents and wants_new_booking(turn.text)
+        if ("medical" in decision.flags or "I-13" in result.intents) and not explicit_booking:
             return await self.medical.question(state, turn)
         if decision.flags & {"robot", "no_recording"}:
             return await self.service_question(state, turn, decision.flags)
@@ -1442,12 +1459,15 @@ class BookingConversation:
         if child_booking_request:
             state = state.model_copy(update={"guardian_call": True})
         if (
-            requested_owner(turn.text) == "other"
-            and (
-                state.purpose in {"visits", "cancel", "reschedule"}
-                or intents & {"I-02", "I-03", "I-04"}
-                or mentions_existing_visits(turn.text)
-            )
+            not child_booking_request
+            and (slots.on_behalf == "other" or requested_owner(turn.text) == "other")
+            and ("I-01" in intents or wants_new_booking(turn.text))
+        ):
+            return await self.visits.privacy_transfer(state, turn)
+        if requested_owner(turn.text) == "other" and (
+            state.purpose in {"visits", "cancel", "reschedule"}
+            or intents & {"I-02", "I-03", "I-04"}
+            or mentions_existing_visits(turn.text)
         ):
             return await self.visits.privacy_transfer(state, turn)
         if state.guardian_call and state.client_id is not None and state.guardian_relation is None:

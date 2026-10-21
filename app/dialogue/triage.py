@@ -17,6 +17,11 @@ _ASSESSMENT_REQUEST = re.compile(
 )
 
 
+def is_explicit_distress(text: str) -> bool:
+    normalized = " ".join(text.casefold().replace("ё", "е").split())
+    return bool(_DISTRESS.search(normalized))
+
+
 def needs_urgent_screening(text: str) -> bool:
     normalized = " ".join(text.casefold().replace("ё", "е").split())
     return bool(

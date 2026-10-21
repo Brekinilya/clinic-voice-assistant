@@ -96,6 +96,9 @@ class InformationConversation:
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
         introduction = classify_introduction(turn.text)
         topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
+        if state.purpose == "reschedule" and state.phase not in IDLE and topic == "choose_doctor":
+            # A concrete doctor or date change during a move belongs to that task.
+            topic = None
         if introduction == "booking_abandoned" and topic is not None:
             if (
                 state.purpose == "booking"

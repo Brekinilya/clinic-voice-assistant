@@ -40,7 +40,11 @@ def spoken(result):
         ("Что взять с собой на приём?", "visit_documents", "паспорт родителя"),
         ("Как называется поликлиника?", "clinic_name", "Городская поликлиника номер семь"),
         ("Что у вас есть в справке?", "broad_help", "что именно вас интересует"),
-        ("Когда работает кабинет неотложной помощи?", "emergency_office_hours", "с восьми до двадцати"),
+        (
+            "Когда работает кабинет неотложной помощи?",
+            "emergency_office_hours",
+            "с восьми до двадцати",
+        ),
         ("Как дозвониться до стоматологии?", "dental_transfer", "добавочный номер два"),
         ("Как дослониться до стоматологии?", "dental_transfer", "добавочный номер два"),
         ("Как дозвониться до платного отделения?", "paid_transfer", "добавочный номер три"),
@@ -52,7 +56,11 @@ def spoken(result):
         ("Можно к специалисту без направления?", "referral_required", "нужно направление"),
         ("Во сколько придёт врач?", "home_visit_time", "не позднее восемнадцати"),
         ("Уже поздно, а врач нужен сегодня", "home_visit_late", "оформить запрос на завтра"),
-        ("В каком кабинете принимает врач?", "doctor_schedule_unavailable", "подтверждённого графика"),
+        (
+            "В каком кабинете принимает врач?",
+            "doctor_schedule_unavailable",
+            "подтверждённого графика",
+        ),
         ("Сколько ждать приёма у специалиста?", "waiting_time", "четырнадцати рабочих дней"),
         ("Как получить или заменить полис?", "insurance_policy", "страховая компания"),
         ("Полис у меня из другого региона", "regional_policy", "действует по всей России"),
@@ -412,6 +420,20 @@ async def test_information_during_cancel_and_move_repeats_the_correct_confirmati
             else "Подтвердите перенос" in spoken(result)
         )
         assert emulator.log[mark:] == [] and emulator.write_count == emulator.patch_count == 0
+
+
+async def test_doctor_change_during_move_is_not_replaced_by_general_faq():
+    async with pipeline(MOVE_SETUP) as (client, service, emulator, *_):
+        await prepare_move(client)
+        before = await service.store.inspect("scenario")
+        result = await turn(client, before.last_turn_id + 1, "Можно сменить врача на завтра?")
+        after = await service.store.inspect("scenario")
+        assert result["information"] is None, result
+        assert result["code"] == "NO_SLOTS", result
+        assert result["transfer"] is None, result
+        assert after.move_proposal is None
+        assert after.phase.value == "move_offered"
+        assert emulator.write_count == emulator.patch_count == 0
 
 
 async def test_new_booking_leaves_laboratory_clarification():
