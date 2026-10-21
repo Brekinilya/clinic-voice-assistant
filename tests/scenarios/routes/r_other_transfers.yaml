@@ -10,14 +10,13 @@ setup:
   channel: inbound
 
 dialogs:
-  - name: вне каталога (R-08)
+  - name: выписка из медкарты (FAQ-28)
     steps:
       - say: greeting.inbound
       - patient: Нужна выписка из медкарты
         intent: I-14
-        say: transfer.other
-        transfer: {route: R-08, priority: P3}
-    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+        say: closing.anything_else
+    result: {code: INFO_GIVEN, stand: unchanged}
 
   - name: бумажное направление (R-08)
     steps:
