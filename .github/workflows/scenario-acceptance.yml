@@ -16,7 +16,7 @@ permissions:
 jobs:
   acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -29,6 +29,10 @@ jobs:
       - run: uv sync --locked
       - name: Голосовые доказательства событий, отсутствующих в текстовом API
         run: uv run --no-sync python -m bench.voice.evidence --output-dir "$RUNNER_TEMP/voice"
+      - name: Матрица ответов на незапланированные реплики
+        run: |
+          uv run --no-sync python -m tests.scenarios.context_matrix --output-dir "$RUNNER_TEMP/context"
+          cat "$RUNNER_TEMP/context/context.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Полный HTTP-прогон и строгая проверка результата
         env:
           T07_REQUIREMENT: ${{ inputs.requirement }}
