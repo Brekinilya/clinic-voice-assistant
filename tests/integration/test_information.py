@@ -38,6 +38,44 @@ def spoken(result):
         ("Пока не прикрепился, можно к врачу?", "before_attachment", "помощь оказывают всем"),
         ("Какой у вас адрес?", "address", "улица Центральная"),
         ("Что взять с собой на приём?", "visit_documents", "паспорт родителя"),
+        ("Как называется поликлиника?", "clinic_name", "Городская поликлиника номер семь"),
+        ("Что у вас есть в справке?", "broad_help", "что именно вас интересует"),
+        (
+            "Когда работает кабинет неотложной помощи?",
+            "emergency_office_hours",
+            "с восьми до двадцати",
+        ),
+        ("Как дозвониться до стоматологии?", "dental_transfer", "добавочный номер два"),
+        ("Как дослониться до стоматологии?", "dental_transfer", "добавочный номер два"),
+        ("Как дозвониться до платного отделения?", "paid_transfer", "добавочный номер три"),
+        ("Можно записаться через Госуслуги?", "online_booking", "круглосуточно"),
+        ("Почему нет талонов?", "no_slots", "обновляется ежедневно"),
+        ("Можно попасть без записи?", "walk_in", "кабинете неотложной помощи"),
+        ("Можно выбрать участкового врача?", "choose_doctor", "не чаще одного раза в год"),
+        ("Я опаздываю на приём, что делать?", "late_for_visit", "пятнадцать минут"),
+        ("Можно к специалисту без направления?", "referral_required", "нужно направление"),
+        ("Во сколько придёт врач?", "home_visit_time", "не позднее восемнадцати"),
+        ("Уже поздно, а врач нужен сегодня", "home_visit_late", "оформить запрос на завтра"),
+        (
+            "В каком кабинете принимает врач?",
+            "doctor_schedule_unavailable",
+            "подтверждённого графика",
+        ),
+        ("Сколько ждать приёма у специалиста?", "waiting_time", "четырнадцати рабочих дней"),
+        ("Как получить или заменить полис?", "insurance_policy", "страховая компания"),
+        ("Полис у меня из другого региона", "regional_policy", "действует по всей России"),
+        ("Как оплатить услугу?", "payment", "наличными или картой"),
+        ("Нужна справка в бассейн", "pool_certificate", "шестьсот рублей"),
+        ("Можно сделать флюорографию без направления?", "fluorography", "пятнадцати лет"),
+        ("Как сделать киографию?", "fluorography", "пятнадцати лет"),
+        ("Можно ли сделать клюорографию без направления?", "fluorography", "пятнадцати лет"),
+        ("Как продлить больничный?", "sick_leave", "после осмотра"),
+        ("Нужна копия документов", "record_copy", "тридцати календарных дней"),
+        ("Мне нужен рецепт", "prescription", "выписывает врач"),
+        ("Нужна справка для налогового вычета", "tax_certificate", "платном отделении"),
+        ("Как пройти диспансеризацию?", "checkup", "раз в три года"),
+        ("Как сделать прививку?", "vaccination", "через терапевта"),
+        ("Есть ли вакцина от гриппа?", "vaccine_availability", "уточнить наличие вакцины"),
     ],
 )
 async def test_anonymous_information_never_reads_mis(question, topic, required):
@@ -48,15 +86,23 @@ async def test_anonymous_information_never_reads_mis(question, topic, required):
 
         service.conversation.input.parse = forbidden
         result = await turn(client, 1, question)
-        assert result["code"] == "INFO_GIVEN", result
-        assert required in spoken(result)
+        if topic == "vaccine_availability":
+            assert result["code"] == "TRANSFER_REQUESTED", result
+            assert result["transfer"]["route"] == "R-08", result
+        else:
+            assert result["code"] == "INFO_GIVEN", result
+        assert required.casefold() in spoken(result).casefold()
         assert result["information"] == {
             "document": "РГ-ТЕЛ-01",
             "version": "1.0 от 25.09.2026",
             "topic": topic,
             "sections": list(information_service().fact(topic).source),
         }
-        assert result["expect"] == "yes_no" and result["transfer"] is None
+        if topic == "vaccine_availability":
+            assert result["expect"] == "free"
+        else:
+            assert result["expect"] == "yes_no"
+            assert result["transfer"] is None
         assert "дату рождения" not in spoken(result) and "фамилию" not in spoken(result)
         assert emulator.log == [] and emulator.write_count == emulator.patch_count == 0
         assert (await service.store.inspect("scenario")).client_id is None
@@ -74,6 +120,7 @@ async def test_anonymous_information_never_reads_mis(question, topic, required):
             "нет расписания массажиста",
         ),
         ("Как записаться к врачу?", "BOOKING_GUIDANCE_GIVEN", "начать запись"),
+        ("Как попасть к врачу?", "BOOKING_GUIDANCE_GIVEN", "начать запись"),
         (
             "Я хочу узнать, как записаться к врачу",
             "BOOKING_GUIDANCE_GIVEN",
@@ -95,16 +142,49 @@ async def test_opening_help_questions_do_not_identify_or_query_mis(question, cod
         assert state.client_id is None and state.phase == Phase.READY
 
 
+@pytest.mark.parametrize("phrase", ["Хорошо, спасибо", "Хорошо, спасибо, говорю"])
+async def test_idle_thanks_get_a_polite_reply_without_mis_access(phrase):
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, phrase)
+
+        assert result["code"] == "ACKNOWLEDGED", result
+        assert "пожалуйста" in spoken(result).casefold()
+        assert "ещё чем-то помочь" in spoken(result).casefold()
+        assert result["phase"] == "ready"
+        assert result["transfer"] is None and result["visits"] == []
+        assert emulator.log == [] and emulator.write_count == emulator.patch_count == 0
+        assert (await service.store.inspect("scenario")).client_id is None
+
+
 async def test_user_can_stop_booking_during_identity_without_a_mis_lookup():
     async with pipeline() as (client, service, emulator, *_):
         await turn(client, 1, "Запишите к терапевту")
-        result = await turn(client, 2, "Я просто спросить хочу")
+        result = await turn(client, 2, "Я не хочу записываться")
 
         state = await service.store.inspect("scenario")
         assert result["code"] == "BOOKING_TASK_ABANDONED"
         assert result["phase"] == "ready"
         assert "что именно вас интересует" in spoken(result).casefold()
         assert state.client_id is None and state.identity_draft is None
+        assert not any(entry[2] == "clients" for entry in emulator.log)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_user_can_abandon_booking_and_ask_a_known_question_in_same_turn():
+    async with pipeline() as (client, service, emulator, *_):
+        await turn(client, 1, "Запишите к терапевту")
+        result = await turn(
+            client,
+            2,
+            "Я не хочу записываться, хочу узнать можно ли выбрать врача",
+        )
+
+        state = await service.store.inspect("scenario")
+        assert result["code"] == "INFO_GIVEN", result
+        assert "не чаще одного раза в год" in spoken(result)
+        assert result["phase"] == "ready"
+        assert state.client_id is None and state.identity_draft is None
+        assert state.specialty is None and state.purpose == "booking"
         assert not any(entry[2] == "clients" for entry in emulator.log)
         assert emulator.write_count == emulator.patch_count == 0
 
@@ -116,7 +196,7 @@ async def test_abandoning_a_held_booking_releases_local_hold_without_mis_write()
         action = await service.booking.store.get(held.proposal.action_id)
         writes = emulator.write_count + emulator.patch_count
 
-        result = await turn(client, 4, "Я просто спросить хочу")
+        result = await turn(client, 4, "Я не хочу записываться")
         released = await service.booking.store.get(action.action_id)
         state = await service.store.inspect("scenario")
 
@@ -340,6 +420,20 @@ async def test_information_during_cancel_and_move_repeats_the_correct_confirmati
             else "Подтвердите перенос" in spoken(result)
         )
         assert emulator.log[mark:] == [] and emulator.write_count == emulator.patch_count == 0
+
+
+async def test_doctor_change_during_move_is_not_replaced_by_general_faq():
+    async with pipeline(MOVE_SETUP) as (client, service, emulator, *_):
+        await prepare_move(client)
+        before = await service.store.inspect("scenario")
+        result = await turn(client, before.last_turn_id + 1, "Можно сменить врача на завтра?")
+        after = await service.store.inspect("scenario")
+        assert result["information"] is None, result
+        assert result["code"] == "NO_SLOTS", result
+        assert result["transfer"] is None, result
+        assert after.move_proposal is None
+        assert after.phase.value == "move_offered"
+        assert emulator.write_count == emulator.patch_count == 0
 
 
 async def test_new_booking_leaves_laboratory_clarification():

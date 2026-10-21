@@ -1,5 +1,6 @@
 """Версионированные факты и локальный подбор ответа по существующему словарному движку."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -11,8 +12,15 @@ from app.nlu.lexicon import Entry, Lexicon, Pattern, tokenize
 from app.resource_paths import config_directory
 
 ACTION_REQUEST = Pattern.parse(
-    "записать|записаться|отменить|отменять|перенести|переносить|перезаписать|перезаписаться|вызвать|талон|талончик|запись"
+    "записать|записаться|отменить|отменять|перенести|переносить|перезаписать|перезаписаться|"
+    "вызвать|талон|талончик|запись|сделать|поставить|попасть|пройти|получить|оформить|сдать|"
+    "добраться|дозвониться"
 )
+INFORMATIONAL_ACTION_QUESTION = Pattern.parse(
+    "как|можно|можно ли|где|куда|что нужно + записаться|попасть|принимать|запись|выбрать|сменить|"
+    "сделать|поставить|пройти|получить|оформить|сдать|узнать|добраться|дозвониться|вызвать"
+)
+WAITLIST_ACTION = Pattern.parse("позвонить|позвоните|поставить + лист ожидания")
 
 
 class Fact(BaseModel):
@@ -65,14 +73,36 @@ class InformationService:
         self._laboratory = catalog.lexicon(catalog.laboratory)
 
     def find(self, text: str, *, clarify_lab: bool = False) -> str | None:
-        if ACTION_REQUEST.find(tokenize(text), 24):
-            # Слово «час» в просьбе записать не превращает действие в справку о режиме.
-            return None
         intent = classify(text, by_place=False)
-        if intent is not None and intent[0] in {"I-08", "I-09"}:
-            # «Вы работаете по ДМС?» не спрашивает часы работы поликлиники.
-            return None
         hit = self._topics.best(text)
+        normalized = text.casefold().replace("ё", "е")
+        if re.search(r"\b(есть\s+ли|имеется\s+ли|наличие)\b.*\b(вакцин\w*|прививк\w*)", normalized):
+            return "vaccine_availability"
+        if intent is not None and intent[0] == "I-09":
+            # Вопрос «почему нет талонов?» — справочный. Просьба позвонить при
+            # появлении времени остаётся настоящим действием листа ожидания.
+            if hit is None or hit.key != "no_slots" or WAITLIST_ACTION.find(tokenize(text), 24):
+                return None
+        if (
+            intent is not None
+            and intent[0] == "I-08"
+            and (hit is None or hit.key != "paid_transfer")
+        ):
+            # Вопрос о ДМС или цене идёт в платное отделение, но справочный вопрос
+            # «как дозвониться» можно безопасно закрыть известным номером и добавочным.
+            return None
+        if ACTION_REQUEST.find(tokenize(text), 24):
+            # Справочный вопрос «можно ли записаться через Госуслуги?» не запускает
+            # транзакцию; прямое «запишите меня» по-прежнему обрабатывает диалог записи.
+            if hit is None:
+                return None
+            if hit.key == "no_slots" and WAITLIST_ACTION.find(tokenize(text), 24):
+                return None
+            if (
+                hit.key != "no_slots"
+                and INFORMATIONAL_ACTION_QUESTION.find(tokenize(text), 24) is None
+            ):
+                return None
         if hit is not None:
             if hit.key == "lab_terms":
                 return self._lab_topic(text)

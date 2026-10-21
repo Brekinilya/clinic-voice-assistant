@@ -5,7 +5,15 @@ from collections.abc import Awaitable, Callable
 
 from app.booking.preferences import SlotPreferences
 from app.dialogue.introduction import classify_introduction
-from app.dialogue.models import DialogueState, InformationReference, Phase, Reply, Turn, reply
+from app.dialogue.models import (
+    DialogueState,
+    InformationReference,
+    Phase,
+    Reply,
+    TransferRequest,
+    Turn,
+    reply,
+)
 from app.dialogue.presentation import BookingPresenter
 from app.dialogue.visits import VisitConversation
 from app.information.catalog import InformationService
@@ -45,10 +53,13 @@ class InformationConversation:
         store,
         continuation: Callable[[DialogueState, Turn], tuple[str, ...]],
         release_call_holds: Callable[[str], Awaitable[None]] | None = None,
+        transfer: Callable[[DialogueState, Turn, str], Awaitable[tuple[DialogueState, Reply]]]
+        | None = None,
     ):
         self.service, self.presenter, self.store = service, presenter, store
         self.continuation = continuation
         self.release_call_holds = release_call_holds
+        self.transfer = transfer
 
     @staticmethod
     def short_answer(text: str) -> str | None:
@@ -84,6 +95,42 @@ class InformationConversation:
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
         introduction = classify_introduction(turn.text)
+        topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
+        if state.purpose == "reschedule" and state.phase not in IDLE and topic == "choose_doctor":
+            # A concrete doctor or date change during a move belongs to that task.
+            topic = None
+        if introduction == "booking_abandoned" and topic is not None:
+            if (
+                state.purpose == "booking"
+                and state.phase not in IDLE
+                and state.phase
+                not in {Phase.RECONCILING, Phase.CANCEL_RECONCILING, Phase.MOVE_PENDING}
+            ):
+                # Отказ и новый справочный вопрос в одной реплике: освобождаем
+                # только локальную бронь и отвечаем на вопрос, не продолжая сбор ФИО.
+                if self.release_call_holds is not None:
+                    await self.release_call_holds(state.call_id)
+                state = state.model_copy(
+                    update={
+                        "phase": Phase.READY,
+                        "purpose": "booking",
+                        "client_id": None,
+                        "specialty": None,
+                        "preferences": SlotPreferences(),
+                        "options": (),
+                        "proposal": None,
+                        "authorization": None,
+                        "shown_option_keys": (),
+                        "identity_attempts": 0,
+                        "identity_draft": None,
+                        "misunderstandings": 0,
+                        "last_question": None,
+                        "suspended_booking": None,
+                        "information_topic": None,
+                        "information_clarifying": False,
+                    }
+                )
+            introduction = None
         if introduction == "booking_abandoned":
             if state.purpose != "booking" or state.phase in IDLE:
                 introduction = "general_help"
@@ -170,7 +217,6 @@ class InformationConversation:
                 *continuation,
                 code=codes[introduction],
             )
-        topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
         # Короткие ответы относятся к справочному вопросу, только пока он активен.
         answer = self.short_answer(turn.text)
         tokens = tokenize(turn.text)
@@ -183,6 +229,13 @@ class InformationConversation:
             <= {"спасибо", "я", "сам", "сама", "самостоятельно", "на", "госуслугах"}
         ):
             answer = "no"
+        if (
+            state.information_topic == "tax_certificate"
+            and not state.information_clarifying
+            and answer == "yes"
+            and self.transfer is not None
+        ):
+            return await self.transfer(state, turn, "R-10")
         if state.information_topic == "lab_status" and re.search(
             r"\bкак\b.*\bузна\w*", turn.text.casefold()
         ):
@@ -205,8 +258,53 @@ class InformationConversation:
                 return state, reply(
                     state, turn.turn_id, "Чем ещё могу помочь?", code="MORE_HELP_REQUIRED"
                 )
+        if (
+            topic is None
+            and state.information_topic is None
+            and state.phase in IDLE
+            and "спасибо" in tokens
+            and set(tokens) <= {"хорошо", "спасибо", "говорю", "большое", "вам", "тебе"}
+        ):
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Пожалуйста. Могу ещё чем-то помочь?",
+                code="ACKNOWLEDGED",
+            )
         if topic is None:
             return None
+        if topic == "vaccine_availability" and self.transfer is not None:
+            fact = self.service.fact(topic)
+            if self.release_call_holds is not None:
+                await self.release_call_holds(state.call_id)
+            transfer = TransferRequest(route="R-08", priority="P3")
+            state = state.model_copy(
+                update={
+                    "phase": Phase.HANDOFF,
+                    "transfer": transfer,
+                    "authorization": None,
+                    "proposal": None,
+                    "options": (),
+                    "identity_draft": None,
+                }
+            )
+            result = reply(
+                state,
+                turn.turn_id,
+                fact.utterances[0],
+                "Соединяю с регистратором, чтобы уточнить наличие вакцины.",
+                code="TRANSFER_REQUESTED",
+            )
+            return state, result.model_copy(
+                update={
+                    "information": InformationReference(
+                        document=self.service.catalog.document,
+                        version=self.service.catalog.version,
+                        topic=topic,
+                        sections=fact.source,
+                    )
+                }
+            )
         # Повтор уточняющего вопроса не запускает бесконечное уточнение.
         if topic == "lab_terms" and state.information_clarifying:
             topic = "lab_unknown"

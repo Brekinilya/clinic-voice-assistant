@@ -235,6 +235,20 @@ async def test_third_party_query_does_not_lookup_or_disclose(text):
         assert emulator.write_count == 0
 
 
+async def test_booking_for_an_adult_relative_requires_staff_authorization():
+    async with pipeline() as (client, service, emulator, *_):
+
+        async def forbidden(*args, **kwargs):
+            raise AssertionError("карточка взрослого родственника не читается")
+
+        service.booking.mis.clients = forbidden
+        service.booking.mis.visits = forbidden
+        result = await turn(client, 1, "Запишите маму к терапевту")
+        assert result["transfer"]["route"] == "R-16", result
+        assert result["phase"] == "handoff"
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 async def test_unknown_owner_and_sms_yes_do_not_authorize_disclosure():
     async with pipeline(records("05.10.2026 13:20")) as (client, service, emulator, *_):
         result = await turn(client, 1, "На когда записана Кузьмина Нина?")
