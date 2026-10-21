@@ -25,6 +25,7 @@ from app.storage.booking import migrate
 from app.storage.dialogue import PostgresDialogueStore
 from app.storage.handoffs import PostgresHandoffStore
 from app.storage.schema import (
+    SCHEMA_VERSION,
     actions,
     dialogue_receipts,
     dialogue_sessions,
@@ -38,7 +39,7 @@ from tests.test_handoffs_r01 import Clock
 
 
 @pytest.mark.asyncio
-async def test_migrate_schema_nine_to_ten_preserves_existing_booking(pg_blank_engine):
+async def test_migrate_schema_nine_to_current_preserves_existing_booking(pg_blank_engine):
     # Версия 9 отличается отсутствием шести добавочных таблиц T08.
     old_tables = [
         table
@@ -138,7 +139,9 @@ async def test_migrate_schema_nine_to_ten_preserves_existing_booking(pg_blank_en
     await migrate(pg_blank_engine)
     await migrate(pg_blank_engine)
     async with pg_blank_engine.connect() as connection:
-        assert list((await connection.execute(select(schema_versions.c.version))).scalars()) == [10]
+        assert list((await connection.execute(select(schema_versions.c.version))).scalars()) == [
+            SCHEMA_VERSION
+        ]
         after = {
             table.name: (await connection.execute(select(table))).mappings().all()
             for table in (

@@ -58,6 +58,28 @@ async def test_read_only_query_replay_and_cleanup(visit_engine):
         assert emulator.records["demo"] == initial and emulator.write_count == 0
 
 
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Мои записи",
+        "Посмотреть мои записи",
+        "Хочу свою запись посмотреть",
+        "Хочу найти свою запись",
+        "Хочу проверить свои приёмы",
+    ],
+)
+async def test_plain_language_visit_request_starts_owned_visit_lookup(phrase):
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, phrase)
+        assert result["code"] == "IDENTIFICATION_REQUIRED", result
+        assert result["phase"] == "identifying"
+        state = await service.store.inspect("scenario")
+        assert state.purpose == "visits" and state.query_for_self
+        assert state.client_id is None
+        assert all(entry[1:3] == ("GET", "doctors") for entry in emulator.log)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 async def test_stable_cursor_pages_after_record_changes(visit_engine):
     setup = records(*[f"05.10.2026 {hour:02}:20" for hour in range(9, 14)])
     async with pipeline(setup, pg_engine=visit_engine) as (client, service, emulator, *_):

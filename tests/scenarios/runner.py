@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from datetime import time as datetime_time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,8 +38,14 @@ PHASES = {
     "my_visits.third_party": {"verifying_owner"},
     "closing.goodbye": {"ended"},
     "closing.goodbye_short": {"ended"},
+    "waitlist.offer": {"waitlist_consent"},
+    "waitlist.ask_when": {"waitlist_preferences"},
+    "waitlist.done": {"identified"},
 }
 CODE_EXPECTATIONS = {
+    "waitlist.offer": {"WAITLIST_CONSENT_REQUIRED"},
+    "waitlist.ask_when": {"WAITLIST_PREFERENCES_REQUIRED"},
+    "waitlist.done": {"WAITLISTED"},
     "medical.boundary": {"MEDICAL_BOUNDARY"},
     "robot.answer": {"ROBOT_DISCLOSED"},
     "recording.off": {"RECORDING_OPT_OUT"},
@@ -49,15 +56,14 @@ CODE_EXPECTATIONS = {
     "ident.not_found": {"IDENTIFICATION_REQUIRED"},
     "emergency.insist": {"EMERGENCY"},
     "emergency.ambulance_called": {"EMERGENCY"},
+    "ident.under_15": {"MINOR_BOOKING_REFUSED"},
 }
 GAPS = {
     "labs.": "labs_status_source_T09",
-    "waitlist.": "waitlist_T08",
     "attach.": "faq_T09",
     "silence.": "voice_event_channel_T03",
     "complaint.callback": "callback_T08",
     "transfer.outside_hours": "callback_T08",
-    "paid.price": "legacy_paid_catalog_outside_scope",
     "wait.schedule": "intermediate_wait_prompt_T03_T05",
 }
 
@@ -233,10 +239,16 @@ async def verify_step(result, number, step, response, runtime):
             continue
         if name == "ident.relation":
             state = await runtime.dialogue_store.inspect(runtime.call_id)
-            expected_child = runtime.client_ids.get("smirnova_ad")
+            expected_identity = step.get("parse", {}).get("slots", {})
+            patient = runtime.emulator.clients[TOKEN].get(state.client_id)
+            child_matches = patient is not None and all(
+                str(getattr(patient, field, None)) == str(value)
+                for field, value in expected_identity.items()
+                if field in {"last_name", "first_name", "middle_name", "birth_date"}
+            )
             if (
                 not re.search(r"кем вы приходитесь", text, re.IGNORECASE)
-                or state.client_id != expected_child
+                or not child_matches
                 or not state.guardian_call
             ):
                 result.add(
@@ -344,6 +356,37 @@ async def verify_step(result, number, step, response, runtime):
                     step=number,
                 )
             continue
+        if name == "paid.price":
+            configured = next(
+                (
+                    item
+                    for item in runtime.dialog.setup.get("prices", ())
+                    if item["service"].casefold() in text
+                ),
+                None,
+            )
+            expected_text = (
+                runtime.service.conversation.presenter.renderer.render(
+                    "paid.price",
+                    runtime.service.booking.clock.now().date(),
+                    service=configured["service"],
+                    price=configured["price"],
+                ).text
+                if configured is not None
+                else None
+            )
+            if (
+                response.code != "INFO_GIVEN"
+                or expected_text is None
+                or expected_text.casefold() not in text
+                or response.phase != "ready"
+            ):
+                result.add(
+                    "paid_price_T09",
+                    "Не подтверждён ответ по цене из настроенного справочника",
+                    step=number,
+                )
+            continue
         if name.startswith("home_visit."):
             expected = {
                 "home_visit.late": ("HOME_VISIT_CONTINUE", r"завтра|среду"),
@@ -433,6 +476,20 @@ async def verify_step(result, number, step, response, runtime):
                     step=number,
                 )
             continue
+        if name == "labs.not_patient":
+            if (
+                response.code != "INFO_UNAVAILABLE"
+                or response.information is None
+                or response.information.topic != "lab_collection"
+                or not re.search(r"только самому пациенту", text, re.IGNORECASE)
+            ):
+                result.add(
+                    "lab_privacy",
+                    "Не отказано в выдаче персонального статуса анализов родственнику",
+                    "critical",
+                    number,
+                )
+            continue
         if name in INFORMATION_EXPECTATIONS:
             topic, required = INFORMATION_EXPECTATIONS[name]
             if (
@@ -487,8 +544,23 @@ async def verify_reminder_result(result, runtime, reminder_result):
 
     outcome = reminder_result.outcome
     attempt = await runtime.reminder_store.attempt(runtime.reminder_attempt_id)
+    reminder_job = await runtime.reminder_store.job(attempt.job_id)
+    sms_events = await runtime.reminder_store.outbox_events(reminder_job.id)
     if attempt.result != outcome:
         result.add("reminder_attempt", "Исполнитель не сохранил фактический исход звонка")
+    if outcome in {"NO_ANSWER", "WRONG_PERSON"} and not reminder_job.sms_pending:
+        result.add("reminder_sms_pending", "Для исхода звонка не создано ожидающее SMS-действие")
+    expected_sms_event = reminder_job.sms_pending
+    if (expected_sms_event and len(sms_events) != 1) or (not expected_sms_event and sms_events):
+        result.add(
+            "reminder_sms_event", "Исход напоминания не создал ровно одно событие SMS в outbox"
+        )
+    if sms_events and (
+        sms_events[0].payload.kind != "reminder_sms"
+        or sms_events[0].payload.client_id != reminder_job.client_id
+        or sms_events[0].state != "pending"
+    ):
+        result.add("reminder_sms_event", "Событие SMS имеет неверного адресата или состояние")
     client_id = runtime.client_ids[runtime.dialog.setup["call"]["client"]]
     client = runtime.emulator.clients[TOKEN][client_id]
     if outcome == "CONFIRMED":
@@ -531,6 +603,8 @@ async def verify_reminder_result(result, runtime, reminder_result):
         ],
         "attempt_state": attempt.state,
         "outcome": outcome,
+        "sms_pending": reminder_job.sms_pending,
+        "sms_event_state": sms_events[0].state if sms_events else None,
         "mis_status": reminder_result.mis_status,
         "mark_state": mark.state if mark is not None else None,
         "client_comment_patches": runtime.emulator.client_patch_count,
@@ -848,7 +922,13 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
 
     evidence_source = document["source"]
     evidence_commit = evidence_source.get("commit")
-    source_matches = bool(evidence_commit) and evidence_commit == source.get("commit")
+    evidence_hash = evidence_source.get("source_sha256")
+    source_matches = (
+        bool(evidence_commit)
+        and evidence_commit == source.get("commit")
+        and bool(evidence_hash)
+        and evidence_hash == source.get("source_sha256")
+    )
 
     for row in rows:
         if not isinstance(row, dict):
@@ -877,6 +957,7 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
             "evidence": "voice_session" if accepted else "unsupported",
             "requirement": requirement,
             "source_commit": evidence_source.get("commit"),
+            "source_sha256": evidence_hash,
             "verdict": row.get("verdict"),
             "detail": (
                 "голосовое доказательство относится к другому исходному дереву"
@@ -899,6 +980,46 @@ def apply_voice_evidence(results, path: Path, source: dict) -> None:
                 if not (finding.kind == "fail" and finding.code == "result_code")
             ]
         target.finish()
+
+
+async def verify_waitlist(result, runtime, expectation):
+    store = runtime.service.conversation.waitlist_store
+    entries = await store.by_call(runtime.call_id)
+    if not entries:
+        result.add("waitlist_T08", "Заявка отсутствует в хранилище")
+        return
+    if len(entries) != 1:
+        result.add("waitlist_T08", "Для одного запроса создано несколько заявок")
+        return
+    entry = entries[0]
+    if expectation is None:
+        return
+    if expectation.get("client"):
+        client_id = runtime.client_ids[expectation["client"]]
+        if entry.client_id != client_id:
+            result.add("waitlist_T08", "В заявке указан другой пациент")
+    if (
+        expectation.get("specialty")
+        and entry.specialty.casefold() != expectation["specialty"].casefold()
+    ):
+        result.add("waitlist_T08", "В заявке указана другая специальность")
+    for key in ("time_from", "time_to"):
+        if key in expectation:
+            actual = getattr(entry.preferences, key)
+            expected = datetime_time.fromisoformat(expectation[key])
+            if actual != expected:
+                result.add("waitlist_T08", f"В заявке не сохранено пожелание {key}")
+    if "exclude_weekdays" in expectation and tuple(entry.preferences.exclude_weekdays) != tuple(
+        expectation["exclude_weekdays"]
+    ):
+        result.add("waitlist_T08", "В заявке не сохранены исключённые дни недели")
+    result.evidence["waitlist"] = {
+        "request_id": entry.request_id,
+        "client_reference_present": True,
+        "specialty": entry.specialty,
+        "preferences": entry.preferences.model_dump(mode="json"),
+        "persisted": True,
+    }
 
 
 async def run_dialog(dialog, *, blocking=False, runtime=None):
@@ -1147,15 +1268,20 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                 )
             if "callback" in dialog.result:
                 await verify_callback_task(result, runtime, dialog.result["callback"], responses)
-            for key, feature in {
-                "sms": "sms_delivery_T20",
-                "waitlist": "waitlist_T08",
-                "recording": "recording_engine_T13",
-            }.items():
-                if key in dialog.result:
-                    result.add(
-                        feature, "Нельзя подтвердить обязательный результат " + key, "unsupported"
-                    )
+            if "sms" in dialog.result:
+                result.add(
+                    "sms_delivery_T20",
+                    "Нельзя подтвердить обязательный результат sms",
+                    "unsupported",
+                )
+            if "waitlist" in dialog.result or expected_code == "WAITLISTED":
+                await verify_waitlist(result, runtime, dialog.result.get("waitlist"))
+            if "recording" in dialog.result:
+                result.add(
+                    "recording_engine_T13",
+                    "Нельзя подтвердить обязательный результат recording",
+                    "unsupported",
+                )
             if "home_visit" in dialog.result:
                 expected = dialog.result["home_visit"]
                 request = await runtime.handoff_store.request_for_call(runtime.call_id)

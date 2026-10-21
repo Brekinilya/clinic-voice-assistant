@@ -48,7 +48,7 @@ class FixtureSchedule:
 
 
 @asynccontextmanager
-async def pipeline(setup=None, *, pg_engine=None):
+async def pipeline(setup=None, *, pg_engine=None, paid_prices=None):
     setup = setup or {}
     clock = ScenarioClock(setup.get("now", "30.09.2026 10:15"))
     raw = yaml.safe_load((SCENARIOS / "fixtures.yaml").read_text(encoding="utf-8"))
@@ -134,6 +134,7 @@ async def pipeline(setup=None, *, pg_engine=None):
             cancellation=CancellationService(booking.mis, cancellation_store, clock),
             rescheduling=RescheduleService(booking, move_store),
             identity_drafts=IdentityDrafts(KEY),
+            paid_prices=paid_prices,
         )
         service = DialogueService(
             booking, dialogue_store, KEY, safety=safety, conversation=conversation

@@ -464,6 +464,26 @@ async def test_reschedule_reuses_real_services_and_preserves_old_until_final_yes
         assert emulator.records["demo"][1].status == VisitStatus.CANCELLED
 
 
+@pytest.mark.parametrize("answer", ["Не знаю.", "Ну да, наверное."])
+@pytest.mark.parametrize("phase", ["move_offered", "move_confirm"])
+async def test_uncertain_move_answer_clarifies_without_ending_or_mutating(
+    reminder_engine, phase, answer
+):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context)
+        await turn(client, 3, "Перенесите на следующую неделю")
+        if phase == "move_confirm":
+            await turn(client, 4, "Вторник")
+
+        result = await turn(client, 5 if phase == "move_confirm" else 4, answer)
+
+        assert result["phase"] == phase
+        assert result["code"] == "REMINDER_CLARIFICATION"
+        assert result["reminder_result"] is None
+        assert emulator.write_count == emulator.patch_count == 0
+        assert not actions.calls
+
+
 async def test_opt_out_after_verification_is_separate_from_visit_cancellation(reminder_engine):
     async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
         await opened(service, context)

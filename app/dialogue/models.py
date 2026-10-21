@@ -48,6 +48,8 @@ class Phase(StrEnum):
     RESCHEDULED = "rescheduled"
     REMIND_VERIFY = "remind_verify"
     REMIND_DETAILS = "remind_details"
+    WAITLIST_CONSENT = "waitlist_consent"
+    WAITLIST_PREFERENCES = "waitlist_preferences"
 
 
 class Turn(BookingModel):
@@ -103,6 +105,20 @@ class TransferRequest(BookingModel):
     ) = None
 
 
+class SuspendedBooking(BookingModel):
+    """Минимальный безопасный снимок записи для детура к своим визитам."""
+
+    phase: Literal["ready", "identifying", "identified", "offered"]
+    specialty: str | None = None
+    preferences: SlotPreferences = Field(default_factory=SlotPreferences)
+    identity_attempts: int = 0
+    identity_draft: str | None = Field(default=None, repr=False)
+    misunderstandings: int = 0
+    last_question: str | None = Field(default=None, max_length=500)
+    referral_fallback: bool = False
+    referral_mentioned: bool = False
+
+
 class DialogueState(BookingModel):
     call_id: CallId
     version: int = 0
@@ -127,12 +143,15 @@ class DialogueState(BookingModel):
     shown_option_keys: tuple[str, ...] = Field(default=(), max_length=100)
     recording_opt_out: bool = False
     medical_boundary_pending: bool = False
+    distress_question_pending: bool = False
     # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.
     information_topic: str | None = None
     information_clarifying: bool = False
     referral_fallback: bool = False
+    referral_mentioned: bool = False
     guardian_call: bool = False
     guardian_relation: str | None = Field(default=None, max_length=24)
+    patient_under_15: bool = False
     home_visit_stage: (
         Literal["confirm", "identify", "address", "reason", "can_come", "contact"] | None
     ) = None
@@ -155,6 +174,8 @@ class DialogueState(BookingModel):
     visit_items: tuple[VisitSummary, ...] = Field(default=(), max_length=3)
     visit_cursor: VisitCursor | None = None
     visit_has_more: bool = False
+    suspended_booking: SuspendedBooking | None = None
+    waitlist_stage: Literal["specialty", "identity", "consent", "preferences"] | None = None
     reminder: ReminderSession | None = Field(default=None, repr=False)
     reminder_result: ReminderResult | None = None
 

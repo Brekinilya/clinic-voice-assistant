@@ -7,6 +7,7 @@ from app.outbox.models import (
     JournalEntry,
     OutboxError,
     OutboxJob,
+    ReminderSms,
     RescheduleSms,
 )
 from app.outbox.ports import DeliveryBlocked
@@ -38,6 +39,8 @@ def journal_entry(job: OutboxJob, clock: Clock) -> JournalEntry:
             f"Поликлиника № 7: запись на {at:%d.%m} в {at:%H:%M} отменена. "
             "Записаться снова: 700-07-07 или Госуслуги."
         )
+    if isinstance(job.payload, ReminderSms):
+        text = "Поликлиника № 7: пожалуйста, перезвоните в регистратуру."
     return JournalEntry(
         event_id=job.event_id, payload=job.payload, recorded_at=clock.now(), text=text
     )

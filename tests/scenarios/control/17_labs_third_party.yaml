@@ -1,0 +1,28 @@
+id: D-17
+title: Родственник спрашивает готовность анализов
+source: раздел 3.5; С-08, ветвление «звонит не пациент»
+blocking: false
+expected: Отказ сообщать сведения о чужих анализах; каналы получения подсказаны
+covers: [С-08, "3.5"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+steps:
+  - say: greeting.inbound
+  - patient: Готовы ли анализы у моей мамы? Кузьмина Нина Андреевна, двадцатое июля пятьдесят пятого
+    intent: I-07
+    general: {on_behalf: other}
+    say: labs.not_patient
+    forbid: [в норме, повышен, готово]
+  - patient: А как ей узнать?
+    say: [labs.how_to_get, closing.anything_else]
+  - patient: Нет, спасибо
+    parse: {expect: yes_no, intent: "no"}
+    say: closing.goodbye
+    end: true
+
+result:
+  code: INFO_GIVEN
+  stand: unchanged

@@ -58,6 +58,31 @@ function health(info){
     $("connection").textContent+=" · пропущено событий этим процессом: "+info.dropped;
   }
 }
+function renderWaitlist(requests){
+  const list=$("waitlist");
+  list.replaceChildren();
+  if(!requests.length){
+    list.append(node("p","muted","Заявок пока нет."));
+    return;
+  }
+  for(const request of requests){
+    const button=node("button");
+    const p=request.preferences||{};
+    const date=p.date_from||p.date_to?" · "+[p.date_from,p.date_to].filter(Boolean).join("–"):"";
+    const time=p.time_from||p.time_to?" · "+[p.time_from,p.time_to].filter(Boolean).join("–"):"";
+    button.append(
+      node("b","",request.specialty+date+time),
+      node("small","","Клиент №"+request.client_id+" · "+timeText(request.created_at)),
+      node("small","","звонок "+request.call_id)
+    );
+    button.title="Открыть звонок в журнале";
+    button.onclick=()=>selectCall(request.call_id);
+    list.append(button);
+  }
+}
+const timeText = text => new Date(text).toLocaleString("ru-RU",{
+  day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"
+});
 function selectCall(id){
   selected=id;
   cursor=0;
@@ -245,6 +270,13 @@ async function poll(){
       $("calls").append(b);
     }
     if(!data.calls.length)$("calls").append(node("p","muted","Звонков пока нет. Диагностика показывает только новые события после её включения."));
+    try{
+      const waiting=await get("/api/debug/waitlist?limit=100");
+      renderWaitlist(waiting.requests);
+    }catch(error){
+      renderWaitlist([]);
+      $("waitlist").replaceChildren(node("p","muted",error.message));
+    }
     if(selected){
       const id=selected;
       let more=true,pages=0;

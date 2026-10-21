@@ -33,12 +33,20 @@ class MedicalConversation:
         # Здесь предложение фиксировано: терапевт, без подстановки симптомов или советов.
         phrases = load_phrasebook()
         self.text = phrases.get("medical.boundary").text.replace("{specialty:datv}", "терапевту")
+        self.after_triage_text = phrases.get("medical.boundary_after_triage").text.replace(
+            "{specialty:datv}", "терапевту"
+        )
         self.goodbye = phrases.get("closing.goodbye").text
 
-    def prompt(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
-        return state, reply(state, turn.turn_id, self.text, code="MEDICAL_BOUNDARY")
+    def prompt(
+        self, state: DialogueState, turn: Turn, *, after_triage: bool = False
+    ) -> tuple[DialogueState, Reply]:
+        text = self.after_triage_text if after_triage else self.text
+        return state, reply(state, turn.turn_id, text, code="MEDICAL_BOUNDARY")
 
-    async def question(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
+    async def question(
+        self, state: DialogueState, turn: Turn, *, after_triage: bool = False
+    ) -> tuple[DialogueState, Reply]:
         if state.medical_boundary_pending:
             return await self.transfer(state, turn, "R-04")
         await self.release(state.call_id)
@@ -76,6 +84,12 @@ class MedicalConversation:
             "visit_has_more": False,
             "misunderstandings": 0,
         }
+        active_booking = state.purpose == "booking" and state.phase in {
+            Phase.IDENTIFYING,
+            Phase.IDENTIFIED,
+            Phase.OFFERED,
+            Phase.HELD,
+        }
         if preserve_move:
             changes["phase"] = Phase.MOVE_PENDING
         elif preserve_cancel:
@@ -83,6 +97,17 @@ class MedicalConversation:
         elif preserve_action:
             # Граничная фраза не стирает журнал уже отправленной операции.
             changes["phase"] = Phase.RECONCILING
+        elif active_booking:
+            changes.update(
+                phase=Phase.IDENTIFIED
+                if state.phase in {Phase.HELD, Phase.OFFERED}
+                else state.phase,
+                proposal=None,
+                cancel_proposal=None,
+                cancel_target=None,
+                move_proposal=None,
+                move_target=None,
+            )
         else:
             changes.update(
                 phase=Phase.IDENTIFIED if state.client_id is not None else Phase.READY,
@@ -92,7 +117,7 @@ class MedicalConversation:
                 move_proposal=None,
                 move_target=None,
             )
-        return self.prompt(state.model_copy(update=changes), turn)
+        return self.prompt(state.model_copy(update=changes), turn, after_triage=after_triage)
 
     async def decline(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         if state.phase in {

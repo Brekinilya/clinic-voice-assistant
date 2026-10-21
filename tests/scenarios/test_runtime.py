@@ -278,6 +278,8 @@ async def test_full_report_contains_every_dialog_and_blocks_incomplete_acceptanc
     assert wrong_person.status == "unsupported"
     assert [finding.code for finding in wrong_person.findings] == ["sms_delivery_T20"]
     assert wrong_person.evidence["outbound"]["client_comment_patches"] == 0
+    assert wrong_person.evidence["outbound"]["sms_pending"] is True
+    assert wrong_person.evidence["outbound"]["sms_event_state"] == "pending"
 
     voicemail = by_label["D-11"]
     assert voicemail.status == "pass"

@@ -107,6 +107,42 @@ h2{
   color:#688084;
   margin-top:4px
 }
+.waitlist-box{
+  margin-top:28px;
+  padding-top:18px;
+  border-top:1px solid #e3ebeb
+}
+.waitlist-box h2{
+  font-size:16px
+}
+.waitlist-box .muted{
+  margin-top:6px
+}
+#waitlist{
+  margin-top:12px;
+  display:grid;
+  gap:8px
+}
+#waitlist button{
+  width:100%;
+  border:1px solid #e3ebeb;
+  background:#fff;
+  text-align:left;
+  border-radius:10px;
+  padding:10px;
+  color:#24464b;
+  overflow-wrap:anywhere
+}
+#waitlist b,#waitlist small{
+  display:block
+}
+#waitlist b{
+  font-size:13px
+}
+#waitlist small{
+  color:#688084;
+  margin-top:4px
+}
 .help{
   font-size:13px;
   color:#6a7f83;

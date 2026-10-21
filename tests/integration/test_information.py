@@ -63,6 +63,97 @@ async def test_anonymous_information_never_reads_mis(question, topic, required):
 
 
 @pytest.mark.parametrize(
+    ("question", "code", "required"),
+    [
+        ("Что вы умеете?", "CAPABILITIES_GIVEN", "проверкой ваших приёмов"),
+        ("Вы кто?", "CAPABILITIES_GIVEN", "виртуальный помощник"),
+        ("Как вас зовут?", "CAPABILITIES_GIVEN", "виртуальный помощник"),
+        (
+            "У вас можно на массаж записаться?",
+            "SERVICE_UNAVAILABLE",
+            "нет расписания массажиста",
+        ),
+        ("Как записаться к врачу?", "BOOKING_GUIDANCE_GIVEN", "начать запись"),
+        (
+            "Я хочу узнать, как записаться к врачу",
+            "BOOKING_GUIDANCE_GIVEN",
+            "личные данные понадобятся",
+        ),
+        ("Справочная информация", "GENERAL_HELP_REQUIRED", "Что именно вас интересует?"),
+    ],
+)
+async def test_opening_help_questions_do_not_identify_or_query_mis(question, code, required):
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, question)
+        assert result["code"] == code, result
+        assert required.casefold() in spoken(result).casefold()
+        assert result["phase"] == "ready"
+        assert result["transfer"] is None
+        assert result["visits"] == []
+        assert emulator.log == [] and emulator.write_count == emulator.patch_count == 0
+        state = await service.store.inspect("scenario")
+        assert state.client_id is None and state.phase == Phase.READY
+
+
+async def test_user_can_stop_booking_during_identity_without_a_mis_lookup():
+    async with pipeline() as (client, service, emulator, *_):
+        await turn(client, 1, "Запишите к терапевту")
+        result = await turn(client, 2, "Я просто спросить хочу")
+
+        state = await service.store.inspect("scenario")
+        assert result["code"] == "BOOKING_TASK_ABANDONED"
+        assert result["phase"] == "ready"
+        assert "что именно вас интересует" in spoken(result).casefold()
+        assert state.client_id is None and state.identity_draft is None
+        assert not any(entry[2] == "clients" for entry in emulator.log)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_abandoning_a_held_booking_releases_local_hold_without_mis_write():
+    async with pipeline() as (client, service, emulator, *_):
+        await reserve(client)
+        held = await service.store.inspect("scenario")
+        action = await service.booking.store.get(held.proposal.action_id)
+        writes = emulator.write_count + emulator.patch_count
+
+        result = await turn(client, 4, "Я просто спросить хочу")
+        released = await service.booking.store.get(action.action_id)
+        state = await service.store.inspect("scenario")
+
+        assert result["code"] == "BOOKING_TASK_ABANDONED"
+        assert result["phase"] == "ready"
+        assert released.state.value == "cancelled"
+        assert state.proposal is None and state.client_id is None
+        assert emulator.write_count + emulator.patch_count == writes
+
+
+async def test_paid_service_without_a_configured_price_uses_paid_department_route():
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, "Сколько у вас стоит УЗИ щитовидки?")
+
+        state = await service.store.inspect("scenario")
+        assert result["transfer"]["route"] == "R-10"
+        assert result["phase"] == "handoff"
+        assert state.client_id is None
+        assert not any(entry[2] == "clients" for entry in emulator.log)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_paid_service_reads_price_from_configured_catalog_and_offers_more_help():
+    async with pipeline(paid_prices={"УЗИ щитовидной железы": 1300}) as (client, _, emulator, *_):
+        result = await turn(client, 1, "Сколько стоит УЗИ щитовидной железы?")
+        assert result["code"] == "INFO_GIVEN"
+        assert "тысячу триста" in spoken(result) and result["transfer"] is None
+
+        declined = await turn(client, 2, "Нет")
+        assert declined["code"] == "HELP_OFFERED" and "чем-то помочь" in spoken(declined)
+        assert declined["phase"] != "ended"
+        ended = await turn(client, 3, "Нет")
+        assert ended["code"] == "CALL_ENDED" and ended["phase"] == "ended"
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+@pytest.mark.parametrize(
     ("question", "term"),
     [
         ("Срок готовности общего анализа крови", "один рабочий день"),

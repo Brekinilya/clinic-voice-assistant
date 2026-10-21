@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.dialogue.reminder_guard import check_reminder_guard
+from app.outbox.models import OutboxJob, reminder_sms_event
 from app.recovery.models import OwnershipLost
 from app.reminders.memory import channel_for
 from app.reminders.models import (
@@ -20,7 +21,10 @@ from app.reminders.models import (
     ReminderJob,
     ReminderMark,
 )
+from app.storage.outbox import decode as decode_outbox
+from app.storage.outbox import values as outbox_values
 from app.storage.schema import dialogue_sessions
+from app.storage.schema import outbox_jobs as event_jobs
 from app.storage.schema import reminder_attempts as attempts
 from app.storage.schema import reminder_client_locks as locks
 from app.storage.schema import reminder_confirmations as confirmations
@@ -191,7 +195,33 @@ class PostgresReminderStore:
                 .where(jobs.c.id == row.job_id)
                 .values(**job, version=jobs.c.version + 1)
             )
+            if job.get("sms_pending"):
+                reminder = (
+                    await connection.execute(select(jobs).where(jobs.c.id == row.job_id))
+                ).first()
+                if reminder is None:
+                    raise RuntimeError("напоминание исчезло при завершении попытки")
+                event = reminder_sms_event(reminder.id, reminder.client_id, now)
+                await connection.execute(
+                    insert(event_jobs)
+                    .values(**outbox_values(event))
+                    .on_conflict_do_nothing(
+                        index_elements=[event_jobs.c.source_id, event_jobs.c.kind]
+                    )
+                )
             return True
+
+    async def outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
+        async with self.engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    select(event_jobs).where(
+                        event_jobs.c.source_id == source_id,
+                        event_jobs.c.kind == "reminder_sms",
+                    )
+                )
+            ).all()
+        return tuple(decode_outbox(row) for row in rows)
 
     async def stale(self, now):
         async with self.engine.connect() as connection:

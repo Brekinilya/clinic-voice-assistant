@@ -1,0 +1,44 @@
+id: D-18
+title: Несовершеннолетний и младенец
+source: раздел 3.5; раздел 7.4 «Дети»; С-06
+blocking: false
+expected: Самостоятельная запись младше 15 лет не создаётся; младенец с опасными симптомами направляется звонить 103
+covers: [С-12, С-14, "3.5", "7.4"]
+
+setup:
+  now: "30.09.2026 10:15"
+  channel: inbound
+
+dialogs:
+  - name: ребёнок семи лет просит запись сам
+    steps:
+      - say: greeting.inbound
+      - patient: Запишите меня к педиатру
+        intent: I-01
+        general: {on_behalf: child}
+        parse: {expect: free, slots: {specialty: педиатр}}
+        say: ident.ask
+      - patient: Смирнова Алиса Дмитриевна, седьмое апреля две тысячи девятнадцатого
+        parse:
+          expect: full_name
+          slots: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: "2019-04-07"}
+        say: ident.relation
+      - patient: Это я сама
+        say: ident.under_15
+        forbid: [записываю, кабинет]
+    result:
+      code: MINOR_BOOKING_REFUSED
+      stand: unchanged
+
+  - name: младенец с температурой и вялостью
+    steps:
+      - say: greeting.inbound
+      - patient: Младенец вялый, почти не просыпается, у него температура тридцать восемь
+        safety: {flags: [red_a], rule: R-01}
+        say: emergency.call_103
+        transfer: {route: R-01, priority: P1}
+        forbid: [запишу, заявку]
+    result:
+      code: EMERGENCY
+      stand: unchanged
+      card: {intent: I-11, rule: R-01, priority: P1}

@@ -38,6 +38,14 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
         return ActiveQuestion(key=key, expect=expect)
     if state.information_clarifying:
         return ActiveQuestion(key="information_details", expect="free")
+    if state.waitlist_stage == "specialty":
+        return ActiveQuestion(key="waitlist_specialty", expect="free")
+    if state.waitlist_stage == "identity":
+        return ActiveQuestion(key="patient_identity", expect="full_name")
+    if state.waitlist_stage == "consent":
+        return ActiveQuestion(key="waitlist_consent", expect="yes_no")
+    if state.waitlist_stage == "preferences":
+        return ActiveQuestion(key="waitlist_preferences", expect="date_time")
     if state.information_topic == "referral_missing":
         return ActiveQuestion(key="referral_missing", expect="yes_no")
     if state.information_topic is not None and state.phase in {
@@ -49,6 +57,8 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
         return ActiveQuestion(key="more_help", expect="yes_no")
     if state.medical_boundary_pending:
         return ActiveQuestion(key="medical_booking", expect="yes_no")
+    if state.distress_question_pending:
+        return ActiveQuestion(key="distress_urgency", expect="yes_no")
     if state.phase == "remind_details" and state.reminder and state.reminder.declined:
         return ActiveQuestion(key="reminder_cancel_or_move", expect="free")
     if state.phase == "identifying":
@@ -70,6 +80,8 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
             expect="choice",
             option_ids=tuple(f"visit-{item.visit_id}" for item in state.visit_items),
         )
+    if state.phase == "visits_shown" and state.suspended_booking and not state.visit_has_more:
+        return ActiveQuestion(key="return_to_booking", expect="yes_no")
     confirmations = {
         "held": ("booking_confirmation", state.proposal),
         "cancel_confirm": ("cancellation_confirmation", state.cancel_proposal),
@@ -95,6 +107,8 @@ def active_question(state: DialogueState) -> ActiveQuestion | None:
         "move_empty": ("new_booking", "yes_no"),
         "remind_verify": ("reminder_addressee", "yes_no"),
         "remind_details": ("reminder_attendance", "yes_no"),
+        "waitlist_consent": ("waitlist_consent", "yes_no"),
+        "waitlist_preferences": ("waitlist_preferences", "date_time"),
     }
     if state.phase in questions:
         key, expect = questions[state.phase]

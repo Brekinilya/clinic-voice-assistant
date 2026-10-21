@@ -21,6 +21,7 @@ class EventKind(StrEnum):
     CANCELLATION_SMS = "cancellation_sms"
     SLOT_RELEASED = "slot_released"
     RESCHEDULE_SMS = "reschedule_sms"
+    REMINDER_SMS = "reminder_sms"
 
 
 class CancellationSms(OutboxModel):
@@ -48,7 +49,15 @@ class RescheduleSms(OutboxModel):
     room: str | None = None
 
 
-Payload = Annotated[CancellationSms | ReleasedSlot | RescheduleSms, Field(discriminator="kind")]
+class ReminderSms(OutboxModel):
+    kind: Literal[EventKind.REMINDER_SMS] = EventKind.REMINDER_SMS
+    client_id: MisId = Field(repr=False)
+
+
+Payload = Annotated[
+    CancellationSms | ReleasedSlot | RescheduleSms | ReminderSms,
+    Field(discriminator="kind"),
+]
 
 
 class JobState(StrEnum):
@@ -109,7 +118,19 @@ class OutboxError(Exception):
 
 
 def event_id(source_id: str, kind: EventKind) -> str:
-    return uuid5(NAMESPACE_URL, f"clinic/cancellation/{source_id}/{kind}").hex
+    source = "reminder" if kind == EventKind.REMINDER_SMS else "cancellation"
+    return uuid5(NAMESPACE_URL, f"clinic/{source}/{source_id}/{kind}").hex
+
+
+def reminder_sms_event(source_id: str, client_id: MisId, now: datetime) -> OutboxJob:
+    payload = ReminderSms(client_id=client_id)
+    return OutboxJob(
+        event_id=event_id(source_id, payload.kind),
+        source_id=source_id,
+        payload=payload,
+        created_at=now,
+        available_at=now,
+    )
 
 
 def cancellation_events(

@@ -22,6 +22,9 @@ dialogs:
         say: paid.price
       - patient: Нет, спасибо, я просто узнать
         parse: {expect: yes_no, intent: "no"}
+        say: closing.anything_else
+      - patient: Нет, спасибо
+        parse: {expect: yes_no, intent: "no"}
         say: closing.goodbye_short
         end: true
     result: {code: INFO_GIVEN, stand: unchanged}

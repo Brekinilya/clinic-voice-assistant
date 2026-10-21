@@ -18,6 +18,7 @@ from app.visits.service import VisitService
 from app.voice.phrases import load_phrasebook
 
 TransferHandler = Callable[[DialogueState, Turn, str], Awaitable[tuple[DialogueState, Reply]]]
+ResumeHandler = Callable[[DialogueState, Turn], Awaitable[tuple[DialogueState, Reply]]]
 
 
 def wants_new_booking(text: str) -> bool:
@@ -65,8 +66,10 @@ class VisitConversation:
         store: DialogueStore,
         visits: VisitService,
         transfer: TransferHandler,
+        resume_booking: ResumeHandler | None = None,
     ) -> None:
         self.booking, self.store, self.visits, self.transfer = booking, store, visits, transfer
+        self.resume_booking = resume_booking
 
     async def start(
         self, state: DialogueState, turn: Turn, result: NluResult
@@ -113,6 +116,7 @@ class VisitConversation:
         return await self.show(state, turn)
 
     async def privacy_transfer(self, state: DialogueState, turn: Turn):
+        state = state.model_copy(update={"suspended_booking": None})
         state, _ = await self.transfer(state, turn, "R-16", reason="privacy")
         return state, reply(
             state,
@@ -144,6 +148,14 @@ class VisitConversation:
             }
         )
         if not page.items:
+            if state.suspended_booking is not None:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Подходящих будущих записей не найдено.",
+                    "Хотите вернуться к записи?",
+                    code="NO_ACTIVE_VISITS",
+                )
             return state, reply(
                 state,
                 turn.turn_id,
@@ -161,9 +173,12 @@ class VisitConversation:
                     room_text(item.room),
                 )
             )
-        phrases.append(
-            "Есть ещё записи. Рассказать следующие?" if page.has_more else "Нужна ещё помощь?"
-        )
+        if page.has_more:
+            phrases.append("Есть ещё записи. Рассказать следующие?")
+        elif state.suspended_booking is not None:
+            phrases.append("Хотите вернуться к записи?")
+        else:
+            phrases.append("Нужна ещё помощь?")
         return state, reply(state, turn.turn_id, *phrases, code="INFO_GIVEN")
 
     @staticmethod
@@ -180,6 +195,8 @@ class VisitConversation:
                 "query_for_self": False,
                 "visit_query": VisitQuery(),
                 "misunderstandings": 0,
+                "suspended_booking": None,
+                "referral_mentioned": False,
             }
         )
 
@@ -270,12 +287,50 @@ class VisitConversation:
                 )
                 return await self.show(state, turn)
             if "no" in intents:
+                if state.suspended_booking is not None and state.visit_has_more:
+                    state = state.model_copy(update={"visit_has_more": False})
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Хорошо, следующие записи не показываю.",
+                        "Хотите вернуться к записи?",
+                        code="VISITS_PAGE_DECLINED",
+                    )
+                if state.suspended_booking is not None:
+                    state = state.model_copy(
+                        update={
+                            "suspended_booking": None,
+                            "purpose": "booking",
+                            "phase": Phase.IDENTIFIED
+                            if state.client_id is not None
+                            else Phase.READY,
+                            "visit_items": (),
+                            "visit_cursor": None,
+                            "visit_has_more": False,
+                            "query_for_self": False,
+                            "visit_query": VisitQuery(),
+                        }
+                    )
+                    return state, reply(
+                        state,
+                        turn.turn_id,
+                        "Хорошо, к записи не возвращаемся.",
+                        "Чем ещё помочь?",
+                        code="DETOUR_DECLINED",
+                    )
                 state = await self.store.end(state.call_id)
                 return state, reply(state, turn.turn_id, "Всего доброго.", code="CALL_ENDED")
             if "yes" in intents and state.visit_has_more:
                 return await self.show(state, turn, next_page=True)
             if "repeat" in intents:
                 return await self.show(state, turn)
+            if (
+                "yes" in intents
+                and state.suspended_booking is not None
+                and not state.visit_has_more
+                and self.resume_booking is not None
+            ):
+                return await self.resume_booking(state, turn)
             if "yes" in intents and not state.visit_items:
                 state = self.booking_state(state)
                 return state, reply(state, turn.turn_id, "К какому специалисту хотите записаться?")

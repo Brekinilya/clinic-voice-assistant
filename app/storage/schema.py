@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 debug_events = Table(
     "backend_debug_events",
@@ -151,7 +151,7 @@ outbox_jobs = Table(
     "backend_outbox_jobs",
     metadata,
     Column("event_id", String(32), primary_key=True),
-    Column("source_id", String(32), ForeignKey(cancellations.c.action_id), nullable=False),
+    Column("source_id", String(128), nullable=False),
     Column("kind", String(30), nullable=False),
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -164,7 +164,7 @@ outbox_jobs = Table(
     # SQL NULL означает отсутствие квитанции; JSON null нарушил бы проверку состояния.
     Column("receipt", JSONB(none_as_null=True)),
     CheckConstraint(
-        "kind IN ('cancellation_sms','slot_released','reschedule_sms')",
+        "kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms')",
         name="backend_outbox_kind_allowed",
     ),
     CheckConstraint(
@@ -455,3 +455,26 @@ callback_attempts = Table(
     CheckConstraint("outcome IN ('connected','no_answer','failed','cancelled','unknown')"),
 )
 Index("callback_attempt_task", callback_attempts.c.task_id, callback_attempts.c.started_at)
+
+# Только технический ID пациента, специальность и фильтры времени; ФИО не сохраняется.
+waitlist_requests = Table(
+    "backend_waitlist_requests",
+    metadata,
+    Column("request_id", String(64), primary_key=True),
+    Column("call_id", String(128), nullable=False),
+    Column("turn_id", Integer, nullable=False),
+    Column("client_id", Integer, nullable=False),
+    Column("specialty", String(100), nullable=False),
+    Column("preferences", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("turn_id > 0 AND client_id > 0"),
+)
+Index(
+    "backend_waitlist_client_created", waitlist_requests.c.client_id, waitlist_requests.c.created_at
+)
+Index(
+    "backend_waitlist_call_turn",
+    waitlist_requests.c.call_id,
+    waitlist_requests.c.turn_id,
+    unique=True,
+)

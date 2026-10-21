@@ -247,6 +247,10 @@ class ScenarioRuntime:
                     self.move_store,
                     b"fictional-scenario-hash-key-longer-than-32",
                     reminder_actions=reminder_actions,
+                    paid_prices={
+                        item["service"]: item["price"]
+                        for item in self.dialog.setup.get("prices", ())
+                    },
                 )
                 self.handoffs = HandoffService(
                     self.handoff_store,

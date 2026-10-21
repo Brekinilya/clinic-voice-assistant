@@ -139,3 +139,34 @@ async def test_price_aside_returns_to_the_same_booking_question():
         assert "уточнит регистратор" in " ".join(result.utterances).casefold()
         assert after.phase == before.phase == "offered"
         assert after.specialty == before.specialty and after.options == before.options
+
+
+async def test_visit_detour_preserves_booking_and_resumes_only_on_yes():
+    dialog = dialog_by_label("M-01")
+    dialog.setup = {
+        **dialog.setup,
+        "visits": [{"client": "smirnova_ov", "doctor": "kuznetsova", "at": "06.10.2026 10:00"}],
+    }
+    runtime = ScenarioRuntime(dialog)
+    writes_before = runtime.emulator.write_count
+    async with runtime.application() as client:
+        for turn_id, step in enumerate(patient_steps(dialog)[:3], start=1):
+            await advance(client, runtime.call_id, turn_id, step["patient"])
+        original = await runtime.dialogue_store.inspect(runtime.call_id)
+        assert original.phase == "identified" and original.specialty == "терапевт"
+
+        detour = await advance(client, runtime.call_id, 4, "Хочу проверить свои приёмы")
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+        assert detour.code == "INFO_GIVEN" and detour.phase == "visits_shown"
+        assert detour.question.key == "return_to_booking"
+        assert state.suspended_booking.specialty == original.specialty
+        assert state.purpose == "visits" and state.client_id == original.client_id
+        assert runtime.emulator.write_count == writes_before
+
+        resumed = await advance(client, runtime.call_id, 5, "Да")
+        state = await runtime.dialogue_store.inspect(runtime.call_id)
+        assert resumed.phase == "identified" and state.specialty == original.specialty
+        assert resumed.code == "BOOKING_RESUMED"
+        assert "какой день" in " ".join(resumed.utterances).casefold()
+        assert state.purpose == "booking" and state.suspended_booking is None
+        assert runtime.emulator.write_count == writes_before

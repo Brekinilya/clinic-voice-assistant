@@ -32,6 +32,26 @@ async def prepare(client):
     return result
 
 
+async def test_bare_no_at_cancel_or_move_choice_never_cancels(cancel_engine):
+    async with pipeline(SETUP, pg_engine=cancel_engine) as (client, service, emulator, *_):
+        await turn(client, 1, "Отмените мою запись")
+        offered = await turn(client, 2, IDENTITY)
+        assert offered["code"] == "RESCHEDULE_OFFERED"
+
+        clarification = await turn(client, 3, "Нет")
+        assert clarification["code"] == "CANCEL_ACTION_REQUIRED"
+        assert clarification["phase"] == "cancel_offer"
+        assert emulator.patch_count == 0
+        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        assert service.conversation.cancellation is not None
+
+        move = await turn(client, 4, "Перенести на пятницу")
+        assert move["phase"] == "move_source"
+        assert move["code"] == "MOVE_SOURCE_CONFIRMATION"
+        assert move["transfer"] is None and emulator.patch_count == 0
+        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+
+
 @pytest.mark.parametrize(
     "answer",
     [
@@ -46,10 +66,14 @@ async def test_negated_reschedule_selects_cancel_but_requires_final_yes(cancel_e
         await turn(client, 1, "Отмените мою запись")
         assert (await turn(client, 2, IDENTITY))["code"] == "RESCHEDULE_OFFERED"
         prepared = await turn(client, 3, answer)
+        if answer == "Не надо переносить":
+            assert prepared["code"] == "CANCEL_ACTION_REQUIRED"
+            prepared = await turn(client, 4, "Отмените запись")
         assert prepared["code"] == "CANCEL_CONFIRMATION_REQUIRED"
         assert emulator.records["demo"][1].status == VisitStatus.PLANNED
         assert emulator.patch_count == emulator.write_count == 0
-        assert (await turn(client, 4, "Да"))["code"] == "CANCELLED"
+        confirm_turn = 5 if answer == "Не надо переносить" else 4
+        assert (await turn(client, confirm_turn, "Да"))["code"] == "CANCELLED"
         assert emulator.patch_count == 1 and emulator.write_count == 0
 
 

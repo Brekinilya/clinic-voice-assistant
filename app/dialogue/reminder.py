@@ -484,6 +484,25 @@ class ReminderConversation:
                 return await self.handoff(state, turn, "R-16")
             if state.misunderstandings >= 1:
                 return await self.handoff(state, turn, "R-05")
+            if state.phase in {Phase.MOVE_OFFERED, Phase.MOVE_CONFIRM}:
+                state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
+                if state.phase == Phase.MOVE_CONFIRM:
+                    clarification = (
+                        "Я не буду переносить запись без точного подтверждения. "
+                        "Перенести её на предложенное время? Ответьте «да» или «нет»."
+                    )
+                else:
+                    clarification = (
+                        "Пока запись не изменена. Выберите предложенное время, "
+                        "попросите другие варианты или оставьте всё как есть."
+                    )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    clarification,
+                    *self.prompt(state),
+                    code="REMINDER_CLARIFICATION",
+                )
             if words(text).startswith("пока "):
                 state = state.model_copy(update={"misunderstandings": 1, "authorization": None})
                 return state, reply(

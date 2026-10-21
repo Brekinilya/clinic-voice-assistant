@@ -1,5 +1,7 @@
 """Матрица контекста и сводка состояния: правила оценки и короткий настоящий прогон."""
 
+from dataclasses import asdict
+
 import pytest
 
 from tests.scenarios import context_matrix
@@ -46,6 +48,34 @@ async def test_matrix_runs_real_dialogues_on_the_emulator():
     summary = context_matrix.summary(cells, data)
     assert summary["total"]["n"] == len(cells)
     assert summary["by_probe"]["robot"]["task"] == data["probes"]["robot"]["task"]
+
+
+def test_matrix_markdown_lists_non_ok_cells_with_their_actual_replies():
+    data = load_probes()
+    cell = context_matrix.Cell(
+        base="M-10 перенос",
+        step=4,
+        phase="move_offered",
+        probe="change_mind",
+        text="Я передумал.",
+        outcome="not_understood",
+        verdict="gap",
+        code="NOT_UNDERSTOOD",
+        phase_after="move_offered",
+        answer="Не поняла, уточните, пожалуйста.",
+    )
+    document = {
+        "source": {"commit": "a" * 40, "dirty": False},
+        "summary": context_matrix.summary([cell], data),
+        "cells": [asdict(cell)],
+    }
+
+    rendered = context_matrix.markdown(document, data)
+
+    assert "## Реплики, требующие доработки" in rendered
+    assert "M-10 перенос · move_offered" in rendered
+    assert "Я передумал." in rendered
+    assert "Не поняла, уточните, пожалуйста." in rendered
 
 
 def test_status_groups_scenarios_by_blocking_task_and_reports_changes():
