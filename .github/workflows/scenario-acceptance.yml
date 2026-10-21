@@ -27,12 +27,14 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - run: uv sync --locked
+      - name: Голосовые доказательства событий, отсутствующих в текстовом API
+        run: uv run --no-sync python -m bench.voice.evidence --output-dir "$RUNNER_TEMP/voice"
       - name: Полный HTTP-прогон и строгая проверка результата
         env:
           T07_REQUIREMENT: ${{ inputs.requirement }}
         run: |
           set +e
-          uv run --no-sync python -m tests.scenarios.run --output-dir "$RUNNER_TEMP/t07" --require "$T07_REQUIREMENT"
+          uv run --no-sync python -m tests.scenarios.run --output-dir "$RUNNER_TEMP/t07" --require "$T07_REQUIREMENT" --voice-evidence "$RUNNER_TEMP/voice/voice_evidence.json"
           scenario_status=$?
           if [ -f "$RUNNER_TEMP/t07/results.md" ]; then
             cat "$RUNNER_TEMP/t07/results.md" >> "$GITHUB_STEP_SUMMARY"
