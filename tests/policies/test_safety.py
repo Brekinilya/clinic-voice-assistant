@@ -30,6 +30,11 @@ from app.voice.phrases import load_phrasebook
         ("Вы робот?", {"robot"}, None),
         ("Я против записи разговора", {"no_recording"}, None),
         ("Хочу пожаловаться на регистратуру", {"complaint"}, "R-03"),
+        ("Иди нахуй", {"complaint"}, "R-03"),
+        ("Пошёл ты на хуй", {"complaint"}, "R-03"),
+        ("Вы уже заебали", {"complaint"}, "R-03"),
+        ("Какого хуя вы не отвечаете?", {"complaint"}, "R-03"),
+        ("Да пошёл ты нахуй", {"complaint"}, "R-03"),
         ("Запишите к терапевту", set(), None),
     ],
 )
