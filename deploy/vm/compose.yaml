@@ -23,7 +23,8 @@ services:
       POSTGRES_HOST: database
       POSTGRES_PORT: "5432"
       TELEPHONY_ENABLED: "false"
-      # Доступ к публичной ссылке контролирует платформа; второй пароль не нужен.
+      # Платформа проверяет доступ перед проксированием; второй пароль не нужен.
+      PLATFORM_ACCESS_PROTECTED: "true"
       WEB_ACCESS_ENABLED: "false"
     ports:
       - "0.0.0.0:8000:8000"

@@ -49,9 +49,12 @@ def settings(**changes):
     return Settings(**(values | changes))
 
 
-def test_debug_requires_team_login():
-    with pytest.raises(ValidationError, match="WEB_ACCESS_ENABLED"):
+def test_debug_requires_team_login_or_platform_auth():
+    with pytest.raises(ValidationError, match="PLATFORM_ACCESS_PROTECTED"):
         settings(web_access_enabled=False)
+
+    protected = settings(web_access_enabled=False, platform_access_protected=True)
+    assert protected.debug_panel_enabled
 
 
 async def test_debug_ui_and_api_require_login_and_are_disabled_by_default():
@@ -84,6 +87,16 @@ async def test_debug_ui_and_api_require_login_and_are_disabled_by_default():
                         "events"
                     ]
                     assert any(e["kind"] == "dialogue.reply" for e in events)
+
+
+async def test_debug_ui_uses_platform_auth_without_app_password():
+    app = create_app(settings(web_access_enabled=False, platform_access_protected=True))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            assert (await client.get("/debug")).status_code == 200
+            assert (await client.get("/api/debug/calls")).status_code == 200
 
 
 async def test_debug_panel_lists_saved_waitlist_requests():
