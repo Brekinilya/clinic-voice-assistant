@@ -1,7 +1,8 @@
 """Проверка каждой реплики пациента: красные флаги (раздел 7.4) и сигналы для маршрутизации (раздел 7.3)."""
 
+from collections.abc import Set
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from app.contracts import SafetyDecision
 from app.nlu.dictionaries import load_flags, load_red_flags
@@ -109,11 +110,13 @@ def decide(
     )
 
 
-def operators_on_duty(moment: datetime) -> bool:
+def operators_on_duty(moment: datetime, holidays: Set[date] = frozenset()) -> bool:
     """Операторы регистратуры на линии (раздел 2.2): будни 7:00–20:00, суббота 8:30–15:00.
 
-    Праздничный режим задаётся приказом и сюда не входит.
+    Праздники из рабочего календаря считаются нерабочими для регистратора.
     """
+    if moment.date() in holidays:
+        return False
     t, weekday = moment.time(), moment.isoweekday()
     if weekday <= 5:
         return time(7) <= t < time(20)

@@ -323,6 +323,23 @@ async def test_under_15_cannot_receive_personal_lab_information_or_be_transferre
         assert emulator.write_count == emulator.patch_count == 0
 
 
+@pytest.mark.parametrize(
+    "name,birth_date",
+    [
+        ("Смирнова Анна Дмитриевна", "30 сентября 2011 года"),
+        ("Смирнова Елена Дмитриевна", "30 сентября 2009 года"),
+    ],
+)
+async def test_ages_15_to_17_can_ask_about_their_own_lab_status(name, birth_date):
+    async with pipeline() as (client, _, emulator, *_):
+        await turn(client, 1, "Готовы ли мои анализы?")
+        await turn(client, 2, name)
+        answer = await turn(client, 3, birth_date)
+        assert answer["code"] == "INFO_GIVEN"
+        assert "Личную готовность результата я проверить не могу" in spoken(answer)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
 async def test_overdue_lab_result_creates_callback_task_and_posts_required_escalation():
     async with pipeline() as (client, service, emulator, clock, *_):
         handoff_store = MemoryHandoffStore()

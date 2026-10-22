@@ -162,9 +162,9 @@ CASES = [
     pytest.param(
         "FAQ-18",
         "Нужно ли вызывать врача, если высокая температура?",
-        "transfer",
-        "R-08",
-        "регистратору",
+        "medical",
+        "MEDICAL_BOUNDARY",
+        "Записать вас к терапевту",
         id="FAQ-18",
     ),
     pytest.param(

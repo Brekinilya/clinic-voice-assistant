@@ -41,7 +41,7 @@ from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
-from app.dialogue.triage import is_explicit_distress, needs_urgent_screening
+from app.dialogue.triage import needs_urgent_screening
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
@@ -86,6 +86,7 @@ class BookingConversation:
         self.booking = booking
         self.store = store
         self.safety = safety
+        self.operator_calendar = ClinicCalendar.load()
         self.handoffs = None
         self.identity_drafts = identity_drafts
         self.waitlist_store = waitlist_store or MemoryWaitlistStore()
@@ -216,6 +217,20 @@ class BookingConversation:
             informational = await self.information.step(state, turn)
             if informational is not None:
                 return informational
+        active_booking = state.purpose == "booking" and state.phase not in {
+            Phase.READY,
+            Phase.BOOKED,
+            Phase.CANCELLED,
+            Phase.RESCHEDULED,
+            Phase.ENDED,
+        }
+        if needs_urgent_screening(turn.text) and active_booking and "medical" not in decision.flags:
+            return state, reply(
+                state,
+                turn.turn_id,
+                *self.information.resume_question(state, turn),
+                code="BOOKING_RESUMED",
+            )
         if decision.flags & {"medical", "robot", "no_recording"} or medical_followup:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
@@ -243,10 +258,10 @@ class BookingConversation:
             return await self.cancellation.step(state, turn, result)
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
-        if is_explicit_distress(turn.text):
-            return await self.transfer(state, turn, "R-01", "P1")
+        if state.medical_boundary_pending and needs_urgent_screening(turn.text):
+            return self.medical.prompt(state, turn)
         if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
-            return await self.transfer(state, turn, "R-08")
+            return await self.medical.question(state, turn)
         if state.medical_boundary_pending and not state.information_clarifying:
             answer = self.information.short_answer(turn.text)
             if answer == "no":
@@ -1174,19 +1189,12 @@ class BookingConversation:
             return await self.transfer(state, turn, "R-08")
         return await self.transfer(state, turn, "R-08")
 
-    async def _distress_triage(self, state: DialogueState, turn: Turn):
-        # Неразмеченные симптомы нельзя превращать в медицинский триаж.
-        # Явные красные флаги уже маршрутизированы safety-компонентом.
-        return await self.transfer(state, turn, "R-08")
-
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
         if state.information_topic != "referral_missing" and state.lab_identity_stage is None:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
             )
-        if is_explicit_distress(turn.text):
-            return await self.transfer(state, turn, "R-01", "P1")
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
@@ -1203,7 +1211,20 @@ class BookingConversation:
                 return await self._lab_identity_step(state, turn)
             state = self._clear_lab_identity(state, clarify_labs=new_topic.startswith("lab:"))
         if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
-            return await self._distress_triage(state, turn)
+            if state.purpose == "booking" and state.phase not in {
+                Phase.READY,
+                Phase.BOOKED,
+                Phase.CANCELLED,
+                Phase.RESCHEDULED,
+                Phase.ENDED,
+            }:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    *self.information.resume_question(state, turn),
+                    code="BOOKING_RESUMED",
+                )
+            return await self.medical.question(state, turn)
         if needs_urgent_screening(turn.text) and wants_new_booking(turn.text):
             if "I-01" in result.intents or result.slots.specialty is not None:
                 state = state.model_copy(
@@ -1927,7 +1948,8 @@ class BookingConversation:
                         code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                     )
                 if action.state == ActionState.RECONCILING and operators_on_duty(
-                    self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
+                    self.booking.clock.now().astimezone(CLINIC_TIMEZONE),
+                    self.operator_calendar.holidays,
                 ):
                     return await self.transfer(state, turn, "R-06", "P3", reason="mis_unknown")
                 state = state.model_copy(update={"phase": Phase.RECONCILING})

@@ -5,11 +5,13 @@ from app.contracts import SafetyDecision
 from app.dialogue.models import TransferRequest, Turn
 from app.policies.safety import decide, operators_on_duty
 from app.ports import Clock
+from app.reminders.calendar import ClinicCalendar
 
 
 class RulesSafety:
     def __init__(self, clock: Clock) -> None:
         self.clock = clock
+        self.operator_calendar = ClinicCalendar.load()
 
     def evaluate(self, call_id: str, turn: Turn, extra=frozenset()) -> SafetyDecision:
         decision = decide(
@@ -17,7 +19,9 @@ class RulesSafety:
             turn.turn_id,
             turn.text,
             final=turn.is_final,
-            operators_on_duty=operators_on_duty(self.clock.now().astimezone(CLINIC_TIMEZONE)),
+            operators_on_duty=operators_on_duty(
+                self.clock.now().astimezone(CLINIC_TIMEZONE), self.operator_calendar.holidays
+            ),
             extra=extra,
         )
         if (
