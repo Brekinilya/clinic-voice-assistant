@@ -1166,15 +1166,15 @@ class BookingConversation:
                 "short_accs",
                 today=self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date(),
             )
-            accepted = load_phrasebook().get("home_visit.accepted").text
-            details = f"Заявка принята на {visit_date}. Регистратор перезвонит только при необходимости уточнить детали."
+            pending = load_phrasebook().get("home_visit.pending").text
+            details = f"Вы запросили приезд на {visit_date}; точное время пока неизвестно."
             return state, reply(
                 state,
                 turn.turn_id,
-                accepted,
+                pending,
                 details,
                 "Телефон для связи этот?",
-                code="HOME_VISIT_REQUESTED",
+                code="HOME_VISIT_PENDING",
             ).model_copy(update={"expect": "yes_no"})
         if stage == "contact":
             if answer == "yes":
@@ -1190,7 +1190,7 @@ class BookingConversation:
                     state,
                     turn.turn_id,
                     load_phrasebook().get("home_visit.done").text,
-                    code="HOME_VISIT_REQUESTED",
+                    code="HOME_VISIT_PENDING",
                 )
             return await self.transfer(state, turn, "R-08")
         return await self.transfer(state, turn, "R-08")

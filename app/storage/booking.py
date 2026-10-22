@@ -164,6 +164,33 @@ async def migrate(engine: AsyncEngine) -> None:
                         "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('appointment_sms','cancellation_sms','slot_released','reschedule_sms','reminder_sms','waitlist_sms','no_answer_sms'))"
                     )
                 )
+                # Existing reminder events were stored before visit_id became part
+                # of the payload. Recover it from the durable reminder job before
+                # the stricter payload model is used by the new worker.
+                await connection.execute(
+                    text(
+                        "UPDATE backend_outbox_jobs AS event "
+                        "SET payload = jsonb_set(event.payload, '{visit_id}', "
+                        "to_jsonb(reminder.visit_id), true) "
+                        "FROM reminder_jobs AS reminder "
+                        "WHERE event.kind = 'reminder_sms' "
+                        "AND event.source_id = reminder.id "
+                        "AND NOT (event.payload ? 'visit_id')"
+                    )
+                )
+                unresolved_reminders = await connection.scalar(
+                    select(func.count())
+                    .select_from(outbox_jobs)
+                    .where(
+                        outbox_jobs.c.kind == "reminder_sms",
+                        ~outbox_jobs.c.payload.has_key("visit_id"),  # noqa: W601
+                    )
+                )
+                if unresolved_reminders:
+                    raise RuntimeError(
+                        "не удалось восстановить visit_id у старых событий напоминания; "
+                        "миграция остановлена без изменения версии схемы"
+                    )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 

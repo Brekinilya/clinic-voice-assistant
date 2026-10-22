@@ -25,6 +25,7 @@ from app.storage.schema import (
     metadata,
     moves,
     outbox_jobs,
+    reminder_jobs,
     schema_versions,
 )
 
@@ -142,6 +143,72 @@ async def test_migration_thirteen_adds_comment_event_kinds(pg_engine):
     )
     assert version == SCHEMA_VERSION
     assert all(name in kinds for name in ("appointment_sms", "waitlist_sms", "no_answer_sms"))
+
+
+@pytest.mark.postgres
+async def test_migration_thirteen_backfills_legacy_reminder_visit_id(pg_engine):
+    from app.demo import DemoClock
+
+    clock = DemoClock()
+    reminder_id = uuid4().hex
+    event_id = uuid4().hex
+    scheduled_at = clock.now()
+    async with pg_engine.begin() as connection:
+        await connection.execute(update(schema_versions).values(version=13))
+        await connection.execute(
+            text("ALTER TABLE backend_outbox_jobs DROP CONSTRAINT backend_outbox_kind_allowed")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed "
+                "CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms'))"
+            )
+        )
+        await connection.execute(
+            insert(reminder_jobs).values(
+                id=reminder_id,
+                visit_id=42,
+                client_id=7,
+                doctor_id=3,
+                scheduled_at=scheduled_at,
+                room=None,
+                call_day=scheduled_at.date(),
+                state="planned",
+                next_at=scheduled_at,
+                attempts=0,
+                outcome=None,
+                mis_status=None,
+                reason=None,
+                sms_pending=True,
+                version=1,
+            )
+        )
+        await connection.execute(
+            insert(outbox_jobs).values(
+                event_id=event_id,
+                source_id=reminder_id,
+                kind="reminder_sms",
+                payload={
+                    "kind": "reminder_sms",
+                    "client_id": 7,
+                    "scheduled_at": scheduled_at.isoformat(),
+                    "room": None,
+                },
+                created_at=scheduled_at,
+                available_at=scheduled_at,
+                state="pending",
+                attempts=0,
+                lease_token=None,
+                lease_until=None,
+                last_error=None,
+                receipt=None,
+            )
+        )
+
+    await migrate(pg_engine)
+    [job] = await PostgresOutboxStore(pg_engine).list()
+    assert job.event_id == event_id
+    assert job.payload.visit_id == 42
 
 
 @pytest.mark.postgres
