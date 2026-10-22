@@ -115,7 +115,7 @@ LABORATORY_EXPECTATIONS = {
     "labs.personal_status": (
         {"INFO_GIVEN"},
         ("lab_status",),
-        (r"от одного до четырнадцати рабочих дней", r"проверить не могу"),
+        (r"личный статус", r"сохранила запрос", r"результат пока не подтвержден"),
     ),
     "labs.how_to_get": (
         {"INFO_GIVEN", "MEDICAL_BOUNDARY"},

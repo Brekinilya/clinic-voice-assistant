@@ -233,23 +233,36 @@ class HandoffService:
     async def queue_laboratory_delay(
         self, call_id: str, state: DialogueState, client_id: int
     ) -> HandoffRequest:
-        """Сохраняет просроченный результат в очереди и планирует POST /escalations."""
+        """Сохраняет запрос о личном статусе анализа и планирует POST /escalations."""
+        return await self.queue_laboratory_status(call_id, state, client_id, delayed=True)
+
+    async def queue_laboratory_status(
+        self, call_id: str, state: DialogueState, client_id: int, *, delayed: bool
+    ) -> HandoffRequest:
+        """Запрашивает ручную проверку статуса без передачи результатов анализа."""
         identified = state.model_copy(update={"client_id": client_id})
+        summary = (
+            "Просрочен результат анализа; требуется обратный звонок из лаборатории."
+            if delayed
+            else "Пациент запросил личный статус анализа; требуется уточнить результат и связаться с ним."
+        )
         request = await self.ensure_request(
             call_id,
             "R-08",
             "P3",
             identified,
-            summary_override="Просрочен результат анализа; требуется обратный звонок из лаборатории.",
+            summary_override=summary,
         )
         if request.mis_operation_id is not None:
             return request
         operation_id = uuid4().hex
         marker = f"T08:{operation_id}"
-        description = (
-            "ПЕРЕВОД R-08 P3\n"
-            f"[{marker}] Просрочен результат анализа. Требуется связаться с пациентом."
+        action = (
+            "Просрочен результат анализа"
+            if delayed
+            else "Проверить личный статус результата анализа"
         )
+        description = f"ПЕРЕВОД R-08 P3\n[{marker}] {action}. Связаться с пациентом."
         operation = MisOperation(
             operation_id=operation_id,
             request_id=request.request_id,

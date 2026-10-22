@@ -193,6 +193,7 @@ class RtpEndpoint(asyncio.DatagramProtocol):
         self._idle.set()
 
     async def drained(self) -> None:
+        """Wait until the local audio queue is empty; UDP packets may still be in flight."""
         await self._idle.wait()
 
     def close(self) -> None:

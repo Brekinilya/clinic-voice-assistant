@@ -291,8 +291,16 @@ async def test_unavailable_personal_status_and_holidays_are_not_invented(questio
         assert emulator.log == []
 
 
-async def test_personal_lab_status_requires_verified_identity_and_only_gives_general_guidance():
-    async with pipeline() as (client, service, emulator, *_):
+async def test_personal_lab_status_requires_identity_then_creates_manual_handoff():
+    async with pipeline() as (client, service, emulator, clock, *_):
+        handoff_store = MemoryHandoffStore()
+        service.handoffs = HandoffService(
+            handoff_store,
+            service.booking.mis,
+            clock,
+            b"x" * 32,
+            HandoffSettings(enabled=True),
+        )
         first = await turn(client, 1, "Готовы ли мои анализы?")
         assert first["code"] == "IDENTIFICATION_REQUIRED"
         assert "фамилию, имя и отчество" in spoken(first)
@@ -305,12 +313,18 @@ async def test_personal_lab_status_requires_verified_identity_and_only_gives_gen
 
         answer = await turn(client, 3, "12 марта 1978 года")
         assert answer["code"] == "INFO_GIVEN", (answer, emulator.log)
-        assert "Личную готовность результата я проверить не могу" in spoken(answer)
+        assert "личный статус" in spoken(answer).casefold()
+        assert "сохранила запрос" in spoken(answer).casefold()
+        assert "результат пока не подтверждён" in spoken(answer).casefold()
         assert "от одного до четырнадцати рабочих дней" in spoken(answer)
-        assert "Гос" in spoken(answer) and "окне номер три" in spoken(answer)
-        assert "готовы" not in spoken(answer).casefold()
         assert emulator.write_count == emulator.patch_count == 0
-        assert (await service.store.inspect("scenario")).client_id is None
+        state = await service.store.inspect("scenario")
+        assert state.client_id is None and state.phase.value == "ready"
+        assert state.transfer is None
+        request = await handoff_store.request_for_call("scenario")
+        operation = handoff_store.mis_operations[request.mis_operation_id]
+        assert "личный статус результата анализа" in operation.description
+        assert "готов" not in operation.description.casefold()
 
 
 async def test_under_15_cannot_receive_personal_lab_information_or_be_transferred():
@@ -331,12 +345,20 @@ async def test_under_15_cannot_receive_personal_lab_information_or_be_transferre
     ],
 )
 async def test_ages_15_to_17_can_ask_about_their_own_lab_status(name, birth_date):
-    async with pipeline() as (client, _, emulator, *_):
+    async with pipeline() as (client, service, emulator, clock, *_):
+        service.handoffs = HandoffService(
+            MemoryHandoffStore(),
+            service.booking.mis,
+            clock,
+            b"x" * 32,
+            HandoffSettings(enabled=True),
+        )
         await turn(client, 1, "Готовы ли мои анализы?")
         await turn(client, 2, name)
         answer = await turn(client, 3, birth_date)
         assert answer["code"] == "INFO_GIVEN"
-        assert "Личную готовность результата я проверить не могу" in spoken(answer)
+        assert "сохранила запрос" in spoken(answer).casefold()
+        assert "результат пока не подтверждён" in spoken(answer).casefold()
         assert emulator.write_count == emulator.patch_count == 0
 
 
@@ -356,9 +378,8 @@ async def test_overdue_lab_result_creates_callback_task_and_posts_required_escal
         await turn(client, 2, "Смирнова Ольга Викторовна")
         result = await turn(client, 3, "12 марта 1978 года")
         assert result["code"] == "CALLBACK"
-        assert result["utterances"] == [
-            "Результат задерживается. Я передам вопрос в лабораторию, вам перезвонят."
-        ]
+        assert "срок результата превышен" in spoken(result).casefold()
+        assert "не подтверждены" in spoken(result).casefold()
         request = await handoff_store.request_for_call("scenario")
         operation = handoff_store.mis_operations[request.mis_operation_id]
         assert operation.description.splitlines()[0] == "ПЕРЕВОД R-08 P3"

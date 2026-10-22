@@ -1414,34 +1414,48 @@ class BookingConversation:
                 "До пятнадцати лет сведения о результатах ребёнку по телефону не сообщаются. Попросите законного представителя обратиться в клинику.",
                 code="MINOR_RESULTS_REFUSED",
             )
-        if state.lab_delay_pending:
-            if self.handoffs is None:
-                return clean, reply(
-                    clean,
-                    turn.turn_id,
-                    "Срок результата превышен. Сейчас не удалось передать запрос сотруднику. Позвоните в регистратуру.",
-                    code="INFO_UNAVAILABLE",
-                )
-            await self.handoffs.queue_laboratory_delay(state.call_id, clean, patient.id)
-            queued = clean.model_copy(
-                update={
-                    "phase": Phase.HANDOFF,
-                    "client_id": patient.id,
-                    "transfer": TransferRequest(route="R-08", priority="P3"),
-                    "lab_delay_pending": False,
-                }
+        if self.handoffs is not None:
+            await self.handoffs.queue_laboratory_status(
+                state.call_id,
+                clean,
+                patient.id,
+                delayed=state.lab_delay_pending,
             )
-            return queued, reply(
-                queued,
+            if state.lab_delay_pending:
+                queued = clean.model_copy(
+                    update={
+                        "phase": Phase.HANDOFF,
+                        "client_id": patient.id,
+                        "transfer": TransferRequest(route="R-08", priority="P3"),
+                        "lab_delay_pending": False,
+                    }
+                )
+                return queued, reply(
+                    queued,
+                    turn.turn_id,
+                    "Срок результата превышен. Сохранила запрос для передачи сотруднику; результат и срок пока не подтверждены.",
+                    code="CALLBACK",
+                )
+        if state.lab_delay_pending:
+            return clean, reply(
+                clean,
                 turn.turn_id,
-                "Результат задерживается. Я передам вопрос в лабораторию, вам перезвонят.",
-                code="CALLBACK",
+                "Срок результата превышен. Сейчас не удалось передать запрос сотруднику. Позвоните в регистратуру.",
+                code="INFO_UNAVAILABLE",
             )
         collection = self.information.service.fact("lab_collection")
+        handoff_notice = (
+            (
+                "Я не вижу личный статус результата. Сохранила запрос для проверки сотрудником; результат пока не подтверждён.",
+            )
+            if self.handoffs is not None
+            else ("Личную готовность результата я проверить не могу.",)
+        )
         return clean, reply(
             clean,
             turn.turn_id,
-            "Личную готовность результата я проверить не могу. Общий срок зависит от вида исследования.",
+            *handoff_notice,
+            "Общий срок зависит от вида исследования.",
             "По регламенту срок составляет от одного до четырнадцати рабочих дней.",
             *collection.utterances,
             code="INFO_GIVEN",
@@ -1724,8 +1738,27 @@ class BookingConversation:
         )
         if child_booking_request:
             state = state.model_copy(update={"guardian_call": True})
+        adult_relative_booking = (
+            state.purpose == "booking"
+            and ("I-01" in intents or wants_new_booking(turn.text))
+            and requested_owner(turn.text) == "other"
+            and not child_booking_request
+            and re.search(
+                r"\b(мам\w*|мат\w*|пап\w*|отц\w*|жен\w*|муж\w*|"
+                r"брат\w*|сестр\w*|доч\w*|сын\w*|родственник\w*|"
+                r"бабушк\w*|дедушк\w*)\b",
+                turn.text.casefold().replace("ё", "е"),
+            )
+            is not None
+        )
+        if adult_relative_booking:
+            # §3.5 permits creating a new visit for a named adult relative. The
+            # ordinary visit lookup flow remains blocked, so existing visits are
+            # never read out to the caller.
+            state = state.model_copy(update={"guardian_call": True})
         if (
             not child_booking_request
+            and not adult_relative_booking
             and (slots.on_behalf == "other" or requested_owner(turn.text) == "other")
             and ("I-01" in intents or wants_new_booking(turn.text))
         ):
@@ -1739,7 +1772,8 @@ class BookingConversation:
         if state.guardian_call and state.client_id is not None and state.guardian_relation is None:
             relation = re.search(
                 r"\b(мам\w*|мат\w*|пап\w*|отц\w*|родител\w*|опекун\w*|попечител\w*|"
-                r"бабушк\w*|дедушк\w*)\b",
+                r"бабушк\w*|дедушк\w*|жен\w*|муж\w*|брат\w*|сестр\w*|"
+                r"доч\w*|сын\w*|родственник\w*)\b",
                 turn.text.casefold().replace("ё", "е"),
             )
             if relation is None:
