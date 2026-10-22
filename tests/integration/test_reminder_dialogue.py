@@ -493,6 +493,7 @@ async def test_opt_out_after_verification_is_separate_from_visit_cancellation(re
         result = await turn(client, 3, "Не звоните мне больше")
         assert result["reminder_result"]["outcome"] == "OPT_OUT"
         assert actions.calls == [("opt_out", 1)]
+        assert "SMS" not in " ".join(result["utterances"])
         assert emulator.records["demo"][1].status == VisitStatus.PLANNED
         assert emulator.write_count == emulator.patch_count == 0
 
