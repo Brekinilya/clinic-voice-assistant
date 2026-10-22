@@ -1,12 +1,21 @@
 """Начальная конфигурация не подменяет стенд и не теряет рабочие секреты."""
 
 import os
+from pathlib import Path
 
 import pytest
+import yaml
 from dotenv import dotenv_values
 
 from app.settings import Settings
 from deploy.vm.configure_env import environment, main, mis_url, write_environment
+
+
+def test_public_vm_uses_platform_auth_without_app_password():
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "deploy/vm/compose.yaml").read_text("utf-8")
+    )
+    assert compose["services"]["app"]["environment"]["WEB_ACCESS_ENABLED"] == "false"
 
 
 @pytest.mark.parametrize("suffix", ["", "/", "/api/v1", "/api/v1/"])

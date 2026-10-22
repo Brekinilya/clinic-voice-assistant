@@ -23,8 +23,8 @@ services:
       POSTGRES_HOST: database
       POSTGRES_PORT: "5432"
       TELEPHONY_ENABLED: "false"
-      # Публичный профиль ВМ не позволяет случайно отключить вход через .env.
-      WEB_ACCESS_ENABLED: "true"
+      # Доступ к публичной ссылке контролирует платформа; второй пароль не нужен.
+      WEB_ACCESS_ENABLED: "false"
     ports:
       - "0.0.0.0:8000:8000"
     volumes:
