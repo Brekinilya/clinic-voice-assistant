@@ -440,17 +440,25 @@ async def test_comment_delivery_preserves_existing_comment_and_reconciles_unknow
     assert mis.patches == 1
 
 
-async def test_comment_delivery_does_not_truncate_full_comment():
+@pytest.mark.parametrize("final_length", [1000, 1001])
+async def test_comment_delivery_respects_exact_comment_limit(final_length):
     clock = DemoClock()
     job = prepare_comment_event(
         appointment_sms_event("action-3", 1, 17, clock.now(), clock.now()), clock.now()
     )
-    mis = _CommentMis("x" * 1000)
+    old_comment = "x" * (final_length - len(job.payload.expected_line) - 1)
+    mis = _CommentMis(old_comment)
     delivery = PostgresClientCommentDelivery(mis, _CommentLock(), clock)
-    with pytest.raises(PermanentDeliveryFailure) as failure:
+    if final_length == 1000:
         await delivery.deliver(job)
-    assert failure.value.code == "COMMENT_TOO_LONG"
-    assert mis.patches == 0 and mis.comment == "x" * 1000
+        assert len(mis.comment) == 1000
+        assert mis.comment.startswith(old_comment + "\n")
+        assert mis.patches == 1
+    else:
+        with pytest.raises(PermanentDeliveryFailure) as failure:
+            await delivery.deliver(job)
+        assert failure.value.code == "COMMENT_TOO_LONG"
+        assert mis.patches == 0 and mis.comment == old_comment
 
 
 async def test_comment_delivery_respects_notification_opt_out():
