@@ -46,8 +46,36 @@ writeprotect = yes
 
 [from-gateway]
 exten => $NUMBER,1,NoOp(Регистратура)
- same => n,Stasis(clinic,inbound)
+ same => n,Set(CALLBACK=)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-1"]?expert1)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-2"]?expert2)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-3"]?expert3)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-4"]?expert4)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-5"]?expert5)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "expert-6"]?expert6)
+ same => n,GotoIf(\$["\${CALLERID(num)}" = "phone-021"]?selftest)
+ same => n(inbound),Stasis(clinic,inbound)
  same => n,Hangup()
+ same => n(expert1),Set(CALLBACK=expert-1)
+ same => n,Goto(inbound)
+ same => n(expert2),Set(CALLBACK=expert-2)
+ same => n,Goto(inbound)
+ same => n(expert3),Set(CALLBACK=expert-3)
+ same => n,Goto(inbound)
+ same => n(expert4),Set(CALLBACK=expert-4)
+ same => n,Goto(inbound)
+ same => n(expert5),Set(CALLBACK=expert-5)
+ same => n,Goto(inbound)
+ same => n(expert6),Set(CALLBACK=expert-6)
+ same => n,Goto(inbound)
+ same => n(selftest),Set(CALLBACK=phone-021)
+ same => n,Goto(inbound)
+
+; Hang up only after Stasis returns; call back only whitelisted experts or our test phone.
+exten => h,1,GotoIf(\$["\${CALLBACK}" = ""]?done)
+ same => n,NoOp(Calling back the caller who reached this extension)
+ same => n,Originate(PJSIP/\${CALLBACK}@gateway,exten,reminder-answered,s,1,45,a)
+ same => n(done),NoOp(No callback required)
 
 ; Проверочный исходящий на софтфон команды — из комплекта организаторов, как на ВМ
 [reminders]
