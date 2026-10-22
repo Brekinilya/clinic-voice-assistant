@@ -49,3 +49,17 @@ dialogs:
       stand: unchanged
       card: {intent: I-12, rule: R-03, priority: P2}
       callback: {state: queued, deadline: "05.10.2026 10:00"}
+
+  - name: грубое оскорбление
+    steps:
+      - say: greeting.inbound
+      - patient: Иди нахуй
+        intent: I-12
+        safety: {flags: [complaint], rule: R-03}
+        say: complaint.ack
+        transfer: {route: R-03, priority: P2}
+    result:
+      code: TRANSFER_REQUESTED
+      stand: unchanged
+      card: {intent: I-12, rule: R-03, priority: P2}
+      fake_transfer: connected

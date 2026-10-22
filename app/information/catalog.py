@@ -86,7 +86,7 @@ class InformationService:
         if (
             intent is not None
             and intent[0] == "I-08"
-            and (hit is None or hit.key != "paid_transfer")
+            and (hit is None or hit.key not in {"paid_transfer", "payment"})
         ):
             # Вопрос о ДМС или цене идёт в платное отделение, но справочный вопрос
             # «как дозвониться» можно безопасно закрыть известным номером и добавочным.
