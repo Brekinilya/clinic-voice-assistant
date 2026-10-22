@@ -165,7 +165,6 @@ async def test_medical_flag_from_nlu_also_gets_boundary_before_handoff():
     "phrase",
     [
         "Побаливает живот",
-        "Нужно ли вызывать врача, если температура?",
     ],
 )
 async def test_unspecified_symptoms_get_boundary_and_booking_offer(phrase):

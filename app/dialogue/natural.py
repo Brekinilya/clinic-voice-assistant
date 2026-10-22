@@ -41,7 +41,7 @@ from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
-from app.dialogue.triage import needs_urgent_screening
+from app.dialogue.triage import asks_whether_to_call_doctor, needs_urgent_screening
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
@@ -652,6 +652,8 @@ class BookingConversation:
             )
             and re.search(r"\b(врач|доктор)\b", text)
         ) or (result is not None and "I-05" in result.intents and "дом" in text)
+        home_visit_assessment = asks_whether_to_call_doctor(turn.text)
+        home_visit_request = home_visit_request or home_visit_assessment
         if home_visit_request:
             now = self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
             calendar = ClinicCalendar.load()
@@ -695,6 +697,10 @@ class BookingConversation:
                         say_date(requested_date, "short_accs", today=day),
                     )
                 )
+            if home_visit_assessment:
+                prompt_parts = (load_phrasebook().get("home_visit.no_assessment").text, prompt)
+            else:
+                prompt_parts = (prompt,)
             state = state.model_copy(
                 update={
                     "home_visit_stage": "confirm",
@@ -703,9 +709,9 @@ class BookingConversation:
                     ),
                 }
             )
-            return state, reply(state, turn.turn_id, prompt, code="HOME_VISIT_CONTINUE").model_copy(
-                update={"expect": "yes_no"}
-            )
+            return state, reply(
+                state, turn.turn_id, *prompt_parts, code="HOME_VISIT_CONTINUE"
+            ).model_copy(update={"expect": "yes_no"})
         if "бумажн" in turn.text.casefold() and "направлен" in turn.text.casefold():
             return await self.transfer(state, turn, "R-08", reason="paper_referral")
         kind = classify_cross_scenario(turn.text)
@@ -1210,14 +1216,21 @@ class BookingConversation:
             if new_topic in {None, "lab_unknown"} and "I-01" not in result.intents:
                 return await self._lab_identity_step(state, turn)
             state = self._clear_lab_identity(state, clarify_labs=new_topic.startswith("lab:"))
+        active_booking = state.purpose == "booking" and state.phase not in {
+            Phase.READY,
+            Phase.BOOKED,
+            Phase.CANCELLED,
+            Phase.RESCHEDULED,
+            Phase.ENDED,
+        }
+        if state.home_visit_stage is not None or (
+            asks_whether_to_call_doctor(turn.text) and not active_booking
+        ):
+            cross_reply = await self.cross_scenario_reply(state, turn, result)
+            if cross_reply is not None:
+                return cross_reply
         if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
-            if state.purpose == "booking" and state.phase not in {
-                Phase.READY,
-                Phase.BOOKED,
-                Phase.CANCELLED,
-                Phase.RESCHEDULED,
-                Phase.ENDED,
-            }:
+            if active_booking:
                 return state, reply(
                     state,
                     turn.turn_id,

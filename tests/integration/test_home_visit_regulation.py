@@ -52,7 +52,14 @@ async def test_under_one_year_home_visit_uses_r11_p1_instead_of_the_regular_queu
         assert (await service.store.inspect("scenario")).home_visit_request_id is None
 
 
-async def test_home_visit_uses_exact_arrival_phrase_and_operator_card():
+@pytest.mark.parametrize(
+    "opening,assessment",
+    [
+        ("Мне нужно вызвать врача на дом", False),
+        ("Нужно ли вызывать врача, если высокая температура?", True),
+    ],
+)
+async def test_home_visit_uses_exact_arrival_phrase_and_operator_card(opening, assessment):
     async with pipeline({"now": "22.10.2026 13:00"}) as (client, service, emulator, clock, *_):
         store = MemoryHandoffStore()
         service.handoffs = HandoffService(
@@ -62,7 +69,10 @@ async def test_home_visit_uses_exact_arrival_phrase_and_operator_card():
             b"x" * 32,
             HandoffSettings(enabled=True),
         )
-        await turn(client, 1, "Мне нужно вызвать врача на дом")
+        started = await turn(client, 1, opening)
+        assert started["code"] == "HOME_VISIT_CONTINUE"
+        if assessment:
+            assert "может только медицинский работник" in " ".join(started["utterances"])
         await turn(client, 2, "Да")
         await turn(client, 3, "Смирнова Ольга Викторовна, 12 марта 1978 года")
         await turn(client, 4, "Улица Лесная, дом двенадцать, квартира сорок")
@@ -77,6 +87,7 @@ async def test_home_visit_uses_exact_arrival_phrase_and_operator_card():
         request = await store.request_for_call("scenario")
         payload = service.handoffs.decrypt_home_visit_payload(request)
         assert payload["address"].startswith("Улица Лесная")
+        assert payload["reason"] == "Температура и сильная слабость"
         assert payload["requested_date"] == "2026-10-22"
         assert "подтвердить дату и адрес" in request.summary
         assert emulator.write_count == emulator.patch_count == 0
