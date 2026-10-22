@@ -72,8 +72,7 @@ class Settings(BaseSettings):
             self.web_access_enabled or self.platform_access_protected
         ):
             raise ValueError(
-                "для DEBUG_PANEL_ENABLED нужен WEB_ACCESS_ENABLED "
-                "или PLATFORM_ACCESS_PROTECTED"
+                "для DEBUG_PANEL_ENABLED нужен WEB_ACCESS_ENABLED или PLATFORM_ACCESS_PROTECTED"
             )
         if self.debug_panel_enabled and not (self.backend_demo_enabled or self.dialogue_enabled):
             raise ValueError("для DEBUG_PANEL_ENABLED нужен включённый диалог")
