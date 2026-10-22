@@ -479,12 +479,31 @@ class BookingConversation:
     def _catalog_route(text: str) -> str | None:
         """Resolve narrow destinations inside the otherwise broad I-08/I-14 classes."""
         value = text.casefold()
-        if any(
+        if re.search(r"\bсми\b", value) or any(
             term in value
             for term in (
                 "полиция",
                 "звоню из организации",
                 "звоню от организации",
+                "запрос от организации",
+                "звоню из редакции",
+                "звоню от юридического лица",
+                "звоню из юридического лица",
+                "представляю юридическое лицо",
+                "звоню от медицинской организации",
+                "звоню из сми",
+                "звоню из другой медицинской организации",
+                "звоню из медицинской организации",
+                "звоню из другой клиники",
+                "редакция",
+                "журналист",
+                "юридическое лицо",
+                "медицинской организации",
+                "другая клиника",
+                "представляю организацию",
+                "представляю медицинскую организацию",
+                "я журналист",
+                "это звонок из сми",
                 "это страховая",
                 "представляю страховую",
                 "прокуратур",
@@ -495,9 +514,15 @@ class BookingConversation:
             term in value
             for term in (
                 "персональн",
+                "пдн",
                 "отозвать согласие",
+                "удалить мои данные",
+                "удалить персональные данные",
                 "информация о пациенте",
                 "данные о пациенте",
+                "копию записи",
+                "копия записи",
+                "запись телефонного разговора",
             )
         ):
             return "R-16"
@@ -1209,6 +1234,15 @@ class BookingConversation:
         transfer = route_for(decision)
         if transfer:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
+        if classify_cross_scenario(turn.text) == CrossScenario.GREETING:
+            prompt = state.last_question or "Чем могу помочь?"
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Здравствуйте! Я вас слышу.",
+                prompt,
+                code="GREETING",
+            )
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
         if state.lab_identity_stage is not None:

@@ -63,6 +63,24 @@ dialogs:
         forbid: [записан, врач]
     result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
+  - name: звонок из редакции (R-14)
+    steps:
+      - say: greeting.inbound
+      - patient: Я звоню из редакции, хочу комментарий
+        intent: I-14
+        say: transfer.administration
+        transfer: {route: R-14, priority: P3}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+
+  - name: звонок от юридического лица (R-14)
+    steps:
+      - say: greeting.inbound
+      - patient: Представляю юридическое лицо, звоню по вопросу обращения
+        intent: I-14
+        say: transfer.administration
+        transfer: {route: R-14, priority: P3}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+
   - name: не справляется с разговором (R-15)
     steps:
       - say: greeting.inbound
@@ -72,10 +90,37 @@ dialogs:
         transfer: {route: R-15, priority: P2}
     result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
 
+  - name: плохо слышит и просит повторить медленно (R-15)
+    steps:
+      - say: greeting.inbound
+      - patient: Я плохо слышу, повторите медленно
+        safety: {flags: [cant_cope], rule: R-15}
+        say: transfer.assist
+        transfer: {route: R-15, priority: P2}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+
   - name: персональные данные (R-16)
     steps:
       - say: greeting.inbound
       - patient: Хочу отозвать согласие на обработку персональных данных
+        intent: I-14
+        say: transfer.pd_request
+        transfer: {route: R-16, priority: P3}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+
+  - name: удалить персональные данные (R-16)
+    steps:
+      - say: greeting.inbound
+      - patient: Прошу удалить мои персональные данные
+        intent: I-14
+        say: transfer.pd_request
+        transfer: {route: R-16, priority: P3}
+    result: {code: ESCALATED, stand: unchanged, fake_transfer: connected}
+
+  - name: запрос копии записи разговора (R-16)
+    steps:
+      - say: greeting.inbound
+      - patient: Пришлите копию записи нашего разговора
         intent: I-14
         say: transfer.pd_request
         transfer: {route: R-16, priority: P3}

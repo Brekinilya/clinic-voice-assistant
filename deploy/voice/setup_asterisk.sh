@@ -87,7 +87,7 @@ exten => call,1,Dial(PJSIP/phone-$NUMBER@gateway,45)
 [reminder-answered]
 exten => s,1,Answer()
  same => n,Wait(1)
- same => n,Playback(hello-world)
+ same => n,Playback(jury-incoming-check)
  same => n,Hangup()
 CONF
 
@@ -128,6 +128,10 @@ fi
 for f in pjsip extensions modules http ari rtp; do
     sudo install -m 0640 -o asterisk -g asterisk "$work/$f.conf" "/etc/asterisk/$f.conf"
 done
+ASTERISK_SOUNDS_DIR="${ASTERISK_SOUNDS_DIR:-/usr/share/asterisk/sounds}"
+sudo install -d -m 0755 "$ASTERISK_SOUNDS_DIR"
+sudo install -m 0644 -o root -g root "$HERE/sounds/jury-incoming-check.wav" \
+    "$ASTERISK_SOUNDS_DIR/jury-incoming-check.wav"
 
 # ARI слушает адрес сети Docker: после перезагрузки Asterisk стартует после Docker
 sudo mkdir -p /etc/systemd/system/asterisk.service.d

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 
 class CrossScenario(StrEnum):
+    GREETING = "greeting"
     REPEAT = "repeat"
     OTHER_DAY = "other_day"
     PRICE = "price"
@@ -17,6 +18,13 @@ class CrossScenario(StrEnum):
     THIRD_PARTY = "third_party"
     SWITCH_CANCEL = "switch_cancel"
     SWITCH_VISITS = "switch_visits"
+
+
+_GREETING = re.compile(
+    r"^(?:(?:здравствуйте|здравствуй|здрасьте|привет(?:ствую)?|алло|ало|але|"
+    r"доброе утро|добрый день|добрый вечер|слушаю|слышу|я вас слышу|"
+    r"вы меня слышите|меня слышно|слышно)\s*){1,2}$"
+)
 
 
 _PATTERNS = (
@@ -72,6 +80,10 @@ _PATTERNS = (
 
 def classify(text: str) -> CrossScenario | None:
     normalized = " ".join(text.casefold().replace("ё", "е").split()).strip(" .,!?")
+    greeting_text = re.sub(r"[^\w\s]", " ", text.casefold().replace("ё", "е"))
+    greeting_text = " ".join(greeting_text.split())
+    if _GREETING.fullmatch(greeting_text):
+        return CrossScenario.GREETING
     if normalized in {"пока", "ну пока", "все пока"}:
         return CrossScenario.GOODBYE
     return next((kind for kind, pattern in _PATTERNS if pattern.search(normalized)), None)
