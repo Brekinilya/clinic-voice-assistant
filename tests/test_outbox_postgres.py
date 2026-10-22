@@ -137,7 +137,9 @@ async def test_migration_thirteen_adds_comment_event_kinds(pg_engine):
             lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
         )
         version = await connection.scalar(select(schema_versions.c.version))
-    kinds = next(check["sqltext"] for check in checks if "kind IN" in check["sqltext"])
+    kinds = next(
+        check["sqltext"] for check in checks if check["name"] == "backend_outbox_kind_allowed"
+    )
     assert version == SCHEMA_VERSION
     assert all(name in kinds for name in ("appointment_sms", "waitlist_sms", "no_answer_sms"))
 

@@ -27,7 +27,7 @@ from app.storage.schema import SCHEMA_VERSION, schema_versions
 async def execute(args, settings: Settings):
     if args.demo_journal and settings.app_mode != AppMode.OFFLINE_TEST:
         raise ValueError("демонстрационный журнал разрешён только в offline_test")
-    if args.client_comment and settings.app_mode != AppMode.HACKATHON:
+    if getattr(args, "client_comment", False) and settings.app_mode != AppMode.HACKATHON:
         raise ValueError("отметки в MIS доступны только в режиме hackathon")
     engine = backend_engine(settings)
     try:
@@ -39,7 +39,11 @@ async def execute(args, settings: Settings):
         async with AsyncExitStack() as stack:
             if args.demo_journal:
                 delivery = PostgresJournalDelivery(engine, clock)
-            elif args.client_comment and args.command in {"run", "run-once", "reconcile"}:
+            elif getattr(args, "client_comment", False) and args.command in {
+                "run",
+                "run-once",
+                "reconcile",
+            }:
                 http = await stack.enter_async_context(HttpMedicalSystem.live_client(settings))
                 delivery = PostgresClientCommentDelivery(
                     HttpMedicalSystem(
