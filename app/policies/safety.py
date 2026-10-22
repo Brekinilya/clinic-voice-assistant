@@ -1,5 +1,6 @@
 """Проверка каждой реплики пациента: красные флаги (раздел 7.4) и сигналы для маршрутизации (раздел 7.3)."""
 
+import re
 from collections.abc import Set
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -7,6 +8,17 @@ from datetime import date, datetime, time
 from app.contracts import SafetyDecision
 from app.nlu.dictionaries import load_flags, load_red_flags
 from app.nlu.lexicon import Hit, Pattern, tokenize
+
+_EXPLICIT_DISTRESS = re.compile(
+    r"\b(?:я\s+умираю|мне\s+(?:очень|ужасно|совсем|крайне)\s+плохо|"
+    r"(?:стало|становится)\s+(?:очень\s+)?плохо)\b"
+)
+
+
+def is_explicit_distress(text: str) -> bool:
+    normalized = " ".join(text.casefold().replace("ё", "е").split())
+    return bool(_EXPLICIT_DISTRESS.search(normalized))
+
 
 # Вопрос о часах работы — справка, а не просьба перевести звонок.
 # Явная просьба сотрудника сохраняет приоритет и в той же фразе с вопросом о графике.
@@ -63,6 +75,10 @@ def check(text: str, final: bool = True, operators_on_duty: bool = True) -> Safe
     if OPERATOR_HOURS.find(tokens, 24) and not OPERATOR_REQUEST.find(tokens, 24):
         hits = tuple(hit for hit in hits if hit.key != "operator")
     flags = frozenset(hit.key.split(".")[0] for hit in hits)
+    if is_explicit_distress(text):
+        # Explicit statements of severe distress preempt every dialogue, including
+        # identification and outbound reminders, before any scenario can resume.
+        flags |= {"red_a"}
     return SafetyVerdict(flags, _rule(flags, hits, operators_on_duty), final, hits)
 
 
