@@ -187,4 +187,7 @@ async def test_cli_demo_processing_and_status_are_explicit_and_persisted(
     assert {r["state"] for r in logged["results"]} == {JobState.ACKNOWLEDGED}
     status = await cli.execute(Namespace(command="status", demo_journal=False, limit=20), settings)
     assert status["states"] == {JobState.ACKNOWLEDGED: 2}
-    assert all(set(job) == {"event_id", "kind", "state", "attempts"} for job in status["jobs"])
+    assert all(
+        set(job) == {"event_id", "kind", "state", "attempts", "last_error"}
+        for job in status["jobs"]
+    )
