@@ -404,15 +404,15 @@ async def verify_step(result, number, step, response, runtime):
                 "home_visit.ask_address": ("HOME_VISIT_ADDRESS", r"адрес"),
                 "home_visit.ask_reason": ("HOME_VISIT_QUESTION", r"что случилось"),
                 "home_visit.ask_can_come": ("HOME_VISIT_QUESTION", r"сами прийти"),
-                "home_visit.accepted": ("HOME_VISIT_REQUESTED", r"заявка принята"),
-                "home_visit.done": ("HOME_VISIT_REQUESTED", r"выздоравливайте"),
+                "home_visit.pending": ("HOME_VISIT_PENDING", r"просьбу для проверки регистратурой"),
+                "home_visit.done": ("HOME_VISIT_PENDING", r"вызов врача пока не подтвержден"),
             }
             code, phrase = expected[name]
             if response.code != code or re.search(phrase, text, re.IGNORECASE) is None:
                 result.add(
                     "home_visit_T09", "Не подтверждён ответ по вызову врача на дом", step=number
                 )
-            if name == "home_visit.accepted":
+            if name == "home_visit.pending":
                 request = await runtime.handoff_store.request_for_call(runtime.call_id)
                 if request is None or request.home_visit_state != "pending_confirmation":
                     result.add(

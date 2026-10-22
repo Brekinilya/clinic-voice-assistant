@@ -13,7 +13,7 @@ from app.cancellation.models import CancelState
 from app.demo import DemoClock, demo_emulator
 from app.mis.models import Visit, VisitStatus
 from app.outbox import cli
-from app.outbox.models import JobState
+from app.outbox.models import EventKind, JobState, event_id
 from app.settings import Settings
 from app.storage.booking import migrate
 from app.storage.cancellation import PostgresCancellationStore
@@ -151,7 +151,7 @@ async def test_migration_thirteen_backfills_legacy_reminder_visit_id(pg_engine):
 
     clock = DemoClock()
     reminder_id = uuid4().hex
-    event_id = uuid4().hex
+    expected_event_id = event_id(reminder_id, EventKind.REMINDER_SMS)
     scheduled_at = clock.now()
     async with pg_engine.begin() as connection:
         await connection.execute(update(schema_versions).values(version=13))
@@ -185,7 +185,7 @@ async def test_migration_thirteen_backfills_legacy_reminder_visit_id(pg_engine):
         )
         await connection.execute(
             insert(outbox_jobs).values(
-                event_id=event_id,
+                event_id=expected_event_id,
                 source_id=reminder_id,
                 kind="reminder_sms",
                 payload={
@@ -207,7 +207,7 @@ async def test_migration_thirteen_backfills_legacy_reminder_visit_id(pg_engine):
 
     await migrate(pg_engine)
     [job] = await PostgresOutboxStore(pg_engine).list()
-    assert job.event_id == event_id
+    assert job.event_id == expected_event_id
     assert job.payload.visit_id == 42
 
 
