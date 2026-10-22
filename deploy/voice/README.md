@@ -168,6 +168,8 @@ docker compose -f deploy/voice/compose.yaml exec voice python -m app.reminders.c
 не перезапуская Asterisk. Проверяйте регистрацию командой `sudo asterisk -rx 'pjsip show registrations'`.
 Не запускайте `check.py` во время ожидания звонков: он забирает регистрацию шлюза.
 
+Самопроверка допускает Caller ID только после удаления разделителей, если результат точно равен `phone021`.
+
 ## Чего рецепт не делает
 
 - **Перевод на регистратора не дозвонится.** Адресата `PJSIP/operator` на шлюзе нет. Перевод
