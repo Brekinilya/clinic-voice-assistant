@@ -164,7 +164,9 @@ docker compose -f deploy/voice/compose.yaml exec voice python -m app.reminders.c
 разговора dialplan запускает обратный вызов только для `expert-1`…`expert-6`; `phone-021`
 разрешён отдельно для самопроверки с софтфона. Для любого другого Caller ID обратного звонка
 нет. Ответивший слышит синтезированную Silero фразу «Проверка входящего звонка для жюри»
-из контекста `[reminder-answered]`, после чего вызов завершается. Настройки SIP/RTP при этом
+из контекста `[reminder-answered]`, после чего вызов завершается. Скрипт установки копирует WAV
+в каталог звуков Asterisk (`/usr/share/asterisk/sounds`; другой путь можно задать через
+`ASTERISK_SOUNDS_DIR`). Настройки SIP/RTP при этом
 не меняются. Применять обновлённый dialplan следует командой `sudo asterisk -rx 'dialplan reload'`,
 не перезапуская Asterisk. Проверяйте регистрацию командой `sudo asterisk -rx 'pjsip show registrations'`.
 Не запускайте `check.py` во время ожидания звонков: он забирает регистрацию шлюза.
