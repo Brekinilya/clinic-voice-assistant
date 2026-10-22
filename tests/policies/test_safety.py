@@ -52,6 +52,13 @@ def test_red_b_outside_operator_hours_is_emergency():
     assert check("температура сорок", operators_on_duty=False).rule == "R-01"
 
 
+def test_red_b_on_a_configured_holiday_is_emergency():
+    holiday = datetime.fromisoformat("2026-11-04 10:00")
+    on_duty = operators_on_duty(holiday, {holiday.date()})
+    assert not on_duty
+    assert check("температура сорок", operators_on_duty=on_duty).rule == "R-01"
+
+
 def test_tooth_pain_goes_to_dentistry():
     verdict = check("сильно болит зуб")
     assert verdict.flags == {"dental_acute", "red_b"}

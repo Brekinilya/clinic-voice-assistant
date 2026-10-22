@@ -136,7 +136,12 @@ CASES = [
     ),
     pytest.param("FAQ-14", "Как отменить запись?", "cancel", "", "дату рождения", id="FAQ-14"),
     pytest.param(
-        "FAQ-15", "Как вызвать врача на дом?", "transfer", "R-08", "регистратору", id="FAQ-15"
+        "FAQ-15",
+        "Как вызвать врача на дом?",
+        "home_visit",
+        "",
+        "оформить вызов врача на дом",
+        id="FAQ-15",
     ),
     pytest.param(
         "FAQ-16",
@@ -157,9 +162,9 @@ CASES = [
     pytest.param(
         "FAQ-18",
         "Нужно ли вызывать врача, если высокая температура?",
-        "transfer",
-        "R-08",
-        "регистратору",
+        "home_visit",
+        "HOME_VISIT_CONTINUE",
+        "может только медицинский работник",
         id="FAQ-18",
     ),
     pytest.param(
@@ -176,9 +181,9 @@ CASES = [
     pytest.param(
         "FAQ-21",
         "Готовы ли мои анализы?",
-        "info_unavailable",
+        "identification",
         "lab_status",
-        "проверить не могу",
+        "назовите фамилию, имя и отчество пациента",
         id="FAQ-21",
     ),
     pytest.param(
@@ -347,16 +352,24 @@ async def test_all_regulation_faq_rows_use_the_expected_dialogue_path(
         result = await turn(client, 1, question)
         text = spoken(result).casefold()
 
-        if mode in {"info", "info_unavailable", "waiting"}:
+        if mode in {"info", "info_unavailable", "waiting", "identification"}:
             assert result["information"]["topic"] == expected, (faq_id, result)
             assert required.casefold() in text, (faq_id, result)
-            assert result["code"] == (
-                "INFO_UNAVAILABLE" if mode == "info_unavailable" else "INFO_GIVEN"
-            )
+            if mode == "identification":
+                assert result["code"] == "IDENTIFICATION_REQUIRED"
+            else:
+                assert result["code"] == (
+                    "INFO_UNAVAILABLE" if mode == "info_unavailable" else "INFO_GIVEN"
+                )
             assert emulator.log == [] and emulator.write_count == emulator.patch_count == 0
         elif mode == "transfer":
             assert result["transfer"]["route"] == expected, (faq_id, result)
             assert required.casefold() in text, (faq_id, result)
+            assert emulator.write_count == emulator.patch_count == 0
+        elif mode == "home_visit":
+            assert result["code"] == "HOME_VISIT_CONTINUE", (faq_id, result)
+            assert required.casefold() in text, (faq_id, result)
+            assert (await service.store.inspect("scenario")).home_visit_stage == "confirm"
             assert emulator.write_count == emulator.patch_count == 0
         elif mode in {"paid_blood", "paid_ultrasound"}:
             assert result["code"] == "INFO_GIVEN", (faq_id, result)

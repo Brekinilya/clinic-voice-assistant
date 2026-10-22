@@ -207,6 +207,7 @@ async def phone_line(app: FastAPI, settings: TelephonySettings):
             owner=owner,
             allowed_endpoints=reminders.allowed_endpoints,
             marks=marks,
+            rooms=service.conversation.rooms,
         )
         service.reminders = ReminderConversation(
             service.conversation, ReminderActionAdapter(executor, marks, store, clock)

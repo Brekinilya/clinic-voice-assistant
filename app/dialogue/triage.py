@@ -22,6 +22,11 @@ def is_explicit_distress(text: str) -> bool:
     return bool(_DISTRESS.search(normalized))
 
 
+def asks_whether_to_call_doctor(text: str) -> bool:
+    normalized = " ".join(text.casefold().replace("ё", "е").split())
+    return bool(_ASSESSMENT_REQUEST.search(normalized))
+
+
 def needs_urgent_screening(text: str) -> bool:
     normalized = " ".join(text.casefold().replace("ё", "е").split())
     return bool(

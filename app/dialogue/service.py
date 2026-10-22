@@ -334,6 +334,11 @@ class DialogueService:
                     result.transfer.priority,
                     state,
                     source=source,
+                    summary_override=(
+                        "Просрочен результат анализа; требуется обратный звонок из лаборатории."
+                        if result.code == "CALLBACK"
+                        else None
+                    ),
                 )
         except Exception as error:
             emit("dialogue.error", error=type(error).__name__)

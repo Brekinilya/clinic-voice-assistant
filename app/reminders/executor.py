@@ -45,6 +45,7 @@ class ReminderExecutor:
         allowed_endpoints: Collection[str],
         events: Events | None = None,
         marks: ReminderMarks | None = None,
+        rooms=None,
     ):
         self.store = store
         self.mis = mis
@@ -55,7 +56,7 @@ class ReminderExecutor:
         self.allowed = frozenset(allowed_endpoints)
         self.events = events
         self.marks = marks
-        self.planner = ReminderPlanner(mis, store, calendar, clock)
+        self.planner = ReminderPlanner(mis, store, calendar, clock, rooms)
         # Один софтфон: следующий звонок только после исхода текущего
         self.active: str | None = None
         self._lock = asyncio.Lock()

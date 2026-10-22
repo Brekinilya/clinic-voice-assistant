@@ -147,6 +147,12 @@ class DialogueState(BookingModel):
     # Только ключ общей справки, без текста пациента; старые JSON-сессии совместимы.
     information_topic: str | None = None
     information_clarifying: bool = False
+    lab_identity_stage: Literal["name", "birth_date"] | None = None
+    lab_identity_last_name: str | None = Field(default=None, repr=False)
+    lab_identity_first_name: str | None = Field(default=None, repr=False)
+    lab_identity_middle_name: str | None = Field(default=None, repr=False)
+    lab_identity_attempts: int = 0
+    lab_delay_pending: bool = False
     referral_fallback: bool = False
     referral_mentioned: bool = False
     guardian_call: bool = False

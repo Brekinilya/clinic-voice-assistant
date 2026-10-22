@@ -19,11 +19,23 @@ from app.dialogue.visits import VisitConversation
 from app.information.catalog import InformationService
 from app.nlu.lexicon import Pattern, tokenize
 from app.nlu.parsers.answers import parse_answer
+from app.voice.phrases import load_phrasebook
 
 # Эти состояния не ожидают согласия на изменение МИС.
 IDLE = {Phase.READY, Phase.BOOKED, Phase.CANCELLED, Phase.RESCHEDULED}
 LABORATORY_QUESTION = Pattern.parse("анализ|результат|холестерин|глюкоза|гемоглобин|лейкоцит")
 RESULT_EVALUATION = Pattern.parse("все + нормально|хороший|плохой|порядок")
+LAB_RESULT_TERMS = re.compile(r"\b(анализ\w*|результат\w*|исследован\w*)\b", re.IGNORECASE)
+LAB_DELAY_TERMS = re.compile(
+    r"\b(задерж\w*|дольше\s+(установленн\w*|указанн\w*|обычн\w*)?\s*срок\w*|"
+    r"(?:жду|ожидаю|ждём|ожидаем)\s+(?:уже\s+)?(?:\d+|нескольк\w*|две|три|четыре|пять|две)\s*"
+    r"(?:рабоч\w*\s+)?(?:дн\w*|недел\w*|месяц\w*))\b",
+    re.IGNORECASE,
+)
+LAB_RELATIVE = re.compile(
+    r"\b(мам\w*|матер\w*|пап\w*|отц\w*|бабуш\w*|дедуш\w*|доч\w*|сын\w*|супруг\w*)\b",
+    re.IGNORECASE,
+)
 SHORT_ANSWER_WORDS = {
     "да",
     "ага",
@@ -73,6 +85,20 @@ class InformationConversation:
             and RESULT_EVALUATION.find(tokenize(turn.text), 12)
         )
 
+    @staticmethod
+    def delayed_lab_result(text: str) -> bool:
+        return bool(
+            LAB_RESULT_TERMS.search(text)
+            and LAB_DELAY_TERMS.search(text.casefold().replace("ё", "е"))
+        )
+
+    @staticmethod
+    def third_party_lab_request(text: str) -> bool:
+        return bool(
+            LAB_RELATIVE.search(text)
+            and re.search(r"\b(мой|моя|мое|моего|моей|мою|у|за)\b", text.casefold())
+        )
+
     def laboratory_boundary(self, result: Reply, turn: Turn, *, contextual: bool) -> Reply:
         if result.code != "MEDICAL_BOUNDARY" or not (
             contextual or LABORATORY_QUESTION.find(tokenize(turn.text), 24)
@@ -95,7 +121,12 @@ class InformationConversation:
 
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply] | None:
         introduction = classify_introduction(turn.text)
-        topic = self.service.find(turn.text, clarify_lab=state.information_clarifying)
+        delayed_lab = self.delayed_lab_result(turn.text)
+        topic = (
+            "lab_status"
+            if delayed_lab
+            else self.service.find(turn.text, clarify_lab=state.information_clarifying)
+        )
         if state.purpose == "reschedule" and state.phase not in IDLE and topic == "choose_doctor":
             # A concrete doctor or date change during a move belongs to that task.
             topic = None
@@ -308,6 +339,64 @@ class InformationConversation:
         # Повтор уточняющего вопроса не запускает бесконечное уточнение.
         if topic == "lab_terms" and state.information_clarifying:
             topic = "lab_unknown"
+        if topic == "lab_status" and self.third_party_lab_request(turn.text):
+            collection = self.service.fact("lab_collection")
+            denied = self.service.fact("lab_status")
+            state = state.model_copy(
+                update={
+                    "information_topic": "lab_status",
+                    "information_clarifying": False,
+                    "lab_identity_stage": None,
+                    "lab_delay_pending": False,
+                    "authorization": None,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                load_phrasebook().get("labs.not_patient").text,
+                *collection.utterances,
+                code="INFO_UNAVAILABLE",
+            ).model_copy(
+                update={
+                    "information": InformationReference(
+                        document=self.service.catalog.document,
+                        version=self.service.catalog.version,
+                        topic="lab_collection",
+                        sections=tuple(dict.fromkeys((*denied.source, *collection.source))),
+                    )
+                }
+            )
+        if topic == "lab_status" and state.lab_identity_stage is None:
+            state = state.model_copy(
+                update={
+                    "information_topic": "lab_status",
+                    "information_clarifying": True,
+                    "lab_identity_stage": "name",
+                    "lab_identity_last_name": None,
+                    "lab_identity_first_name": None,
+                    "lab_identity_middle_name": None,
+                    "lab_identity_attempts": 0,
+                    "lab_delay_pending": delayed_lab,
+                    "authorization": None,
+                }
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                self.service.fact("lab_status").utterances[0],
+                code="IDENTIFICATION_REQUIRED",
+            ).model_copy(
+                update={
+                    "expect": "full_name",
+                    "information": InformationReference(
+                        document=self.service.catalog.document,
+                        version=self.service.catalog.version,
+                        topic="lab_status",
+                        sections=self.service.fact("lab_status").source,
+                    ),
+                }
+            )
         clarifying = topic in {"lab_terms", "lab_status"}
         state = state.model_copy(
             update={
@@ -321,20 +410,10 @@ class InformationConversation:
         phrases = fact.utterances
         reference_topic = topic
         if topic == "lab_status":
-            relative_request = re.search(
-                r"\b(мам\w*|матер\w*|пап\w*|отц\w*|бабуш\w*|дедуш\w*|доч\w*|сын\w*)\b",
-                turn.text.casefold().replace("ё", "е"),
-            ) and re.search(r"\b(мой|моя|мое|моего|моей|мою|у|за)\b", turn.text.casefold())
-            if relative_request:
-                collection = self.service.fact("lab_collection")
-                phrases = (
-                    "Эти сведения я могу сообщить только самому пациенту.",
-                    *collection.utterances,
-                )
-                fact = collection
-                reference_topic = "lab_collection"
-            else:
-                phrases += self.service.fact("lab_terms").utterances
+            phrases = self.service.fact("lab_unknown").utterances
+            phrases += self.service.fact("lab_collection").utterances
+            fact = self.service.fact("lab_collection")
+            reference_topic = "lab_collection"
         elif not clarifying:
             phrases += self.resume_question(state, turn)
         result = reply(

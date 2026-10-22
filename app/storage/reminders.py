@@ -63,11 +63,22 @@ class PostgresReminderStore:
                 insert(days).values(call_day=call_day).on_conflict_do_nothing()
             )
 
-    async def add_job(self, job):
+    async def add_job(self, job, now=None):
         async with self.engine.begin() as connection:
             result = await connection.execute(
                 insert(jobs).values(**job.model_dump()).on_conflict_do_nothing()
             )
+            if result.rowcount == 1 and job.sms_pending:
+                event = reminder_sms_event(
+                    job.id, job.client_id, job.scheduled_at, job.room, now or job.next_at
+                )
+                await connection.execute(
+                    insert(event_jobs)
+                    .values(**outbox_values(event))
+                    .on_conflict_do_nothing(
+                        index_elements=[event_jobs.c.source_id, event_jobs.c.kind]
+                    )
+                )
             return result.rowcount == 1
 
     async def job(self, job_id):
@@ -201,7 +212,9 @@ class PostgresReminderStore:
                 ).first()
                 if reminder is None:
                     raise RuntimeError("напоминание исчезло при завершении попытки")
-                event = reminder_sms_event(reminder.id, reminder.client_id, now)
+                event = reminder_sms_event(
+                    reminder.id, reminder.client_id, reminder.scheduled_at, reminder.room, now
+                )
                 await connection.execute(
                     insert(event_jobs)
                     .values(**outbox_values(event))
@@ -278,12 +291,20 @@ class PostgresReminderStore:
     async def save_contact(self, contact):
         data = contact.model_dump()
         async with self.engine.begin() as connection:
-            # Новый номер не снимает прежний отказ от обзвона
+            # Смена контакта не снимает ранее сохранённые отказы.
             await connection.execute(
                 insert(contacts)
                 .values(**data)
                 .on_conflict_do_update(
-                    index_elements=[contacts.c.client_id], set_={"endpoint": data["endpoint"]}
+                    index_elements=[contacts.c.client_id],
+                    set_={
+                        "endpoint": data["endpoint"],
+                        "opt_out_at": func.coalesce(contacts.c.opt_out_at, data["opt_out_at"]),
+                        "notification_opt_out_at": func.coalesce(
+                            contacts.c.notification_opt_out_at,
+                            data["notification_opt_out_at"],
+                        ),
+                    },
                 )
             )
 
@@ -293,6 +314,26 @@ class PostgresReminderStore:
                 update(contacts)
                 .where(and_(contacts.c.client_id == client_id, contacts.c.opt_out_at.is_(None)))
                 .values(opt_out_at=now)
+            )
+
+    async def opt_out_all(self, client_id, now):
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(contacts)
+                .where(contacts.c.client_id == client_id)
+                .values(
+                    opt_out_at=func.coalesce(contacts.c.opt_out_at, now),
+                    notification_opt_out_at=func.coalesce(contacts.c.notification_opt_out_at, now),
+                )
+            )
+            await connection.execute(
+                update(event_jobs)
+                .where(
+                    event_jobs.c.kind == "reminder_sms",
+                    event_jobs.c.state.in_(["pending", "retry"]),
+                    event_jobs.c.payload["client_id"].astext == str(client_id),
+                )
+                .values(state="blocked", last_error="NOTIFICATION_OPT_OUT")
             )
 
     async def confirmed(self, visit_id, scheduled_at=None, doctor_id=None):

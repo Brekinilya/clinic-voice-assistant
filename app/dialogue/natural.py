@@ -26,6 +26,7 @@ from app.dialogue.information import InformationConversation
 from app.dialogue.medical import MedicalConversation
 from app.dialogue.models import (
     DialogueState,
+    InformationReference,
     Phase,
     Proposal,
     Reply,
@@ -40,14 +41,17 @@ from app.dialogue.presentation import BookingPresenter
 from app.dialogue.rescheduling import RescheduleConversation
 from app.dialogue.safety_adapter import route_for
 from app.dialogue.transitions import handoff_reply
-from app.dialogue.triage import is_explicit_distress, needs_urgent_screening
+from app.dialogue.triage import asks_whether_to_call_doctor, needs_urgent_screening
 from app.dialogue.visit_privacy import mentions_existing_visits, requested_owner
 from app.dialogue.visits import VisitConversation, wants_new_booking
 from app.information.catalog import information_service
 from app.mis.ports import MisError
 from app.nlu.dictionaries import load_specialties
 from app.nlu.parsers.answers import parse_answer
+from app.nlu.parsers.dates import parse_birth_date
+from app.nlu.parsers.names import parse_full_name
 from app.policies.safety import operators_on_duty
+from app.reminders.calendar import ClinicCalendar
 from app.rescheduling.models import MoveState
 from app.rescheduling.service import RescheduleService
 from app.scheduling.matching import profile_key
@@ -82,6 +86,7 @@ class BookingConversation:
         self.booking = booking
         self.store = store
         self.safety = safety
+        self.operator_calendar = ClinicCalendar.load()
         self.handoffs = None
         self.identity_drafts = identity_drafts
         self.waitlist_store = waitlist_store or MemoryWaitlistStore()
@@ -212,6 +217,20 @@ class BookingConversation:
             informational = await self.information.step(state, turn)
             if informational is not None:
                 return informational
+        active_booking = state.purpose == "booking" and state.phase not in {
+            Phase.READY,
+            Phase.BOOKED,
+            Phase.CANCELLED,
+            Phase.RESCHEDULED,
+            Phase.ENDED,
+        }
+        if needs_urgent_screening(turn.text) and active_booking and "medical" not in decision.flags:
+            return state, reply(
+                state,
+                turn.turn_id,
+                *self.information.resume_question(state, turn),
+                code="BOOKING_RESUMED",
+            )
         if decision.flags & {"medical", "robot", "no_recording"} or medical_followup:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
@@ -239,10 +258,10 @@ class BookingConversation:
             return await self.cancellation.step(state, turn, result)
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
-        if is_explicit_distress(turn.text):
-            return await self.transfer(state, turn, "R-01", "P1")
+        if state.medical_boundary_pending and needs_urgent_screening(turn.text):
+            return self.medical.prompt(state, turn)
         if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
-            return await self.transfer(state, turn, "R-08")
+            return await self.medical.question(state, turn)
         if state.medical_boundary_pending and not state.information_clarifying:
             answer = self.information.short_answer(turn.text)
             if answer == "no":
@@ -279,7 +298,27 @@ class BookingConversation:
                 "Соединить вас с платным отделением?",
                 code="PAID_TRANSFER_REQUIRED",
             ).model_copy(update={"expect": "yes_no"})
+        if state.lab_identity_stage is not None:
+            new_topic = self.information.service.find(turn.text, clarify_lab=True)
+            if new_topic in {None, "lab_unknown"}:
+                return await self._lab_identity_step(state, turn)
+            state = self._clear_lab_identity(state, clarify_labs=new_topic.startswith("lab:"))
         return await self.information.step(state, turn)
+
+    @staticmethod
+    def _clear_lab_identity(state: DialogueState, *, clarify_labs: bool = False) -> DialogueState:
+        return state.model_copy(
+            update={
+                "information_topic": "lab_terms" if clarify_labs else None,
+                "information_clarifying": clarify_labs,
+                "lab_identity_stage": None,
+                "lab_identity_last_name": None,
+                "lab_identity_first_name": None,
+                "lab_identity_middle_name": None,
+                "lab_identity_attempts": 0,
+                "lab_delay_pending": False,
+            }
+        )
 
     async def service_question(
         self, state: DialogueState, turn: Turn, flags: frozenset[str]
@@ -606,36 +645,73 @@ class BookingConversation:
         if state.home_visit_stage is not None:
             return await self.home_visit_step(state, turn)
         text = turn.text.casefold()
-        if "вызвать" in text and "врач" in text and "дом" in text:
-            if self.handoffs is None:
-                return await self.transfer(state, turn, "R-08")
-            now = self.booking.clock.now()
-            if now.time() < time(14):
-                handed_state, result = await self.transfer(state, turn, "R-08")
-                return handed_state, result.model_copy(
-                    update={
-                        "utterances": (
-                            "Соединяю с регистратором, чтобы уточнить приём заявки на сегодня.",
-                        )
-                    }
+        home_visit_request = bool(
+            "дом" in text
+            and re.search(
+                r"\b(вызвать|вызов|вызова|вызову|направить|приехать|придет|придёт)\b", text
+            )
+            and re.search(r"\b(врач|доктор)\b", text)
+        ) or (result is not None and "I-05" in result.intents and "дом" in text)
+        home_visit_assessment = asks_whether_to_call_doctor(turn.text)
+        home_visit_request = home_visit_request or home_visit_assessment
+        if home_visit_request:
+            now = self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
+            calendar = ClinicCalendar.load()
+            day = now.date()
+            weekday = day.weekday()
+            open_day = weekday < 6 and day not in calendar.holidays
+            if not open_day:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    load_phrasebook().get("home_visit.closed_day").text,
+                    code="HOME_VISIT_CLOSED",
                 )
-            next_day = now.date() + timedelta(days=1)
+            opening = time(9) if weekday == 5 else time(7, 30)
+            cutoff = time(12) if weekday == 5 else time(14)
+            if now.time() < opening:
+                hours = (
+                    "с девяти до двенадцати по субботам"
+                    if weekday == 5
+                    else "с семи тридцати до четырнадцати по будням"
+                )
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    f"Заявки на вызов врача на дом принимают {hours}.",
+                    "При ухудшении состояния звоните сто три.",
+                    code="HOME_VISIT_INTAKE_CLOSED",
+                )
+            if now.time() < cutoff:
+                requested_date = day
+                prompt = "Могу оформить вызов врача на дом на сегодня. Оформить?"
+            else:
+                requested_date = day + timedelta(days=1)
+                while requested_date.weekday() == 6 or requested_date in calendar.holidays:
+                    requested_date += timedelta(days=1)
+                prompt = (
+                    load_phrasebook()
+                    .get("home_visit.late")
+                    .text.replace(
+                        "{next_day:short_accs}",
+                        say_date(requested_date, "short_accs", today=day),
+                    )
+                )
+            if home_visit_assessment:
+                prompt_parts = (load_phrasebook().get("home_visit.no_assessment").text, prompt)
+            else:
+                prompt_parts = (prompt,)
             state = state.model_copy(
                 update={
                     "home_visit_stage": "confirm",
-                    "home_visit_date": datetime.combine(next_day, time.min, tzinfo=now.tzinfo),
+                    "home_visit_date": datetime.combine(
+                        requested_date, time.min, tzinfo=now.tzinfo
+                    ),
                 }
             )
-            phrase = (
-                load_phrasebook()
-                .get("home_visit.late")
-                .text.replace(
-                    "{next_day:short_accs}", say_date(next_day, "short_accs", today=now.date())
-                )
-            )
-            return state, reply(state, turn.turn_id, phrase, code="HOME_VISIT_CONTINUE").model_copy(
-                update={"expect": "yes_no"}
-            )
+            return state, reply(
+                state, turn.turn_id, *prompt_parts, code="HOME_VISIT_CONTINUE"
+            ).model_copy(update={"expect": "yes_no"})
         if "бумажн" in turn.text.casefold() and "направлен" in turn.text.casefold():
             return await self.transfer(state, turn, "R-08", reason="paper_referral")
         kind = classify_cross_scenario(turn.text)
@@ -981,8 +1057,20 @@ class BookingConversation:
                     state, turn.turn_id, "Хорошо. Всего доброго.", code="CALL_ENDED"
                 )
             if answer != "yes":
+                requested_date = state.home_visit_date.date() if state.home_visit_date else None
+                local_today = self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date()
+                when = (
+                    "сегодня"
+                    if requested_date == local_today
+                    else say_date(requested_date, "short_accs", today=local_today)
+                    if requested_date is not None
+                    else "на предложенную дату"
+                )
                 return state, reply(
-                    state, turn.turn_id, "Оформить вызов на завтра?", code="HOME_VISIT_CONFIRM"
+                    state,
+                    turn.turn_id,
+                    f"Оформить вызов врача на дом {when}?",
+                    code="HOME_VISIT_CONFIRM",
                 ).model_copy(update={"expect": "yes_no"})
             state = state.model_copy(
                 update={"home_visit_stage": "identify", "phase": Phase.IDENTIFYING}
@@ -1005,6 +1093,12 @@ class BookingConversation:
             patient = await self.booking.identify(
                 slots.last_name, slots.first_name, slots.middle_name, slots.birth_date
             )
+            today = self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date()
+            age = (
+                today.year
+                - patient.birth_date.year
+                - ((today.month, today.day) < (patient.birth_date.month, patient.birth_date.day))
+            )
             state = state.model_copy(
                 update={
                     "client_id": patient.id,
@@ -1012,6 +1106,8 @@ class BookingConversation:
                     "home_visit_stage": "address",
                 }
             )
+            if age < 1:
+                return await self.transfer(state, turn, "R-11", "P1")
             phrase = load_phrasebook().get("home_visit.ask_address").text.replace("{patient}, ", "")
             return state, reply(state, turn.turn_id, phrase, code="HOME_VISIT_ADDRESS").model_copy(
                 update={"expect": "free"}
@@ -1065,20 +1161,20 @@ class BookingConversation:
                 state.call_id, state, ciphertext
             )
             state = state.model_copy(update={"home_visit_request_id": request.request_id})
-            phrase = (
-                load_phrasebook()
-                .get("home_visit.accepted")
-                .text.replace(
-                    "{date:short_accs}",
-                    say_date(
-                        state.home_visit_date.date(),
-                        "short_accs",
-                        today=self.booking.clock.now().date(),
-                    ),
-                )
+            visit_date = say_date(
+                state.home_visit_date.date(),
+                "short_accs",
+                today=self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date(),
             )
+            accepted = load_phrasebook().get("home_visit.accepted").text
+            details = f"Заявка принята на {visit_date}. Регистратор перезвонит только при необходимости уточнить детали."
             return state, reply(
-                state, turn.turn_id, phrase, code="HOME_VISIT_REQUESTED"
+                state,
+                turn.turn_id,
+                accepted,
+                details,
+                "Телефон для связи этот?",
+                code="HOME_VISIT_REQUESTED",
             ).model_copy(update={"expect": "yes_no"})
         if stage == "contact":
             if answer == "yes":
@@ -1099,19 +1195,12 @@ class BookingConversation:
             return await self.transfer(state, turn, "R-08")
         return await self.transfer(state, turn, "R-08")
 
-    async def _distress_triage(self, state: DialogueState, turn: Turn):
-        # Неразмеченные симптомы нельзя превращать в медицинский триаж.
-        # Явные красные флаги уже маршрутизированы safety-компонентом.
-        return await self.transfer(state, turn, "R-08")
-
     async def step(self, state: DialogueState, turn: Turn) -> tuple[DialogueState, Reply]:
         # Новая предметная просьба завершает справочное уточнение; её данные не теряются.
-        if state.information_topic != "referral_missing":
+        if state.information_topic != "referral_missing" and state.lab_identity_stage is None:
             state = state.model_copy(
                 update={"information_topic": None, "information_clarifying": False}
             )
-        if is_explicit_distress(turn.text):
-            return await self.transfer(state, turn, "R-01", "P1")
         result = await self.input.parse(state, turn)
         if result.call_id != state.call_id or result.turn_id != turn.turn_id:
             raise RuntimeError("результат NLU не относится к текущей реплике")
@@ -1122,8 +1211,33 @@ class BookingConversation:
             return await self.transfer(state, turn, transfer.route, transfer.priority)
         if state.distress_question_pending:
             return await self.distress_answer(state, turn)
+        if state.lab_identity_stage is not None:
+            new_topic = self.information.service.find(turn.text, clarify_lab=True)
+            if new_topic in {None, "lab_unknown"} and "I-01" not in result.intents:
+                return await self._lab_identity_step(state, turn)
+            state = self._clear_lab_identity(state, clarify_labs=new_topic.startswith("lab:"))
+        active_booking = state.purpose == "booking" and state.phase not in {
+            Phase.READY,
+            Phase.BOOKED,
+            Phase.CANCELLED,
+            Phase.RESCHEDULED,
+            Phase.ENDED,
+        }
+        if state.home_visit_stage is not None or (
+            asks_whether_to_call_doctor(turn.text) and not active_booking
+        ):
+            cross_reply = await self.cross_scenario_reply(state, turn, result)
+            if cross_reply is not None:
+                return cross_reply
         if needs_urgent_screening(turn.text) and not wants_new_booking(turn.text):
-            return await self._distress_triage(state, turn)
+            if active_booking:
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    *self.information.resume_question(state, turn),
+                    code="BOOKING_RESUMED",
+                )
+            return await self.medical.question(state, turn)
         if needs_urgent_screening(turn.text) and wants_new_booking(turn.text):
             if "I-01" in result.intents or result.slots.specialty is not None:
                 state = state.model_copy(
@@ -1197,6 +1311,158 @@ class BookingConversation:
                 prompt,
                 code="IDENTIFICATION_REQUIRED",
             )
+
+    async def _lab_identity_step(
+        self, state: DialogueState, turn: Turn
+    ) -> tuple[DialogueState, Reply]:
+        today = self.booking.clock.now().astimezone(CLINIC_TIMEZONE).date()
+        if state.lab_identity_stage == "name":
+            name = parse_full_name(turn.text)
+            last_name = name.get("last_name", (None, ""))[0]
+            first_name = name.get("first_name", (None, ""))[0]
+            middle_name = name.get("middle_name", (None, ""))[0]
+            if not (last_name and first_name and middle_name):
+                attempts = state.lab_identity_attempts + 1
+                state = state.model_copy(update={"lab_identity_attempts": attempts})
+                return state, reply(
+                    state,
+                    turn.turn_id,
+                    "Назовите фамилию, имя и отчество пациента полностью.",
+                    code="IDENTIFICATION_REQUIRED",
+                ).model_copy(update={"expect": "full_name"})
+            state = state.model_copy(
+                update={
+                    "lab_identity_last_name": last_name,
+                    "lab_identity_first_name": first_name,
+                    "lab_identity_middle_name": middle_name,
+                    "lab_identity_stage": "birth_date",
+                    "lab_identity_attempts": 0,
+                }
+            )
+            birth_date = parse_birth_date(turn.text, today)
+            if birth_date is not None and not birth_date.alternatives:
+                return await self._finish_lab_identity(state, turn, birth_date.value, today)
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Теперь назовите полную дату рождения пациента.",
+                code="IDENTIFICATION_REQUIRED",
+            ).model_copy(update={"expect": "birth_date"})
+
+        birth_date = parse_birth_date(turn.text, today)
+        if birth_date is None or birth_date.alternatives:
+            state = state.model_copy(
+                update={"lab_identity_attempts": state.lab_identity_attempts + 1}
+            )
+            return state, reply(
+                state,
+                turn.turn_id,
+                "Назовите дату рождения с четырёхзначным годом.",
+                code="IDENTIFICATION_REQUIRED",
+            ).model_copy(update={"expect": "birth_date"})
+        return await self._finish_lab_identity(state, turn, birth_date.value, today)
+
+    async def _finish_lab_identity(self, state, turn, birth_date, today):
+        try:
+            patient = await self.booking.identify(
+                state.lab_identity_last_name or "",
+                state.lab_identity_first_name or "",
+                state.lab_identity_middle_name,
+                birth_date,
+            )
+        except BookingError:
+            reset = state.model_copy(
+                update={
+                    "lab_identity_stage": "name",
+                    "lab_identity_last_name": None,
+                    "lab_identity_first_name": None,
+                    "lab_identity_middle_name": None,
+                    "lab_identity_attempts": state.lab_identity_attempts + 1,
+                }
+            )
+            return reset, reply(
+                reset,
+                turn.turn_id,
+                "Не удалось подтвердить данные. Назовите фамилию, имя и отчество пациента ещё раз.",
+                code="IDENTIFICATION_REQUIRED",
+            ).model_copy(update={"expect": "full_name"})
+        except MisError as error:
+            return mis_failure(state, turn, self.booking.clock.now(), error)
+
+        age = (
+            today.year
+            - patient.birth_date.year
+            - ((today.month, today.day) < (patient.birth_date.month, patient.birth_date.day))
+        )
+        clean = state.model_copy(
+            update={
+                "information_topic": None if state.lab_delay_pending else "lab_status",
+                "information_clarifying": False,
+                "lab_identity_stage": None,
+                "lab_identity_last_name": None,
+                "lab_identity_first_name": None,
+                "lab_identity_middle_name": None,
+                "lab_identity_attempts": 0,
+                "lab_delay_pending": False,
+                "authorization": None,
+            }
+        )
+        if age < 15:
+            return clean, reply(
+                clean,
+                turn.turn_id,
+                "До пятнадцати лет сведения о результатах ребёнку по телефону не сообщаются. Попросите законного представителя обратиться в клинику.",
+                code="MINOR_RESULTS_REFUSED",
+            )
+        if state.lab_delay_pending:
+            if self.handoffs is None:
+                return clean, reply(
+                    clean,
+                    turn.turn_id,
+                    "Срок результата превышен. Сейчас не удалось передать запрос сотруднику. Позвоните в регистратуру.",
+                    code="INFO_UNAVAILABLE",
+                )
+            await self.handoffs.queue_laboratory_delay(state.call_id, clean, patient.id)
+            queued = clean.model_copy(
+                update={
+                    "phase": Phase.HANDOFF,
+                    "client_id": patient.id,
+                    "transfer": TransferRequest(route="R-08", priority="P3"),
+                    "lab_delay_pending": False,
+                }
+            )
+            return queued, reply(
+                queued,
+                turn.turn_id,
+                "Результат задерживается. Я передам вопрос в лабораторию, вам перезвонят.",
+                code="CALLBACK",
+            )
+        collection = self.information.service.fact("lab_collection")
+        return clean, reply(
+            clean,
+            turn.turn_id,
+            "Личную готовность результата я проверить не могу. Общий срок зависит от вида исследования.",
+            "По регламенту срок составляет от одного до четырнадцати рабочих дней.",
+            *collection.utterances,
+            code="INFO_GIVEN",
+        ).model_copy(
+            update={
+                "information": InformationReference(
+                    document=self.information.service.catalog.document,
+                    version=self.information.service.catalog.version,
+                    topic="lab_status",
+                    sections=tuple(
+                        dict.fromkeys(
+                            (
+                                *self.information.service.fact("lab_status").source,
+                                "2.5",
+                                *collection.source,
+                            )
+                        )
+                    ),
+                )
+            }
+        )
 
     async def distress_answer(self, state: DialogueState, turn: Turn):
         answer = parse_answer(turn.text)
@@ -1695,7 +1961,8 @@ class BookingConversation:
                         code="BOOKED_GP" if state.referral_fallback else "BOOKED",
                     )
                 if action.state == ActionState.RECONCILING and operators_on_duty(
-                    self.booking.clock.now().astimezone(CLINIC_TIMEZONE)
+                    self.booking.clock.now().astimezone(CLINIC_TIMEZONE),
+                    self.operator_calendar.holidays,
                 ):
                     return await self.transfer(state, turn, "R-06", "P3", reason="mis_unknown")
                 state = state.model_copy(update={"phase": Phase.RECONCILING})

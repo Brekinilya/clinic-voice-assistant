@@ -61,7 +61,7 @@ class ReminderSession(BookingModel):
 
 
 MarkStatus = Literal["applied", "pending", "manual"]
-MarkOperation = Literal["confirm", "opt_out"]
+MarkOperation = Literal["confirm", "opt_out", "opt_out_all"]
 
 
 def mark_action_id(binding: ReminderBinding, operation: MarkOperation) -> str:
@@ -90,6 +90,7 @@ class ReminderActions(Protocol):
 
     async def confirm(self, binding: ReminderBinding, approval: Approval) -> MarkStatus: ...
     async def opt_out(self, binding: ReminderBinding, approval: Approval) -> MarkStatus: ...
+    async def opt_out_all(self, binding: ReminderBinding, approval: Approval) -> MarkStatus: ...
 
 
 class OutboundEvent(BookingModel):

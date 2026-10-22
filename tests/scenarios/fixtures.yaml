@@ -23,6 +23,8 @@ clients:
   sokolov_av: {last_name: Соколов, first_name: Андрей, middle_name: Викторович, birth_date: 09.02.1985}
   orlova_mi: {last_name: Орлова, first_name: Мария, middle_name: Ивановна, birth_date: 14.11.1988}
   smirnova_ad: {last_name: Смирнова, first_name: Алиса, middle_name: Дмитриевна, birth_date: 07.04.2019}
+  smirnova_adolescent_15: {last_name: Смирнова, first_name: Анна, middle_name: Дмитриевна, birth_date: 30.09.2011}
+  smirnova_adolescent_17: {last_name: Смирнова, first_name: Елена, middle_name: Дмитриевна, birth_date: 30.09.2009}
 
 # Свободное время по умолчанию; сценарий может заменить его своим списком.
 access:

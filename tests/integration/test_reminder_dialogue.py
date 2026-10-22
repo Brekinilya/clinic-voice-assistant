@@ -52,6 +52,9 @@ class Actions:
     async def opt_out(self, binding, approval):
         return await self._mark(binding, approval, "opt_out")
 
+    async def opt_out_all(self, binding, approval):
+        return await self._mark(binding, approval, "opt_out_all")
+
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.postgres)])
 def reminder_engine(request):
@@ -490,6 +493,22 @@ async def test_opt_out_after_verification_is_separate_from_visit_cancellation(re
         result = await turn(client, 3, "Не звоните мне больше")
         assert result["reminder_result"]["outcome"] == "OPT_OUT"
         assert actions.calls == [("opt_out", 1)]
+        assert "SMS" not in " ".join(result["utterances"])
+        assert emulator.records["demo"][1].status == VisitStatus.PLANNED
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    ["Откажитесь от всех уведомлений", "Не присылайте мне SMS", "Не звоните и не пишите"],
+)
+async def test_full_opt_out_is_distinct_from_call_only_opt_out(reminder_engine, utterance):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await opened(service, context)
+        result = await turn(client, 3, utterance)
+        assert result["reminder_result"]["outcome"] == "OPT_OUT"
+        assert actions.calls == [("opt_out_all", 1)]
+        assert "SMS-напоминания отключены" in " ".join(result["utterances"])
         assert emulator.records["demo"][1].status == VisitStatus.PLANNED
         assert emulator.write_count == emulator.patch_count == 0
 

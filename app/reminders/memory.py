@@ -40,7 +40,7 @@ class MemoryReminderStore:
     async def mark_planned(self, call_day: date) -> None:
         self.days.add(call_day)
 
-    async def add_job(self, job: ReminderJob) -> bool:
+    async def add_job(self, job: ReminderJob, now=None) -> bool:
         async with self._lock:
             if any(
                 (j.visit_id, j.scheduled_at, j.doctor_id)
@@ -49,6 +49,15 @@ class MemoryReminderStore:
             ):
                 return False
             self.jobs[job.id] = job
+            if job.sms_pending:
+                event = reminder_sms_event(
+                    job.id,
+                    job.client_id,
+                    job.scheduled_at,
+                    job.room,
+                    now or job.next_at,
+                )
+                self.outbox.setdefault(event.event_id, event)
             return True
 
     async def job(self, job_id: str) -> ReminderJob:
@@ -145,7 +154,9 @@ class MemoryReminderStore:
             )
             saved = self.jobs[attempt.job_id]
             if saved.sms_pending:
-                event = reminder_sms_event(saved.id, saved.client_id, now)
+                event = reminder_sms_event(
+                    saved.id, saved.client_id, saved.scheduled_at, saved.room, now
+                )
                 self.outbox.setdefault(event.event_id, event)
             return True
 
@@ -182,16 +193,40 @@ class MemoryReminderStore:
         return self.contacts.get(client_id)
 
     async def save_contact(self, contact: Contact) -> None:
-        # Новый номер не снимает прежний отказ от обзвона
+        # Смена контакта не снимает ранее сохранённые отказы.
         previous = self.contacts.get(contact.client_id)
-        if previous is not None and previous.opt_out_at is not None:
-            contact = contact.model_copy(update={"opt_out_at": previous.opt_out_at})
+        if previous is not None:
+            contact = contact.model_copy(
+                update={
+                    "opt_out_at": previous.opt_out_at or contact.opt_out_at,
+                    "notification_opt_out_at": previous.notification_opt_out_at
+                    or contact.notification_opt_out_at,
+                }
+            )
         self.contacts[contact.client_id] = contact
 
     async def opt_out(self, client_id: int, now: datetime) -> None:
         contact = self.contacts.get(client_id)
         if contact is not None and contact.opt_out_at is None:
             self.contacts[client_id] = contact.model_copy(update={"opt_out_at": now})
+
+    async def opt_out_all(self, client_id: int, now: datetime) -> None:
+        async with self._lock:
+            contact = self.contacts.get(client_id)
+            if contact is not None:
+                self.contacts[client_id] = contact.model_copy(
+                    update={
+                        "opt_out_at": contact.opt_out_at or now,
+                        "notification_opt_out_at": contact.notification_opt_out_at or now,
+                    }
+                )
+            for event_id, event in self.outbox.items():
+                if (
+                    event.payload.kind == "reminder_sms"
+                    and event.payload.client_id == client_id
+                    and event.state in {"pending", "retry"}
+                ):
+                    self.outbox[event_id] = event.model_copy(update={"state": "blocked"})
 
     async def confirmed(self, visit_id: int, scheduled_at=None, doctor_id=None) -> bool:
         return any(

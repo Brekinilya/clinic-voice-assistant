@@ -165,27 +165,26 @@ async def test_medical_flag_from_nlu_also_gets_boundary_before_handoff():
     "phrase",
     [
         "Побаливает живот",
-        "Нужно ли вызывать врача, если температура?",
     ],
 )
-async def test_unspecified_symptoms_go_to_staff_without_patient_self_triage(phrase):
+async def test_unspecified_symptoms_get_boundary_and_booking_offer(phrase):
     async with pipeline() as (client, service, emulator, *_):
         result = await turn(client, 1, phrase)
-        assert result["transfer"]["route"] == "R-08", result
-        assert "угроз" not in spoken(result).casefold()
-        assert "103" not in spoken(result) and "112" not in spoken(result)
+        assert result["code"] == "MEDICAL_BOUNDARY", result
+        assert result["transfer"] is None
+        assert "медицинские советы" in spoken(result).casefold()
         state = await service.store.inspect("scenario")
-        assert state.client_id is None and emulator.log == [] and emulator.write_count == 0
+        assert state.client_id is None and state.medical_boundary_pending
+        assert emulator.log == [] and emulator.write_count == 0
 
 
 @pytest.mark.parametrize("phrase", ["Я умираю", "Мне очень плохо"])
-async def test_explicit_distress_gets_emergency_guidance_and_p1(phrase):
+async def test_unspecified_distress_without_a_red_flag_gets_the_medical_boundary(phrase):
     async with pipeline() as (client, service, emulator, *_):
         result = await turn(client, 1, phrase)
-        assert result["transfer"]["route"] == "R-01", result
-        assert result["transfer"]["priority"] == "P1", result
-        assert "сто три" in spoken(result).casefold()
-        assert "сто двенадцать" in spoken(result).casefold()
+        assert result["code"] == "MEDICAL_BOUNDARY", result
+        assert result["transfer"] is None
+        assert "медицинские советы" in spoken(result).casefold()
         assert (await service.store.inspect("scenario")).client_id is None
         assert emulator.write_count == emulator.patch_count == 0
 
@@ -198,16 +197,26 @@ async def test_explicit_life_threat_goes_to_emergency_route_without_screening_qu
         assert emulator.write_count == emulator.patch_count == 0
 
 
-async def test_generic_abdominal_pain_is_referred_without_self_assessment():
+async def test_generic_abdominal_pain_gets_boundary_without_self_assessment():
     async with pipeline() as (client, service, emulator, *_):
         result = await turn(client, 1, "У меня болит живот")
-        assert result["transfer"]["route"] == "R-08"
-        assert "угроз" not in spoken(result).casefold()
+        assert result["code"] == "MEDICAL_BOUNDARY"
+        assert result["transfer"] is None
+        assert "медицинские советы" in spoken(result).casefold()
         assert (await service.store.inspect("scenario")).client_id is None
         assert emulator.write_count == 0
 
 
-async def test_symptoms_during_booking_are_handed_to_staff_with_the_request_context():
+async def test_red_b_on_a_configured_holiday_uses_the_emergency_route():
+    async with pipeline({"now": "04.11.2026 10:15"}) as (client, _, emulator, *_):
+        result = await turn(client, 1, "Температура сорок")
+        assert result["transfer"]["route"] == "R-01", result
+        assert result["transfer"]["priority"] == "P1", result
+        assert "сто три" in spoken(result).casefold()
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_explicit_booking_with_symptoms_keeps_booking_context():
     async with pipeline() as (client, service, emulator, *_):
         first = await turn(client, 1, "У меня болит горло, запишите к терапевту")
         assert first["transfer"] is None, first
@@ -217,16 +226,25 @@ async def test_symptoms_during_booking_are_handed_to_staff_with_the_request_cont
         assert state.client_id is None and emulator.write_count == 0
 
 
-async def test_symptom_detour_preserves_booking_context_for_staff():
+async def test_nonurgent_symptom_during_booking_resumes_current_question():
     async with pipeline() as (client, service, emulator, *_):
         await turn(client, 1, "Запишите к терапевту")
         await turn(client, 2, IDENTITY)
         result = await turn(client, 3, "Болит голова")
-        assert result["transfer"]["route"] == "R-08", result
+        assert result["transfer"] is None and result["code"] == "BOOKING_RESUMED", result
         state = await service.store.inspect("scenario")
-        assert state.phase.value == "handoff"
+        assert state.phase.value == "offered"
         assert state.purpose == "booking" and state.specialty == "терапевт"
         assert state.client_id is not None and emulator.write_count == emulator.patch_count == 0
+
+
+async def test_repeating_a_non_red_flag_symptom_does_not_count_as_insistence():
+    async with pipeline() as (client, _, emulator, *_):
+        first = await turn(client, 1, "У меня болит живот")
+        second = await turn(client, 2, "У меня всё ещё болит живот")
+        assert first["code"] == second["code"] == "MEDICAL_BOUNDARY"
+        assert second["transfer"] is None
+        assert emulator.write_count == emulator.patch_count == 0
 
 
 async def test_medical_partial_during_preflight_prevents_post():

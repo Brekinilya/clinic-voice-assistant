@@ -11,6 +11,8 @@ from test_rescheduling import SETUP as MOVE_SETUP
 from test_rescheduling import prepare as prepare_move
 
 from app.dialogue.models import DialogueState, Phase
+from app.handoffs.memory import MemoryHandoffStore
+from app.handoffs.service import HandoffService, HandoffSettings
 from app.information.catalog import information_service
 from app.mis.budget import MemoryBudget
 from tests.voice.fakes import Recognizer, phrase
@@ -280,13 +282,91 @@ async def test_unknown_laboratory_term_has_a_bounded_honest_answer():
         assert emulator.log == []
 
 
-@pytest.mark.parametrize("question", ["Готовы ли мои анализы?", "Работаете в праздники?"])
+@pytest.mark.parametrize("question", ["Работаете в праздники?"])
 async def test_unavailable_personal_status_and_holidays_are_not_invented(question):
     async with pipeline() as (client, _, emulator, *_):
         result = await turn(client, 1, question)
         assert result["code"] == "INFO_UNAVAILABLE"
         assert "у меня нет" in spoken(result) or "проверить не могу" in spoken(result)
         assert emulator.log == []
+
+
+async def test_personal_lab_status_requires_verified_identity_and_only_gives_general_guidance():
+    async with pipeline() as (client, service, emulator, *_):
+        first = await turn(client, 1, "Готовы ли мои анализы?")
+        assert first["code"] == "IDENTIFICATION_REQUIRED"
+        assert "фамилию, имя и отчество" in spoken(first)
+        assert (await service.store.inspect("scenario")).lab_identity_stage == "name"
+        assert emulator.log == []
+
+        second = await turn(client, 2, "Смирнова Ольга Викторовна")
+        assert second["code"] == "IDENTIFICATION_REQUIRED"
+        assert "полную дату рождения" in spoken(second)
+
+        answer = await turn(client, 3, "12 марта 1978 года")
+        assert answer["code"] == "INFO_GIVEN", (answer, emulator.log)
+        assert "Личную готовность результата я проверить не могу" in spoken(answer)
+        assert "от одного до четырнадцати рабочих дней" in spoken(answer)
+        assert "Гос" in spoken(answer) and "окне номер три" in spoken(answer)
+        assert "готовы" not in spoken(answer).casefold()
+        assert emulator.write_count == emulator.patch_count == 0
+        assert (await service.store.inspect("scenario")).client_id is None
+
+
+async def test_under_15_cannot_receive_personal_lab_information_or_be_transferred():
+    async with pipeline() as (client, _, emulator, *_):
+        await turn(client, 1, "Готовы ли мои анализы?")
+        await turn(client, 2, "Смирнова Алиса Дмитриевна")
+        answer = await turn(client, 3, "7 апреля 2019 года")
+        assert answer["code"] == "MINOR_RESULTS_REFUSED"
+        assert "до пятнадцати лет" in spoken(answer).casefold()
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+@pytest.mark.parametrize(
+    "name,birth_date",
+    [
+        ("Смирнова Анна Дмитриевна", "30 сентября 2011 года"),
+        ("Смирнова Елена Дмитриевна", "30 сентября 2009 года"),
+    ],
+)
+async def test_ages_15_to_17_can_ask_about_their_own_lab_status(name, birth_date):
+    async with pipeline() as (client, _, emulator, *_):
+        await turn(client, 1, "Готовы ли мои анализы?")
+        await turn(client, 2, name)
+        answer = await turn(client, 3, birth_date)
+        assert answer["code"] == "INFO_GIVEN"
+        assert "Личную готовность результата я проверить не могу" in spoken(answer)
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_overdue_lab_result_creates_callback_task_and_posts_required_escalation():
+    async with pipeline() as (client, service, emulator, clock, *_):
+        handoff_store = MemoryHandoffStore()
+        service.handoffs = HandoffService(
+            handoff_store,
+            service.booking.mis,
+            clock,
+            b"x" * 32,
+            HandoffSettings(enabled=True),
+        )
+
+        first = await turn(client, 1, "Результат анализов задерживается уже три недели")
+        assert first["code"] == "IDENTIFICATION_REQUIRED"
+        await turn(client, 2, "Смирнова Ольга Викторовна")
+        result = await turn(client, 3, "12 марта 1978 года")
+        assert result["code"] == "CALLBACK"
+        assert result["utterances"] == [
+            "Результат задерживается. Я передам вопрос в лабораторию, вам перезвонят."
+        ]
+        request = await handoff_store.request_for_call("scenario")
+        operation = handoff_store.mis_operations[request.mis_operation_id]
+        assert operation.description.splitlines()[0] == "ПЕРЕВОД R-08 P3"
+
+        assert await service.handoffs.deliver_mis_once() == 1
+        assert emulator.write_count == 1
+        assert emulator.patch_count == 0
+        assert emulator.escalation_records["demo"][1].description == operation.description
 
 
 async def test_information_followup_yes_repeat_and_no_are_local():

@@ -97,6 +97,11 @@ INFORMATION_EXPECTATIONS = {
 }
 
 LABORATORY_EXPECTATIONS = {
+    "labs.ask_identity": (
+        {"IDENTIFICATION_REQUIRED"},
+        ("lab_status",),
+        (r"фамилию, имя и отчество пациента",),
+    ),
     "labs.ask_type": (
         {"INFORMATION_REQUIRED", "INFO_UNAVAILABLE"},
         ("lab_terms", "lab_status"),
@@ -106,6 +111,11 @@ LABORATORY_EXPECTATIONS = {
         {"INFO_GIVEN"},
         ("lab:",),
         (r"обычный срок", r"рабочи", r"не проверяю|не подтверждение"),
+    ),
+    "labs.personal_status": (
+        {"INFO_GIVEN"},
+        ("lab_status",),
+        (r"от одного до четырнадцати рабочих дней", r"проверить не могу"),
     ),
     "labs.how_to_get": (
         {"INFO_GIVEN", "MEDICAL_BOUNDARY"},
@@ -546,10 +556,12 @@ async def verify_reminder_result(result, runtime, reminder_result):
     attempt = await runtime.reminder_store.attempt(runtime.reminder_attempt_id)
     reminder_job = await runtime.reminder_store.job(attempt.job_id)
     sms_events = await runtime.reminder_store.outbox_events(reminder_job.id)
+    client_id = runtime.client_ids[runtime.dialog.setup["call"]["client"]]
+    contact = await runtime.reminder_store.contact(client_id)
     if attempt.result != outcome:
         result.add("reminder_attempt", "Исполнитель не сохранил фактический исход звонка")
-    if outcome in {"NO_ANSWER", "WRONG_PERSON"} and not reminder_job.sms_pending:
-        result.add("reminder_sms_pending", "Для исхода звонка не создано ожидающее SMS-действие")
+    if not reminder_job.sms_pending and outcome != "OPT_OUT":
+        result.add("reminder_sms_pending", "Для визита не создано SMS-напоминание")
     expected_sms_event = reminder_job.sms_pending
     if (expected_sms_event and len(sms_events) != 1) or (not expected_sms_event and sms_events):
         result.add(
@@ -558,10 +570,14 @@ async def verify_reminder_result(result, runtime, reminder_result):
     if sms_events and (
         sms_events[0].payload.kind != "reminder_sms"
         or sms_events[0].payload.client_id != reminder_job.client_id
-        or sms_events[0].state != "pending"
+        or sms_events[0].state
+        != (
+            "blocked"
+            if contact is not None and contact.notification_opt_out_at is not None
+            else "pending"
+        )
     ):
         result.add("reminder_sms_event", "Событие SMS имеет неверного адресата или состояние")
-    client_id = runtime.client_ids[runtime.dialog.setup["call"]["client"]]
     client = runtime.emulator.clients[TOKEN][client_id]
     if outcome == "CONFIRMED":
         mark = await runtime.reminder_store.mark(f"confirm:{runtime.reminder_attempt_id}")
@@ -574,7 +590,6 @@ async def verify_reminder_result(result, runtime, reminder_result):
         ):
             result.add("reminder_mark", "PATCH или журнал отметки не подтверждены фактически")
     elif outcome == "OPT_OUT":
-        contact = await runtime.reminder_store.contact(client_id)
         if contact is None or contact.opt_out_at is None:
             result.add("reminder_contact_opt_out", "Локальный контакт не исключён из обзвона")
         if runtime.emulator.client_patch_count:
@@ -593,7 +608,6 @@ async def verify_reminder_result(result, runtime, reminder_result):
                 "critical",
             )
     mark = await runtime.reminder_store.mark(f"confirm:{runtime.reminder_attempt_id}")
-    contact = await runtime.reminder_store.contact(client_id)
     result.evidence["outbound"] = {
         "path": "ReminderExecutor.tick → ReminderActionAdapter → DialogueService",
         "substitutions": [
@@ -612,6 +626,9 @@ async def verify_reminder_result(result, runtime, reminder_result):
             client.comment is not None and client.comment.startswith("Прежняя заметка регистратора")
         ),
         "contact_opt_out": contact is not None and contact.opt_out_at is not None,
+        "notification_opt_out": (
+            contact is not None and contact.notification_opt_out_at is not None
+        ),
         "voicemail_event_port": outcome == "VOICEMAIL",
     }
 
@@ -1177,11 +1194,19 @@ async def run_dialog(dialog, *, blocking=False, runtime=None):
                     reply.information is not None
                     and len(runtime.emulator.requests) != requests_before
                 ):
-                    result.add(
-                        "information_mis_request",
-                        "Общая справка потребовала запросов к МИС",
-                        step=number,
+                    verified_lab_lookup = (
+                        reply.code == "INFO_GIVEN"
+                        and reply.information.topic == "lab_status"
+                        and len(runtime.emulator.requests) - requests_before == 1
+                        and runtime.emulator.requests[-1].method == "GET"
+                        and runtime.emulator.requests[-1].resource == "clients"
                     )
+                    if not verified_lab_lookup:
+                        result.add(
+                            "information_mis_request",
+                            "Общая справка потребовала запросов к МИС",
+                            step=number,
+                        )
                 mutations_after = (
                     runtime.emulator.write_count,
                     runtime.emulator.patch_count,

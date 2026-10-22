@@ -272,7 +272,7 @@ async def test_outcome_is_written_once(stand):
     assert await stand.executor.finished(attempt_id, "CONFIRMED")
     assert not await stand.executor.finished(attempt_id, "CANCELLED")
     job = await stand.job(visit.id)
-    assert (job.state, job.outcome, job.sms_pending) == ("done", "CONFIRMED", False)
+    assert (job.state, job.outcome, job.sms_pending) == ("done", "CONFIRMED", True)
 
 
 async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
@@ -281,7 +281,8 @@ async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
     await stand.executor.finished(stand.dialer.calls[0][0], "NO_ANSWER", "q850_19")
     job = await stand.job(visit.id)
     assert (job.state, job.next_at) == ("waiting_retry", at(19, 12, 5))
-    assert await stand.store.outbox_events(job.id) == ()
+    [queued_sms] = await stand.store.outbox_events(job.id)
+    assert queued_sms.state == "pending"
     stand.clock.value = at(19, 12, 4)
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 1
@@ -318,6 +319,18 @@ async def test_wrong_person_is_final_and_needs_sms(stand):
     [sms_event] = await stand.store.outbox_events(job.id)
     assert sms_event.payload.kind == "reminder_sms"
     assert sms_event.state == "pending"
+
+
+async def test_full_notification_opt_out_blocks_queued_reminder_sms(stand):
+    visit = await ready(stand)
+    assert await stand.executor.planner.plan(date(2026, 10, 19)) == 1
+    [queued_sms] = await stand.store.outbox_events((await stand.job(visit.id)).id)
+    await stand.store.opt_out_all(3, stand.clock.now())
+    [blocked_sms] = await stand.store.outbox_events((await stand.job(visit.id)).id)
+    assert queued_sms.state == "pending"
+    assert blocked_sms.state == "blocked"
+    assert (await stand.store.contact(3)).opt_out_at == stand.clock.now()
+    assert (await stand.store.contact(3)).notification_opt_out_at == stand.clock.now()
 
 
 async def test_visit_changed_before_the_call_is_not_called(stand):
@@ -494,6 +507,15 @@ async def test_opt_out_is_local_at_once_and_marked_in_the_comment(stand):
     assert await marks.opt_out(context) == "applied"
     assert comment(stand) == "Аллергия\nОтказ от обзвона 19.10.2026"
     assert (await stand.store.contact(3)).opt_out_at == stand.clock.now()
+
+
+async def test_full_opt_out_is_persisted_and_separate_from_call_opt_out(stand):
+    _, context, marks = await calling(stand, comment="Аллергия")
+    assert await marks.opt_out_all(context) == "applied"
+    assert comment(stand) == "Аллергия\nОтказ от уведомлений 19.10.2026"
+    contact = await stand.store.contact(3)
+    assert contact.opt_out_at == stand.clock.now()
+    assert contact.notification_opt_out_at == stand.clock.now()
 
 
 async def test_concurrent_marks_of_one_patient_do_not_lose_each_other(stand):

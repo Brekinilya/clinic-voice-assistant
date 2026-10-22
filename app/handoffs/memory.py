@@ -179,6 +179,17 @@ class MemoryHandoffStore:
             if any(o.request_id == operation.request_id for o in self.mis_operations.values()):
                 raise HandoffConflict("request already has a MIS operation")
             self.mis_operations[operation.operation_id] = operation
+            request = self.requests.get(operation.request_id)
+            if request is None:
+                del self.mis_operations[operation.operation_id]
+                raise HandoffConflict("handoff request not found")
+            self.requests[request.request_id] = request.model_copy(
+                update={
+                    "mis_state": operation.state,
+                    "mis_operation_id": operation.operation_id,
+                    "version": request.version + 1,
+                }
+            )
             return operation
 
     async def get_mis_operation(self, operation_id):
