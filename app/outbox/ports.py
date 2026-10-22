@@ -38,6 +38,9 @@ class DeliveryPort(Protocol):
 class DeliveryBlocked(Exception):
     """Адаптер отсутствует; действие заведомо не отправлено."""
 
+    def __init__(self, code: str = "DELIVERY_NOT_CONFIGURED"):
+        self.code = code[:40]
+
 
 class TemporaryDeliveryFailure(Exception):
     """Получатель заведомо НЕ принял задание; безопасен ограниченный повтор."""
@@ -50,6 +53,9 @@ class TemporaryDeliveryFailure(Exception):
 
 class PermanentDeliveryFailure(Exception):
     """Известный окончательный отказ до принятия задания."""
+
+    def __init__(self, code: str = "PERMANENT_FAILURE"):
+        self.code = code
 
 
 class DeliveryUnknown(Exception):

@@ -99,6 +99,21 @@ async def test_open_is_scoped_idempotent_and_does_not_persist_addressee(reminder
         assert not actions.calls and emulator.patch_count == emulator.write_count == 0
 
 
+async def test_explicit_distress_preempts_outbound_without_confirming_or_marking_it(
+    reminder_engine,
+):
+    async with outgoing(reminder_engine) as (client, service, emulator, actions, context):
+        await service.open_outbound("scenario", context)
+        result = await turn(client, 2, "Мне очень плохо")
+        assert result["code"] == "EMERGENCY", result
+        assert result["transfer"]["route"] == "R-01"
+        assert result["transfer"]["priority"] == "P1"
+        assert "сто три" in " ".join(result["utterances"]).casefold()
+        assert "сто двенадцать" in " ".join(result["utterances"]).casefold()
+        assert not actions.calls
+        assert emulator.patch_count == emulator.write_count == 0
+
+
 async def test_open_cannot_replace_an_existing_inbound_conversation(reminder_engine):
     async with outgoing(reminder_engine) as (client, service, _, _, context):
         await turn(client, 1, "Хочу записаться к терапевту")

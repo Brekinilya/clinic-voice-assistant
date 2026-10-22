@@ -79,9 +79,9 @@ async def test_home_visit_uses_exact_arrival_phrase_and_operator_card(opening, a
         await turn(client, 5, "Температура и сильная слабость")
         accepted = await turn(client, 6, "Нет, сама прийти не могу")
 
-        assert accepted["code"] == "HOME_VISIT_REQUESTED"
+        assert accepted["code"] == "HOME_VISIT_PENDING"
         assert (
-            "Врач придёт до восемнадцати часов, точное время назвать не могу."
+            "Я сохранил просьбу для проверки регистратурой. Вызов врача пока не подтверждён."
             in accepted["utterances"]
         )
         request = await store.request_for_call("scenario")
@@ -90,4 +90,8 @@ async def test_home_visit_uses_exact_arrival_phrase_and_operator_card(opening, a
         assert payload["reason"] == "Температура и сильная слабость"
         assert payload["requested_date"] == "2026-10-22"
         assert "подтвердить дату и адрес" in request.summary
+        assert request.home_visit_state == "pending_confirmation"
         assert emulator.write_count == emulator.patch_count == 0
+        completed = await turn(client, 7, "Да")
+        assert completed["code"] == "HOME_VISIT_PENDING"
+        assert "вызов врача пока не подтверждён" in " ".join(completed["utterances"]).lower()

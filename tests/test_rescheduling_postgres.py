@@ -13,7 +13,7 @@ from app.cancellation.models import CancelAction, CancelState
 from app.demo import DemoClock, demo_emulator
 from app.mis.models import Visit, VisitStatus
 from app.outbox.delivery import journal_entry, journal_receipt
-from app.outbox.models import JobState, cancellation_events
+from app.outbox.models import EventKind, JobState, cancellation_events
 from app.rescheduling.models import MoveState
 from app.storage.booking import migrate
 from app.storage.outbox import PostgresOutboxStore, values
@@ -133,9 +133,11 @@ async def test_outbox_error_rolls_back_audit_new_booking_and_archiving(move_stor
         await booking.get(action.action_id)
     with pytest.raises(BookingError, match="ACTION_NOT_FOUND"):
         await cancelling.get(action.action_id)
-    assert await PostgresOutboxStore(moving.engine).list() == ()
+    original_jobs = await PostgresOutboxStore(moving.engine).list()
+    assert len(original_jobs) == 1
+    assert original_jobs[0].payload.kind == EventKind.APPOINTMENT_SMS
     monkeypatch.setattr(module, "enqueue_cancellation", original)
     assert (
         await moving.complete(action.action_id, cancelled, new, clock.now())
     ).state == MoveState.RESCHEDULED
-    assert len(await PostgresOutboxStore(moving.engine).list()) == 2
+    assert len(await PostgresOutboxStore(moving.engine).list()) == 3

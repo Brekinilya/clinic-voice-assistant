@@ -31,6 +31,7 @@ from app.booking.models import (
 )
 from app.clock import ClinicClock
 from app.mis.budget import HOLD, WINDOW_S, Priority, Row, admit, decide
+from app.outbox.models import appointment_sms_event
 from app.ports import Clock
 from app.storage.journal import journal_transaction
 from app.storage.schema import (
@@ -43,6 +44,7 @@ from app.storage.schema import (
     dialogue_sessions,
     metadata,
     moves,
+    outbox_jobs,
     schema_versions,
 )
 
@@ -67,6 +69,7 @@ async def migrate(engine: AsyncEngine) -> None:
             [10],
             [11],
             [12],
+            [13],
             [SCHEMA_VERSION],
         ):
             raise RuntimeError("неподдерживаемая версия схемы backend")
@@ -91,7 +94,7 @@ async def migrate(engine: AsyncEngine) -> None:
                     )
                     await connection.execute(
                         text(
-                            "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms'))"
+                            "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('appointment_sms','cancellation_sms','slot_released','reschedule_sms','reminder_sms','waitlist_sms','no_answer_sms'))"
                         )
                     )
                 foreign_keys = await connection.run_sync(
@@ -146,6 +149,48 @@ async def migrate(engine: AsyncEngine) -> None:
                         "ALTER TABLE reminder_marks ADD CONSTRAINT reminder_marks_kind_allowed CHECK (kind IN ('confirm','opt_out','opt_out_all'))"
                     )
                 )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE backend_outbox_jobs DROP CONSTRAINT IF EXISTS backend_outbox_kind_allowed"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE backend_outbox_jobs DROP CONSTRAINT IF EXISTS backend_outbox_jobs_kind_check"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed CHECK (kind IN ('appointment_sms','cancellation_sms','slot_released','reschedule_sms','reminder_sms','waitlist_sms','no_answer_sms'))"
+                    )
+                )
+                # Existing reminder events were stored before visit_id became part
+                # of the payload. Recover it from the durable reminder job before
+                # the stricter payload model is used by the new worker.
+                await connection.execute(
+                    text(
+                        "UPDATE backend_outbox_jobs AS event "
+                        "SET payload = jsonb_set(event.payload, '{visit_id}', "
+                        "to_jsonb(reminder.visit_id), true) "
+                        "FROM reminder_jobs AS reminder "
+                        "WHERE event.kind = 'reminder_sms' "
+                        "AND event.source_id = reminder.id "
+                        "AND NOT (event.payload ? 'visit_id')"
+                    )
+                )
+                unresolved_reminders = await connection.scalar(
+                    select(func.count())
+                    .select_from(outbox_jobs)
+                    .where(
+                        outbox_jobs.c.kind == "reminder_sms",
+                        ~outbox_jobs.c.payload.has_key("visit_id"),  # noqa: W601
+                    )
+                )
+                if unresolved_reminders:
+                    raise RuntimeError(
+                        "не удалось восстановить visit_id у старых событий напоминания; "
+                        "миграция остановлена без изменения версии схемы"
+                    )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 
@@ -317,7 +362,11 @@ class PostgresBookingStore:
             return _decode(row), True
 
     async def finish(
-        self, action_id: str, state: ActionState, visit_id: int | None = None
+        self,
+        action_id: str,
+        state: ActionState,
+        visit_id: int | None = None,
+        now: datetime | None = None,
     ) -> BookingAction:
         async with self._transaction() as connection:
             row = (
@@ -339,6 +388,23 @@ class PostgresBookingStore:
                     .returning(actions)
                 )
             ).one()
+            if state == ActionState.BOOKED:
+                from app.storage.outbox import values as outbox_values
+
+                event = appointment_sms_event(
+                    action_id,
+                    row.client_id,
+                    visit_id,
+                    row.scheduled_at,
+                    now or ClinicClock().now(),
+                )
+                await connection.execute(
+                    pg_insert(outbox_jobs)
+                    .values(**outbox_values(event))
+                    .on_conflict_do_nothing(
+                        index_elements=[outbox_jobs.c.source_id, outbox_jobs.c.kind]
+                    )
+                )
             return _decode(row)
 
     async def cancel(self, action_id: str, call_id: str) -> BookingAction:

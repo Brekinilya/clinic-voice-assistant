@@ -101,13 +101,18 @@ async def test_endpoint_paces_answer_and_flushes(codec):
     assert len(heard) == 5
     assert len(b"".join(heard)) == len(pcm)
 
+    sequence_before_flush = sender.sender.sequence
     sender.play(pcm * 10)
     await asyncio.sleep(0.05)
     sender.flush()
     await asyncio.wait_for(sender.drained(), 0.1)
-    count = len(heard)
+    sent_at_drain = sender.sender.sequence
     await asyncio.sleep(0.1)
-    assert len(heard) == count < 5 + 50
+    # drained() reports the local queue, not UDP receive completion. A packet
+    # already handed to the OS may arrive later; the sender must stop queuing
+    # additional packets after flush.
+    assert sender.sender.sequence == sent_at_drain
+    assert len(heard) <= 5 + sent_at_drain - sequence_before_flush
     sender.close()
     receiver.close()
 

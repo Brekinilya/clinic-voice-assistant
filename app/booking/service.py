@@ -298,7 +298,9 @@ class BookingService:
         if not self._matches(action, visit):
             return await self.store.finish(action.action_id, ActionState.RECONCILING)
         self._option_visit_cache.pop(action.slot.doctor_id, None)
-        return await self.store.finish(action.action_id, ActionState.BOOKED, visit.id)
+        return await self.store.finish(
+            action.action_id, ActionState.BOOKED, visit.id, self.clock.now()
+        )
 
     @staticmethod
     def _matches(action: BookingAction, visit: Visit) -> bool:
@@ -335,5 +337,7 @@ class BookingService:
                 return action
             raise BookingError("VISIT_NOT_CONFIRMED")
         if len(matches) == 1:
-            return await self.store.finish(action_id, ActionState.BOOKED, matches[0].id)
+            return await self.store.finish(
+                action_id, ActionState.BOOKED, matches[0].id, self.clock.now()
+            )
         return await self.store.finish(action_id, ActionState.RECONCILING)

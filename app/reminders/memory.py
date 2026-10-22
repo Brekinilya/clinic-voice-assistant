@@ -4,7 +4,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 
 from app.dialogue.reminder_guard import check_reminder_guard
-from app.outbox.models import OutboxJob, reminder_sms_event
+from app.outbox.models import OutboxJob, no_answer_sms_event, reminder_sms_event
 from app.recovery.models import OwnershipLost
 from app.reminders.models import (
     AttemptResult,
@@ -53,6 +53,7 @@ class MemoryReminderStore:
                 event = reminder_sms_event(
                     job.id,
                     job.client_id,
+                    job.visit_id,
                     job.scheduled_at,
                     job.room,
                     now or job.next_at,
@@ -155,12 +156,22 @@ class MemoryReminderStore:
             saved = self.jobs[attempt.job_id]
             if saved.sms_pending:
                 event = reminder_sms_event(
-                    saved.id, saved.client_id, saved.scheduled_at, saved.room, now
+                    saved.id, saved.client_id, saved.visit_id, saved.scheduled_at, saved.room, now
                 )
+                self.outbox.setdefault(event.event_id, event)
+            if saved.state == "done" and saved.outcome == "NO_ANSWER":
+                event = no_answer_sms_event(saved.id, saved.client_id, saved.visit_id, now)
                 self.outbox.setdefault(event.event_id, event)
             return True
 
     async def outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
+        return tuple(
+            event
+            for event in await self.all_outbox_events(source_id)
+            if event.payload.kind == "reminder_sms"
+        )
+
+    async def all_outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
         return tuple(event for event in self.outbox.values() if event.source_id == source_id)
 
     async def stale(self, now: datetime) -> list[ReminderAttempt]:

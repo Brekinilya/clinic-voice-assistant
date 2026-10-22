@@ -2,10 +2,8 @@
 
 import re
 
-_DISTRESS = re.compile(
-    r"\b(?:я\s+умираю|мне\s+(?:очень|ужасно|совсем|крайне)\s+плохо|"
-    r"(?:стало|становится)\s+(?:очень\s+)?плохо)\b"
-)
+from app.policies.safety import is_explicit_distress as _is_explicit_distress
+
 _PAIN = re.compile(
     r"\b(?:болит|болят|побаливает|побаливают|сильно\s+болит|больно)\b"
     r".{0,32}\b(?:живот|голова|грудь|сердце|спина|горло|рука|нога|глаз|ухо)\b"
@@ -18,8 +16,7 @@ _ASSESSMENT_REQUEST = re.compile(
 
 
 def is_explicit_distress(text: str) -> bool:
-    normalized = " ".join(text.casefold().replace("ё", "е").split())
-    return bool(_DISTRESS.search(normalized))
+    return _is_explicit_distress(text)
 
 
 def asks_whether_to_call_doctor(text: str) -> bool:
@@ -30,7 +27,7 @@ def asks_whether_to_call_doctor(text: str) -> bool:
 def needs_urgent_screening(text: str) -> bool:
     normalized = " ".join(text.casefold().replace("ё", "е").split())
     return bool(
-        _DISTRESS.search(normalized)
+        _is_explicit_distress(normalized)
         or _PAIN.search(normalized)
         or _ASSESSMENT_REQUEST.search(normalized)
     )

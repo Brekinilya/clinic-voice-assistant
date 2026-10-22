@@ -5,6 +5,7 @@ from sqlalchemy import insert, select
 
 from app.booking.preferences import SlotPreferences
 from app.storage.booking import migrate
+from app.storage.outbox import PostgresOutboxStore
 from app.storage.schema import SCHEMA_VERSION, metadata, schema_versions, waitlist_requests
 from app.storage.waitlist import PostgresWaitlistStore
 from app.waitlist.memory import MemoryWaitlistStore
@@ -61,3 +62,7 @@ async def test_postgres_waitlist_creation_is_idempotent(pg_engine):
     assert replay == first
     assert await store.by_call("waitlist-call") == (first,)
     assert await store.recent() == (first,)
+    events = await PostgresOutboxStore(pg_engine).list()
+    waitlist_events = [event for event in events if event.payload.kind == "waitlist_sms"]
+    assert len(waitlist_events) == 1
+    assert waitlist_events[0].payload.client_id == first.client_id

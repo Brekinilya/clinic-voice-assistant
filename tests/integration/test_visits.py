@@ -235,17 +235,22 @@ async def test_third_party_query_does_not_lookup_or_disclose(text):
         assert emulator.write_count == 0
 
 
-async def test_booking_for_an_adult_relative_requires_staff_authorization():
+async def test_booking_for_an_adult_relative_does_not_disclose_existing_visits():
     async with pipeline() as (client, service, emulator, *_):
+        first = await turn(client, 1, "Запишите маму к хирургу")
+        state = await service.store.inspect("scenario")
+        assert state.guardian_call and state.purpose == "booking"
+        assert first["transfer"] is None and first["code"] != "PRIVACY_TRANSFER"
 
-        async def forbidden(*args, **kwargs):
-            raise AssertionError("карточка взрослого родственника не читается")
+        second = await turn(client, 2, IDENTITY)
+        assert second["code"] == "GUARDIAN_RELATION_REQUIRED"
+        assert "найден" not in " ".join(second["utterances"]).casefold()
 
-        service.booking.mis.clients = forbidden
-        service.booking.mis.visits = forbidden
-        result = await turn(client, 1, "Запишите маму к терапевту")
-        assert result["transfer"]["route"] == "R-16", result
-        assert result["phase"] == "handoff"
+        result = await turn(client, 3, "Мама")
+        assert result["transfer"] is None, result
+        assert result["phase"] in {"offered", "identified", "waitlist_consent"}
+        assert not result["visits"]
+        assert "Кузьмина" not in " ".join(result["utterances"])
         assert emulator.write_count == emulator.patch_count == 0
 
 

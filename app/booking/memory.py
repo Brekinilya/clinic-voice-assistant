@@ -145,7 +145,11 @@ class MemoryBookingStore:
             return action, True
 
     async def finish(
-        self, action_id: str, state: ActionState, visit_id: int | None = None
+        self,
+        action_id: str,
+        state: ActionState,
+        visit_id: int | None = None,
+        now: datetime | None = None,
     ) -> BookingAction:
         async with self._lock:
             action = self.actions[action_id]

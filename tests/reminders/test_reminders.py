@@ -297,6 +297,8 @@ async def test_no_answer_retries_after_two_hours_then_needs_sms(stand):
     [sms_event] = await stand.store.outbox_events(job.id)
     assert sms_event.payload.kind == "reminder_sms"
     assert sms_event.state == "pending"
+    all_events = await stand.store.all_outbox_events(job.id)
+    assert {event.payload.kind for event in all_events} == {"reminder_sms", "no_answer_sms"}
     stand.clock.value = at(19, 16)
     await stand.executor.tick()
     assert len(stand.dialer.calls) == 2

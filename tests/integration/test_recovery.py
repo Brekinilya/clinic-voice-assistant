@@ -20,6 +20,7 @@ from app.mis.budget import Priority, current_demand
 from app.mis.http import HttpMedicalSystem
 from app.mis.models import Visit, VisitCreate, VisitStatus
 from app.mis.ports import BudgetExhausted
+from app.outbox.models import EventKind
 from app.recovery.coordinator import OperationCoordinator
 from app.recovery.memory import MemoryRecoveryStore
 from app.recovery.models import Outcome, OwnershipLost
@@ -284,7 +285,9 @@ async def test_lost_move_cancel_is_completed_by_reads_only(recovery_engine):
         assert len(await outbox(env.service, recovery_engine).list()) == 2
 
 
-async def test_external_cancellation_archives_projection_without_our_notifications(recovery_engine):
+async def test_external_cancellation_archives_projection_without_cancellation_notice(
+    recovery_engine,
+):
     async with environment(recovery_engine) as env:
         held = await reserve(env.client)
         assert (await turn(env.client, 4, "Да"))["code"] == "BOOKED"
@@ -295,7 +298,9 @@ async def test_external_cancellation_archives_projection_without_our_notificatio
         assert (
             await env.booking.store.get(held["proposal"]["action_id"])
         ).state == ActionState.ARCHIVED
-        assert not await outbox(env.service, recovery_engine).list()
+        jobs = await outbox(env.service, recovery_engine).list()
+        expected_kinds = [] if recovery_engine is None else [EventKind.APPOINTMENT_SMS]
+        assert [job.payload.kind for job in jobs] == expected_kinds
         assert env.emulator.patch_count == 0
 
 

@@ -28,13 +28,13 @@ steps:
     say: home_visit.ask_can_come
   - patient: Нет, тяжело
     parse: {expect: yes_no, intent: "no"}
-    say: home_visit.accepted
+    say: home_visit.pending
   - patient: Да
     say: home_visit.done
     end: true
 
 result:
-  code: HOME_VISIT_REQUESTED
+  code: HOME_VISIT_PENDING
   stand: unchanged
   # Заявки на дом в стенде нет — хранится у нас со статусом «Требует подтверждения»
   home_visit: {client: sokolov_av, date: "30.09.2026", reason: "Температура со вчерашнего дня, слабость, кашель"}

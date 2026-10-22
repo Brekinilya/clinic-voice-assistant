@@ -179,13 +179,55 @@ async def test_unspecified_symptoms_get_boundary_and_booking_offer(phrase):
 
 
 @pytest.mark.parametrize("phrase", ["Я умираю", "Мне очень плохо"])
-async def test_unspecified_distress_without_a_red_flag_gets_the_medical_boundary(phrase):
+async def test_explicit_distress_uses_emergency_route_even_without_dictionary_red_flag(phrase):
     async with pipeline() as (client, service, emulator, *_):
         result = await turn(client, 1, phrase)
-        assert result["code"] == "MEDICAL_BOUNDARY", result
-        assert result["transfer"] is None
-        assert "медицинские советы" in spoken(result).casefold()
+        assert result["code"] == "EMERGENCY", result
+        assert result["transfer"]["route"] == "R-01"
+        assert result["transfer"]["priority"] == "P1"
+        assert "сто три" in spoken(result).casefold()
+        assert "сто двенадцать" in spoken(result).casefold()
         assert (await service.store.inspect("scenario")).client_id is None
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+async def test_explicit_distress_is_routed_on_partial_asr_before_final_transcript():
+    async with pipeline() as (client, service, emulator, *_):
+        result = await turn(client, 1, "Я умираю", final=False)
+        assert result["code"] == "EMERGENCY", result
+        assert result["transfer"]["route"] == "R-01"
+        assert result["transfer"]["priority"] == "P1"
+        assert "сто три" in spoken(result).casefold()
+        assert "сто двенадцать" in spoken(result).casefold()
+        assert (await service.store.inspect("scenario")).phase.value == "handoff"
+        assert emulator.write_count == emulator.patch_count == 0
+
+
+@pytest.mark.parametrize("phase", ["ready", "identifying", "offered", "held"])
+@pytest.mark.parametrize("phrase", ["Я умираю", "Мне очень плохо"])
+async def test_explicit_distress_preempts_every_booking_phase_without_mutation(phase, phrase):
+    async with pipeline() as (client, service, emulator, *_):
+        next_turn = 1
+        if phase != "ready":
+            await turn(client, next_turn, "Запишите к терапевту")
+            next_turn += 1
+        if phase in {"offered", "held"}:
+            await turn(client, next_turn, IDENTITY)
+            next_turn += 1
+        if phase == "held":
+            held = await turn(client, next_turn, "Давайте первый")
+            next_turn += 1
+        result = await turn(client, next_turn, phrase)
+        assert result["code"] == "EMERGENCY", result
+        assert result["transfer"]["route"] == "R-01"
+        assert result["transfer"]["priority"] == "P1"
+        assert "сто три" in spoken(result).casefold()
+        assert "сто двенадцать" in spoken(result).casefold()
+        assert result["proposal"] is None
+        assert (await service.store.inspect("scenario")).phase.value == "handoff"
+        if phase == "held":
+            action = await service.booking.store.get(held["proposal"]["action_id"])
+            assert action.state.value == "cancelled"
         assert emulator.write_count == emulator.patch_count == 0
 
 
