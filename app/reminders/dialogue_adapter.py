@@ -34,3 +34,7 @@ class ReminderActionAdapter:
     async def opt_out(self, binding, approval):
         await self.check_attempt(binding)
         return await self.marks.opt_out(binding, approval)
+
+    async def opt_out_all(self, binding, approval):
+        await self.check_attempt(binding)
+        return await self.marks.opt_out_all(binding, approval)

@@ -40,6 +40,7 @@ async def run(args, store: ReminderStore, reminders: ReminderSettings) -> dict:
             "client_id": args.client_id,
             "saved": True,
             "opt_out": contact.opt_out_at is not None,
+            "notification_opt_out": contact.notification_opt_out_at is not None,
         }
     if args.command == "contact-show":
         contact = await store.contact(args.client_id)
@@ -51,6 +52,9 @@ async def run(args, store: ReminderStore, reminders: ReminderSettings) -> dict:
             "opt_out_at": None
             if contact is None or contact.opt_out_at is None
             else contact.opt_out_at.isoformat(),
+            "notification_opt_out_at": None
+            if contact is None or contact.notification_opt_out_at is None
+            else contact.notification_opt_out_at.isoformat(),
         }
     jobs = await store.list_jobs(args.day, args.state, args.limit)
     return {

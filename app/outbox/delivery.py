@@ -40,7 +40,21 @@ def journal_entry(job: OutboxJob, clock: Clock) -> JournalEntry:
             "Записаться снова: 700-07-07 или Госуслуги."
         )
     if isinstance(job.payload, ReminderSms):
-        text = "Поликлиника № 7: пожалуйста, перезвоните в регистратуру."
+        at = job.payload.scheduled_at.astimezone(CLINIC_TIMEZONE)
+        weekday = (
+            "понедельник",
+            "вторник",
+            "среду",
+            "четверг",
+            "пятницу",
+            "субботу",
+            "воскресенье",
+        )[at.weekday()]
+        room = f", каб. {job.payload.room}" if job.payload.room else ""
+        text = (
+            f"Поликлиника № 7: напоминаем о приёме {weekday}, {at:%d.%m}, "
+            f"в {at:%H:%M}{room}. Не сможете прийти — сообщите: 700-07-07"
+        )
     return JournalEntry(
         event_id=job.event_id, payload=job.payload, recorded_at=clock.now(), text=text
     )

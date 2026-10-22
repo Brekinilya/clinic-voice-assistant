@@ -26,6 +26,7 @@ from app.reminders.ports import ReminderStore
 log = logging.getLogger(__name__)
 
 OPT_OUT = "Отказ от обзвона"
+NOTIFICATION_OPT_OUT = "Отказ от уведомлений"
 LOCK_TTL = timedelta(seconds=120)
 LOCK_TRIES = 10
 
@@ -49,7 +50,7 @@ def confirmed_in(comment: str | None, visit_id: int, scheduled_at) -> bool:
 
 
 def opted_out(comment: str | None) -> bool:
-    return any(line.startswith(OPT_OUT) for line in lines(comment))
+    return any(line.startswith((OPT_OUT, NOTIFICATION_OPT_OUT)) for line in lines(comment))
 
 
 def appended(comment: str | None, line: str) -> str | None:
@@ -99,6 +100,17 @@ class ReminderMarks:
         # Локальный запрет сразу: будущие задания прекращаются даже при недоступной МИС
         await self.store.opt_out(context.client_id, now)
         mark = self._mark(context, "opt_out", f"{OPT_OUT} {format_date(now.date())}")
+        return await self._apply(mark, context, check_visit=False, approval=approval)
+
+    async def opt_out_all(self, context: OutboundContext, approval=None) -> MisStatus:
+        if self.require_dialogue_guard and approval is None:
+            raise OwnershipLost()
+        now = self.clock.now()
+        # Сразу запрещаем звонки и подавляем все ещё не начатые SMS-напоминания.
+        await self.store.opt_out_all(context.client_id, now)
+        mark = self._mark(
+            context, "opt_out_all", f"{NOTIFICATION_OPT_OUT} {format_date(now.date())}"
+        )
         return await self._apply(mark, context, check_visit=False, approval=approval)
 
     async def reconcile(self) -> int:

@@ -16,12 +16,18 @@ log = logging.getLogger(__name__)
 
 class ReminderPlanner:
     def __init__(
-        self, mis: MedicalSystem, store: ReminderStore, calendar: ClinicCalendar, clock: Clock
+        self,
+        mis: MedicalSystem,
+        store: ReminderStore,
+        calendar: ClinicCalendar,
+        clock: Clock,
+        rooms=None,
     ):
         self.mis = mis
         self.store = store
         self.calendar = calendar
         self.clock = clock
+        self.rooms = rooms
 
     async def plan(self, call_day: date) -> int:
         """Один раз за день звонка. Возвращает число новых заданий, которые будут звонить."""
@@ -54,13 +60,22 @@ class ReminderPlanner:
                 client_id=visit.client_id,
                 doctor_id=visit.doctor.id,
                 scheduled_at=visit.scheduled_at,
+                room=(
+                    self.rooms.room(visit.doctor.id, visit.scheduled_at)
+                    if self.rooms is not None
+                    else None
+                ),
                 call_day=call_day,
                 next_at=max(start, now, visit.created_at + FRESH_VISIT),
+                sms_pending=(
+                    (contact := await self.store.contact(visit.client_id)) is None
+                    or contact.notification_opt_out_at is None
+                ),
             )
             reason = await self._skip_reason(job, end)
             if reason is not None:
                 job = job.model_copy(update={"state": "skipped", "reason": reason})
-            if await self.store.add_job(job) and reason is None:
+            if await self.store.add_job(job, now) and reason is None:
                 created += 1
         await self.store.mark_planned(call_day)
         log.info("напоминания на %s: визитов %s, к звонку %s", call_day, len(visits), created)

@@ -66,6 +66,7 @@ async def migrate(engine: AsyncEngine) -> None:
             [9],
             [10],
             [11],
+            [12],
             [SCHEMA_VERSION],
         ):
             raise RuntimeError("неподдерживаемая версия схемы backend")
@@ -121,6 +122,30 @@ async def migrate(engine: AsyncEngine) -> None:
                     "ALTER TABLE mis_budget_requests ADD COLUMN IF NOT EXISTS hold_until TIMESTAMP WITH TIME ZONE"
                 )
             )
+            await connection.execute(
+                text(
+                    "ALTER TABLE reminder_contacts ADD COLUMN IF NOT EXISTS notification_opt_out_at TIMESTAMP WITH TIME ZONE"
+                )
+            )
+            await connection.execute(
+                text("ALTER TABLE reminder_jobs ADD COLUMN IF NOT EXISTS room VARCHAR(120)")
+            )
+            if versions:
+                await connection.execute(
+                    text(
+                        "ALTER TABLE reminder_marks DROP CONSTRAINT IF EXISTS reminder_marks_kind_check"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE reminder_marks DROP CONSTRAINT IF EXISTS reminder_marks_kind_allowed"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE reminder_marks ADD CONSTRAINT reminder_marks_kind_allowed CHECK (kind IN ('confirm','opt_out','opt_out_all'))"
+                    )
+                )
             await connection.execute(update(schema_versions).values(version=SCHEMA_VERSION))
 
 

@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 schema_versions = Table("backend_schema", metadata, Column("version", Integer, primary_key=True))
 debug_events = Table(
     "backend_debug_events",
@@ -242,6 +242,7 @@ reminder_jobs = Table(
     Column("client_id", Integer, nullable=False),
     Column("doctor_id", Integer, nullable=False),
     Column("scheduled_at", DateTime(timezone=True), nullable=False),
+    Column("room", String(120)),
     Column("call_day", Date, nullable=False),
     Column("state", String(16), nullable=False),
     Column("next_at", DateTime(timezone=True), nullable=False),
@@ -307,6 +308,7 @@ reminder_contacts = Table(
     Column("client_id", Integer, primary_key=True),
     Column("endpoint", String(200), nullable=False),
     Column("opt_out_at", DateTime(timezone=True)),
+    Column("notification_opt_out_at", DateTime(timezone=True)),
     CheckConstraint("client_id > 0"),
 )
 reminder_confirmations = Table(
@@ -332,7 +334,9 @@ reminder_marks = Table(
     Column("reason", String(64)),
     Column("next_check_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True), nullable=False),
-    CheckConstraint("kind IN ('confirm','opt_out')"),
+    CheckConstraint(
+        "kind IN ('confirm','opt_out','opt_out_all')", name="reminder_marks_kind_allowed"
+    ),
     CheckConstraint("state IN ('prepared','sending','unknown','applied','manual')"),
 )
 Index("reminder_mark_check", reminder_marks.c.state, reminder_marks.c.next_check_at)

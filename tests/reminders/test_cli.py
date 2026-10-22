@@ -22,7 +22,12 @@ def args(*argv):
 
 async def test_contact_defaults_to_the_team_softphone(reminder_store):  # noqa: F811
     result = await run(args("contact-set", "--client-id", "3"), reminder_store, SETTINGS)
-    assert result == {"client_id": 3, "saved": True, "opt_out": False}
+    assert result == {
+        "client_id": 3,
+        "saved": True,
+        "opt_out": False,
+        "notification_opt_out": False,
+    }
     assert (await reminder_store.contact(3)).endpoint == PHONE
     shown = await run(args("contact-show", "--client-id", "3"), reminder_store, SETTINGS)
     assert shown == {
@@ -30,6 +35,7 @@ async def test_contact_defaults_to_the_team_softphone(reminder_store):  # noqa: 
         "has_contact": True,
         "endpoint_allowed": True,
         "opt_out_at": None,
+        "notification_opt_out_at": None,
     }
     assert PHONE not in json.dumps(shown)
 

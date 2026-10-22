@@ -9,7 +9,7 @@ from app.dialogue.models import DialogueState, Turn
 from app.handoffs.memory import MemoryHandoffStore
 from app.handoffs.models import TransferState
 from app.handoffs.service import HandoffService, HandoffSettings
-from app.mis.models import EscalationCreate
+from app.mis.models import Escalation, EscalationCreate
 
 
 class Clock:
@@ -33,6 +33,39 @@ async def test_handoff_card_marks_verified_patient_calling_through_representativ
     assert request.identity_status == "verified"
     assert request.client_id == 42
     assert request.caller_is_representative is True
+
+
+@pytest.mark.asyncio
+async def test_delayed_lab_result_is_queued_with_required_escalation_header_once():
+    class Mis:
+        async def create_escalation(self, payload):
+            self.payload = payload
+            return Escalation(
+                id=91,
+                client_id=payload.client_id,
+                description=payload.description,
+                created_at=Clock().now(),
+            )
+
+        async def escalations(self, client_id, *, limit, offset):
+            return []
+
+    store, mis = MemoryHandoffStore(), Mis()
+    service = HandoffService(store, mis, Clock(), b"x" * 32, HandoffSettings(enabled=True))
+    state = DialogueState(call_id="lab-delay-call", client_id=42)
+
+    request = await service.queue_laboratory_delay("lab-delay-call", state, 42)
+    operation = store.mis_operations[request.mis_operation_id]
+    assert operation.description.splitlines()[0] == "ПЕРЕВОД R-08 P3"
+    assert operation.description.splitlines()[1].startswith(f"[{operation.marker}]")
+    assert operation.state.value == "pending"
+
+    same = await service.queue_laboratory_delay("lab-delay-call", state, 42)
+    assert same.request_id == request.request_id
+    assert len(store.mis_operations) == 1
+    assert await service.deliver_mis_once() == 1
+    assert mis.payload.description == operation.description
+    assert (await store.get_request(request.request_id)).mis_state.value == "applied"
 
 
 def test_escalation_payload_matches_the_primary_source_shape():

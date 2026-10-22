@@ -52,6 +52,8 @@ class RescheduleSms(OutboxModel):
 class ReminderSms(OutboxModel):
     kind: Literal[EventKind.REMINDER_SMS] = EventKind.REMINDER_SMS
     client_id: MisId = Field(repr=False)
+    scheduled_at: AwareDatetime
+    room: str | None = None
 
 
 Payload = Annotated[
@@ -122,8 +124,10 @@ def event_id(source_id: str, kind: EventKind) -> str:
     return uuid5(NAMESPACE_URL, f"clinic/{source}/{source_id}/{kind}").hex
 
 
-def reminder_sms_event(source_id: str, client_id: MisId, now: datetime) -> OutboxJob:
-    payload = ReminderSms(client_id=client_id)
+def reminder_sms_event(
+    source_id: str, client_id: MisId, scheduled_at: datetime, room: str | None, now: datetime
+) -> OutboxJob:
+    payload = ReminderSms(client_id=client_id, scheduled_at=scheduled_at, room=room)
     return OutboxJob(
         event_id=event_id(source_id, payload.kind),
         source_id=source_id,

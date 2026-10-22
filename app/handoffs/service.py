@@ -74,7 +74,7 @@ class HandoffService:
             identity_status="verified",
             client_id=state.client_id,
             purpose="home_visit",
-            summary="Заявка на вызов врача на дом; ожидает подтверждения регистратора.",
+            summary="Вызов врача на дом; регистратору нужно подтвердить дату и адрес обслуживания.",
             recording_opt_out=state.recording_opt_out,
             home_visit_state="pending_confirmation",
             home_visit_payload_ciphertext=payload_ciphertext,
@@ -204,14 +204,21 @@ class HandoffService:
             await self._mark_request(saved, mis_state=MisDeliveryState.MANUAL)
 
     def _new_mis_operation(
-        self, request: HandoffRequest, kind: str, client_id: int, outcome: TransferState
+        self,
+        request: HandoffRequest,
+        kind: str,
+        client_id: int,
+        outcome: TransferState,
+        *,
+        description_override: str | None = None,
     ) -> MisOperation:
         operation_id = uuid4().hex
         marker = f"T08:{operation_id}"
         label = "Экстренное уведомление" if kind == "emergency_notice" else "Передача разговора"
-        description = f"[{marker}] {label}. Маршрут {request.route}, исход {outcome.value}. {request.summary}"[
-            :1000
-        ]
+        description = description_override or (
+            f"[{marker}] {label}. Маршрут {request.route}, исход {outcome.value}. {request.summary}"
+        )
+        description = description[:1000]
         return MisOperation(
             operation_id=operation_id,
             request_id=request.request_id,
@@ -222,6 +229,46 @@ class HandoffService:
             state=MisDeliveryState.PENDING,
             created_at=self.clock.now().astimezone(CLINIC_TIMEZONE),
         )
+
+    async def queue_laboratory_delay(
+        self, call_id: str, state: DialogueState, client_id: int
+    ) -> HandoffRequest:
+        """Сохраняет просроченный результат в очереди и планирует POST /escalations."""
+        identified = state.model_copy(update={"client_id": client_id})
+        request = await self.ensure_request(
+            call_id,
+            "R-08",
+            "P3",
+            identified,
+            summary_override="Просрочен результат анализа; требуется обратный звонок из лаборатории.",
+        )
+        if request.mis_operation_id is not None:
+            return request
+        operation_id = uuid4().hex
+        marker = f"T08:{operation_id}"
+        description = (
+            "ПЕРЕВОД R-08 P3\n"
+            f"[{marker}] Просрочен результат анализа. Требуется связаться с пациентом."
+        )
+        operation = MisOperation(
+            operation_id=operation_id,
+            request_id=request.request_id,
+            kind="transfer",
+            client_id=client_id,
+            description=description,
+            marker=marker,
+            state=MisDeliveryState.PENDING,
+            created_at=self.clock.now().astimezone(CLINIC_TIMEZONE),
+        )
+        try:
+            await self.store.create_mis_operation(operation)
+        except HandoffConflict:
+            current = await self.store.get_request(request.request_id)
+            if current is not None and current.mis_operation_id is not None:
+                return current
+            raise
+        current = await self.store.get_request(request.request_id)
+        return current or request
 
     async def _prepare_operation(self, request: HandoffRequest, kind: str, client_id: int) -> None:
         current = await self.store.get_request(request.request_id)
@@ -1076,10 +1123,11 @@ class HandoffService:
                             continue
                         seen[item.id] = item
                         if operation.marker in item.description:
+                            marker_position = item.description.find(f"[{operation.marker}] ")
                             if (
                                 item.client_id != operation.client_id
                                 or item.description != operation.description
-                                or not item.description.startswith(f"[{operation.marker}] ")
+                                or marker_position not in {0, item.description.find("\n") + 1}
                             ):
                                 marker_conflict = True
                             else:

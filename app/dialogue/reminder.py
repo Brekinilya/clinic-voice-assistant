@@ -51,10 +51,17 @@ ATTEND_YES = {
     "да все верно",
     "все верно",
 }
-OPT_OUT = re.compile(
+FULL_OPT_OUT = re.compile(
+    r"\b(?:откажитесь от (?:всех )?(?:уведомлений|напоминаний)|"
+    r"отказ(?:ываюсь)? от (?:всех )?(?:уведомлений|напоминаний)|"
+    r"отключите(?: все)? (?:уведомления|напоминания)|не хочу (?:получать )?(?:никаких )?(?:уведомлений|напоминаний)|"
+    r"не присылайте (?:мне )?(?:смс|sms)|не звоните (?:и )?не присылайте (?:мне )?(?:смс|sms)|"
+    r"не звоните (?:и )?не пишите|ни звонков[,]? ни (?:смс|sms))\b"
+)
+CALL_OPT_OUT = re.compile(
     r"\b(?:не (?:звоните|беспокойте)|не (?:надо|нужно) (?:мне )?(?:больше )?звонить|"
     r"уберите (?:мой )?номер|отказ(?:ываюсь)? от обзвона|"
-    r"отключите (?:обзвон|напоминания)|не хочу получать напоминания)\b"
+    r"отключите обзвон)\b"
 )
 WRONG_PERSON = re.compile(r"\b(?:не я|не он|не она|ошиблись|ошиблись номером|другой человек)\b")
 GOODBYE = {"до свидания", "всего доброго", "пока", "закончим разговор", "не хочу разговаривать"}
@@ -182,11 +189,18 @@ class ReminderConversation:
                 else ("Спасибо. Ваш ответ сохранён; отметка в системе ещё требует проверки.")
             )
             return await self.finish(state, turn, "CONFIRMED", text, status=status)
-        text = (
-            "Отказ от обзвона сохранён. Всего доброго."
-            if status == "applied"
-            else ("Отказ от обзвона сохранён локально. Отметка в системе ещё требует проверки.")
-        )
+        if operation == "opt_out_all":
+            text = (
+                "Хорошо, звонки и SMS-напоминания отключены. Всего доброго."
+                if status == "applied"
+                else "Звонки и SMS-напоминания отключены. Отметка в системе ещё требует проверки."
+            )
+        else:
+            text = (
+                "Хорошо, больше не буду звонить с напоминаниями. Вы будете получать только SMS."
+                if status == "applied"
+                else "Звонки отключены, SMS-напоминания останутся. Отметка в системе ещё требует проверки."
+            )
         return await self.finish(state, turn, "OPT_OUT", text, status=status)
 
     async def _pending(self, state) -> bool:
@@ -373,14 +387,14 @@ class ReminderConversation:
                 code="REMINDER_RESTART_CONTEXT",
             )
         if state.phase == Phase.REMIND_VERIFY:
-            if OPT_OUT.search(text):
+            if FULL_OPT_OUT.search(text) or CALL_OPT_OUT.search(text):
                 # Номер нельзя продолжать обзванивать, но третье лицо не меняет карточку пациента.
                 await self.actions.stop_calls(state.reminder.binding)
                 return await self.finish(
                     state,
                     turn,
                     "OPT_OUT",
-                    "Звонки на этот контакт отключены. Отметку в карточке пациента должен проверить сотрудник.",
+                    "Звонки на этот номер отключены. Для отказа от SMS пациенту нужно подтвердить запрос.",
                     status="manual",
                 )
             if text in VERIFY_YES:
@@ -402,7 +416,9 @@ class ReminderConversation:
         else:
             if not state.reminder.verified or state.client_id != state.reminder.binding.client_id:
                 return await self.handoff(state, turn)
-            if OPT_OUT.search(text):
+            if FULL_OPT_OUT.search(text):
+                return await self._mark(state, turn, "opt_out_all")
+            if CALL_OPT_OUT.search(text):
                 return await self._mark(state, turn, "opt_out")
             if WRONG_PERSON.search(text):
                 if await self._pending(state):

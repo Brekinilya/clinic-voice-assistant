@@ -48,9 +48,6 @@ class AttemptResult(StrEnum):
 # После этих исходов разговора второй попытки нет
 FINAL = frozenset(Outcome) - {Outcome.NO_ANSWER}
 RETRYABLE = frozenset({AttemptResult.NO_ANSWER, AttemptResult.FAILED})
-# Пациента не застали: регламент требует SMS-напоминания
-NEEDS_SMS = frozenset({Outcome.NO_ANSWER, Outcome.WRONG_PERSON})
-
 JobState = Literal["planned", "calling", "waiting_retry", "done", "skipped", "manual"]
 AttemptState = Literal["claimed", "dialing", "answered", "finished", "unknown", "abandoned"]
 # Фиксация исхода в МИС: намерение пациента и подтверждённая запись — разные факты
@@ -77,6 +74,7 @@ class ReminderJob(BookingModel):
     # Отпечаток визита: тот же visit_id с другим временем или врачом — уже другое задание
     doctor_id: MisId
     scheduled_at: AwareDatetime
+    room: str | None = None
     call_day: date
     state: JobState = "planned"
     next_at: AwareDatetime
@@ -84,7 +82,7 @@ class ReminderJob(BookingModel):
     outcome: str | None = None
     mis_status: MisStatus | None = None
     reason: str | None = None
-    # SMS-напоминание нужно, но канала доставки пока нет: флаг виден, отправленным не считается
+    # SMS-напоминание поставлено в outbox; это ещё не подтверждает доставку пациенту.
     sms_pending: bool = False
     version: int = 0
 
@@ -113,9 +111,10 @@ class Contact(BookingModel):
     client_id: MisId = Field(repr=False)
     endpoint: str = Field(min_length=1, max_length=200, repr=False)
     opt_out_at: AwareDatetime | None = None
+    notification_opt_out_at: AwareDatetime | None = None
 
 
-MarkKind = Literal["confirm", "opt_out"]
+MarkKind = Literal["confirm", "opt_out", "opt_out_all"]
 MarkState = Literal["prepared", "sending", "unknown", "applied", "manual"]
 # Сколько раз только читаем комментарий после неизвестного исхода PATCH, прежде чем позвать человека
 MARK_CHECKS = 3
@@ -168,7 +167,8 @@ def after_attempt(
             "outcome": result,
             "mis_status": mis_status or "not_required",
             "reason": reason,
-            "sms_pending": result in NEEDS_SMS,
+            # Планировщик ставит SMS в очередь заранее для каждого визита.
+            "sms_pending": job.sms_pending,
             "next_at": now,
         }
     if result == AttemptResult.SKIPPED:
@@ -193,6 +193,6 @@ def after_attempt(
         "state": "done",
         "outcome": Outcome.NO_ANSWER,
         "reason": reason or result,
-        "sms_pending": True,
+        "sms_pending": job.sms_pending,
         "next_at": now,
     }
