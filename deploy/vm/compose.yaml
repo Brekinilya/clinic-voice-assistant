@@ -66,6 +66,8 @@ services:
     depends_on:
       database:
         condition: service_healthy
+    healthcheck:
+      disable: true
     init: true
     restart: unless-stopped
   # Обновитель индекса расписания: кандидат строится и проверяется рядом с рабочим
