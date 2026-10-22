@@ -1,3 +1,5 @@
+import pytest
+
 from app.dialogue.models import Reply
 from tests.scenarios.context_matrix import patient_steps
 from tests.scenarios.runtime import ScenarioRuntime
@@ -37,6 +39,16 @@ async def test_goodbye_at_booking_confirmation_never_confirms_the_booking():
         ended = await advance(client, runtime.call_id, 6, "Да.")
         assert ended.phase == "ended"
         assert len(runtime.snapshot()) == records_before
+
+
+@pytest.mark.parametrize("phrase", ["Здравствуйте", "Алло", "Ало", "Меня слышно?"])
+async def test_greetings_and_telephony_checks_receive_a_natural_response(phrase):
+    runtime = ScenarioRuntime(dialog_by_label("M-01"))
+    async with runtime.application() as client:
+        result = await advance(client, runtime.call_id, 1, phrase)
+
+    assert result.code == "GREETING"
+    assert "Здравствуйте! Я вас слышу." in result.utterances
 
 
 async def test_more_options_returns_a_new_page_without_repeating_slots():
