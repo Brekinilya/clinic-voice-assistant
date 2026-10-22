@@ -20,10 +20,15 @@ from app.outbox.models import (
     JobState,
     OutboxError,
     appointment_sms_event,
+    cancellation_events,
     prepare_comment_event,
     waitlist_sms_event,
 )
-from app.outbox.ports import DeliveryUnknown, PermanentDeliveryFailure, TemporaryDeliveryFailure
+from app.outbox.ports import (
+    DeliveryUnknown,
+    PermanentDeliveryFailure,
+    TemporaryDeliveryFailure,
+)
 from app.outbox.worker import OutboxWorker
 from app.storage.cancellation import PostgresCancellationStore
 from app.storage.memory_ledger import MemoryLedger
@@ -458,4 +463,18 @@ async def test_comment_delivery_respects_notification_opt_out():
     with pytest.raises(PermanentDeliveryFailure) as failure:
         await delivery.deliver(job)
     assert failure.value.code == "NOTIFICATION_OPTED_OUT"
+    assert mis.patches == 0 and mis.comment == "старый комментарий"
+
+
+async def test_comment_delivery_blocks_unassigned_released_slot(outbox_context):
+    ctx = outbox_context
+    released = cancellation_events(ctx.action, ctx.clock.now())[1]
+    ledger = MemoryLedger()
+    ledger.outbox[released.event_id] = released
+    store = MemoryOutboxStore(ledger)
+    mis = _CommentMis("старый комментарий")
+    delivery = PostgresClientCommentDelivery(mis, _CommentLock(), ctx.clock)
+    job = await OutboxWorker(store, delivery, ctx.clock).run_once()
+    assert job.state == JobState.BLOCKED
+    assert job.last_error == "SLOT_OFFER_NOT_CONFIGURED"
     assert mis.patches == 0 and mis.comment == "старый комментарий"

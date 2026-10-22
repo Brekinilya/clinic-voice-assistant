@@ -11,8 +11,9 @@ from app.mis.budget import Priority, demand
 from app.mis.models import ClientComment
 from app.mis.ports import BudgetExhausted, MisError, MisOutcomeUnknown
 from app.outbox.delivery import journal_entry, journal_receipt
-from app.outbox.models import DeliveryReceipt, JournalEntry, OutboxError, OutboxJob
+from app.outbox.models import DeliveryReceipt, JournalEntry, OutboxError, OutboxJob, ReleasedSlot
 from app.outbox.ports import (
+    DeliveryBlocked,
     DeliveryUnknown,
     PermanentDeliveryFailure,
     TemporaryDeliveryFailure,
@@ -65,6 +66,8 @@ class PostgresClientCommentDelivery:
 
     async def deliver(self, job: OutboxJob) -> DeliveryReceipt:
         payload = job.payload
+        if isinstance(payload, ReleasedSlot):
+            raise DeliveryBlocked("SLOT_OFFER_NOT_CONFIGURED")
         line = getattr(payload, "expected_line", None)
         client_id = getattr(payload, "client_id", None)
         if line is None or client_id is None:
