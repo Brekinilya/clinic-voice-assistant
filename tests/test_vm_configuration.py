@@ -16,6 +16,7 @@ def test_public_vm_uses_platform_auth_without_app_password():
         (Path(__file__).resolve().parents[1] / "deploy/vm/compose.yaml").read_text("utf-8")
     )
     assert compose["services"]["app"]["environment"]["WEB_ACCESS_ENABLED"] == "false"
+    assert compose["services"]["app"]["environment"]["PLATFORM_ACCESS_PROTECTED"] == "true"
 
 
 @pytest.mark.parametrize("suffix", ["", "/", "/api/v1", "/api/v1/"])

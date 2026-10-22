@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     web_access_enabled: bool = False
     web_access_user: str = "clinic"
     web_access_password: SecretStr = SecretStr("")
+    # Доступ проверяет внешний платформенный прокси до передачи запроса приложению.
+    platform_access_protected: bool = False
     # Тексты диагностических событий доступны только команде, не более часа.
     debug_panel_enabled: bool = False
 
@@ -66,8 +68,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:
-        if self.debug_panel_enabled and not self.web_access_enabled:
-            raise ValueError("для DEBUG_PANEL_ENABLED нужен защищённый вход WEB_ACCESS_ENABLED")
+        if self.debug_panel_enabled and not (
+            self.web_access_enabled or self.platform_access_protected
+        ):
+            raise ValueError(
+                "для DEBUG_PANEL_ENABLED нужен WEB_ACCESS_ENABLED "
+                "или PLATFORM_ACCESS_PROTECTED"
+            )
         if self.debug_panel_enabled and not (self.backend_demo_enabled or self.dialogue_enabled):
             raise ValueError("для DEBUG_PANEL_ENABLED нужен включённый диалог")
         if self.web_access_enabled and (
