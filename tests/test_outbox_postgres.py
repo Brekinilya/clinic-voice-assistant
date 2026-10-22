@@ -115,6 +115,31 @@ async def test_migration_eleven_allows_reminder_sms_sources(pg_engine):
     assert not any("source_id" in fk["constrained_columns"] for fk in foreign_keys)
     assert source_column["type"].length == 128
     assert "reschedule_sms" in kind_constraint["sqltext"]
+    assert "no_answer_sms" in kind_constraint["sqltext"]
+
+
+@pytest.mark.postgres
+async def test_migration_thirteen_adds_comment_event_kinds(pg_engine):
+    async with pg_engine.begin() as connection:
+        await connection.execute(update(schema_versions).values(version=13))
+        await connection.execute(
+            text("ALTER TABLE backend_outbox_jobs DROP CONSTRAINT backend_outbox_kind_allowed")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE backend_outbox_jobs ADD CONSTRAINT backend_outbox_kind_allowed "
+                "CHECK (kind IN ('cancellation_sms','slot_released','reschedule_sms','reminder_sms'))"
+            )
+        )
+    await migrate(pg_engine)
+    async with pg_engine.connect() as connection:
+        checks = await connection.run_sync(
+            lambda sync: inspect(sync).get_check_constraints("backend_outbox_jobs")
+        )
+        version = await connection.scalar(select(schema_versions.c.version))
+    kinds = next(check["sqltext"] for check in checks if "kind IN" in check["sqltext"])
+    assert version == SCHEMA_VERSION
+    assert all(name in kinds for name in ("appointment_sms", "waitlist_sms", "no_answer_sms"))
 
 
 @pytest.mark.postgres

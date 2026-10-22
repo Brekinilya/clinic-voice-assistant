@@ -1,6 +1,7 @@
 """Одинаковые гарантии очереди в памяти и PostgreSQL, включая неизвестный результат."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -11,16 +12,23 @@ from app.booking.models import Approval
 from app.cancellation.memory import MemoryCancellationStore
 from app.cancellation.models import CancelState
 from app.demo import DemoClock, demo_emulator
-from app.mis.models import Visit, VisitStatus
+from app.mis.models import Client, Visit, VisitStatus
 from app.outbox.delivery import DisabledDelivery, MemoryJournalDelivery, journal_receipt
 from app.outbox.memory import MemoryOutboxStore
-from app.outbox.models import EventKind, JobState, OutboxError
+from app.outbox.models import (
+    EventKind,
+    JobState,
+    OutboxError,
+    appointment_sms_event,
+    prepare_comment_event,
+    waitlist_sms_event,
+)
 from app.outbox.ports import DeliveryUnknown, PermanentDeliveryFailure, TemporaryDeliveryFailure
 from app.outbox.worker import OutboxWorker
 from app.storage.cancellation import PostgresCancellationStore
 from app.storage.memory_ledger import MemoryLedger
 from app.storage.outbox import PostgresOutboxStore
-from app.storage.outbox_delivery import PostgresJournalDelivery
+from app.storage.outbox_delivery import PostgresClientCommentDelivery, PostgresJournalDelivery
 from app.storage.schema import delivery_journal
 
 
@@ -338,3 +346,116 @@ async def test_reconcile_expired_worker_does_not_claim_another_job(outbox_contex
     assert len(await ctx.store.list(state=JobState.PENDING)) == 1
     assert await ctx.store.recover_expired(ctx.clock.now()) == 0
     assert len(await entries(ctx)) == 1
+
+
+def test_comment_mark_freezes_gmt4_time_and_uses_exact_visit_id():
+    clock = DemoClock()
+    job = appointment_sms_event("action-1", 1, 17, clock.now(), clock.now())
+    prepared = prepare_comment_event(job, clock.now())
+    assert prepared.payload.expected_line == "SMS Запись создана #17 14.10.2026 09:00"
+    changed = prepared.model_copy(
+        update={"state": JobState.RETRY, "available_at": clock.now() + timedelta(minutes=1)}
+    )
+    assert (
+        prepare_comment_event(changed, clock.now() + timedelta(minutes=1)).payload.expected_line
+        == prepared.payload.expected_line
+    )
+
+    waitlist = waitlist_sms_event("wait-1", 1, clock.now())
+    assert (
+        prepare_comment_event(waitlist, clock.now()).payload.expected_line
+        == "SMS Лист ожидания 14.10.2026 09:00"
+    )
+
+
+class _CommentMis:
+    def __init__(self, comment, *, apply_then_timeout=False):
+        self.comment = comment
+        self.patches = 0
+        self.apply_then_timeout = apply_then_timeout
+
+    @asynccontextmanager
+    async def prepaid(self, *_args, **_kwargs):
+        yield
+
+    async def client(self, client_id, *, fresh=False):
+        assert client_id == 1 and fresh
+        return Client(
+            id=client_id,
+            last_name="Тестов",
+            first_name="Тест",
+            middle_name=None,
+            birth_date="01.01.1990",
+            comment=self.comment,
+            created_at="15.10.2026 09:00",
+        )
+
+    async def update_client_comment(self, client_id, request):
+        assert client_id == 1
+        self.patches += 1
+        self.comment = request.comment
+        result = await self.client(client_id, fresh=True)
+        if self.apply_then_timeout:
+            from app.mis.ports import MisOutcomeUnknown
+
+            raise MisOutcomeUnknown("TRANSPORT_FAILURE")
+        return result
+
+
+class _CommentLock:
+    def __init__(self, opted_out=False):
+        self.opted_out = opted_out
+
+    async def lock_comment_client(self, *_args, **_kwargs):
+        return True
+
+    async def unlock_client(self, *_args):
+        return None
+
+    async def notification_opted_out(self, _client_id):
+        return self.opted_out
+
+
+async def test_comment_delivery_preserves_existing_comment_and_reconciles_unknown_read_only():
+    clock = DemoClock()
+    job = prepare_comment_event(
+        appointment_sms_event("action-2", 1, 17, clock.now(), clock.now()), clock.now()
+    )
+    mis = _CommentMis("Исходный комментарий\nважная запись", apply_then_timeout=True)
+    delivery = PostgresClientCommentDelivery(mis, _CommentLock(), clock)
+    with pytest.raises(DeliveryUnknown):
+        await delivery.deliver(job)
+    assert mis.patches == 1
+    assert (
+        mis.comment
+        == "Исходный комментарий\nважная запись\nSMS Запись создана #17 14.10.2026 09:00"
+    )
+    receipt = await delivery.lookup(job)
+    assert receipt.event_id == job.event_id and receipt.mode == "client_comment"
+    assert mis.patches == 1
+
+
+async def test_comment_delivery_does_not_truncate_full_comment():
+    clock = DemoClock()
+    job = prepare_comment_event(
+        appointment_sms_event("action-3", 1, 17, clock.now(), clock.now()), clock.now()
+    )
+    mis = _CommentMis("x" * 1000)
+    delivery = PostgresClientCommentDelivery(mis, _CommentLock(), clock)
+    with pytest.raises(PermanentDeliveryFailure) as failure:
+        await delivery.deliver(job)
+    assert failure.value.code == "COMMENT_TOO_LONG"
+    assert mis.patches == 0 and mis.comment == "x" * 1000
+
+
+async def test_comment_delivery_respects_notification_opt_out():
+    clock = DemoClock()
+    job = prepare_comment_event(
+        appointment_sms_event("action-4", 1, 17, clock.now(), clock.now()), clock.now()
+    )
+    mis = _CommentMis("старый комментарий")
+    delivery = PostgresClientCommentDelivery(mis, _CommentLock(opted_out=True), clock)
+    with pytest.raises(PermanentDeliveryFailure) as failure:
+        await delivery.deliver(job)
+    assert failure.value.code == "NOTIFICATION_OPTED_OUT"
+    assert mis.patches == 0 and mis.comment == "старый комментарий"

@@ -30,5 +30,19 @@ services:
     init: true
     restart: unless-stopped
 
+  outbox-worker:
+    build: .
+    command: ["python", "-m", "app.outbox.cli", "--client-comment", "run"]
+    env_file: .env
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+    depends_on:
+      database:
+        condition: service_healthy
+    profiles: ["hackathon"]
+    init: true
+    restart: unless-stopped
+
 volumes:
   postgres-data:

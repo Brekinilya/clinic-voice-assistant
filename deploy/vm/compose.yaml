@@ -52,6 +52,22 @@ services:
         condition: service_healthy
     init: true
     restart: unless-stopped
+  # Только отметки в комментариях MIS; этот обработчик не отправляет SMS.
+  outbox-worker:
+    build:
+      context: ../..
+    env_file: ../../.env
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: "5432"
+      TELEPHONY_ENABLED: "false"
+    command: ["python", "-m", "app.outbox.cli", "--client-comment", "run"]
+    profiles: ["outbox"]
+    depends_on:
+      database:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
   # Обновитель индекса расписания: кандидат строится и проверяется рядом с рабочим
   # файлом и публикуется атомарно; приложение видит новое поколение без рестарта.
   # Книга ожидается как data/schedule.xlsx, индекс задаёт SCHEDULE_INDEX_PATH из .env.

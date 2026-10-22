@@ -3,7 +3,14 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from app.outbox.models import MAX_ATTEMPTS, DeliveryReceipt, JobState, OutboxError, OutboxJob
+from app.outbox.models import (
+    MAX_ATTEMPTS,
+    DeliveryReceipt,
+    JobState,
+    OutboxError,
+    OutboxJob,
+    prepare_comment_event,
+)
 
 
 def changed(job: OutboxJob, **updates) -> OutboxJob:
@@ -30,8 +37,9 @@ def claim(job: OutboxJob, now: datetime, lease_seconds: int) -> OutboxJob:
         raise OutboxError("JOB_NOT_READY")
     if job.attempts >= MAX_ATTEMPTS:
         raise OutboxError("ATTEMPTS_EXHAUSTED")
+    prepared = prepare_comment_event(job, now)
     return changed(
-        job,
+        prepared,
         state=JobState.PROCESSING,
         attempts=job.attempts + 1,
         lease_token=uuid4().hex,

@@ -4,8 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.outbox.models import waitlist_sms_event
 from app.storage.journal import journal_transaction
-from app.storage.schema import waitlist_requests
+from app.storage.schema import outbox_jobs, waitlist_requests
 from app.waitlist.models import WaitlistRequest
 
 
@@ -15,7 +16,7 @@ class PostgresWaitlistStore:
 
     async def create(self, request: WaitlistRequest) -> WaitlistRequest:
         async with journal_transaction(self.engine) as connection:
-            await connection.execute(
+            result = await connection.execute(
                 insert(waitlist_requests)
                 .values(
                     request_id=request.request_id,
@@ -28,6 +29,19 @@ class PostgresWaitlistStore:
                 )
                 .on_conflict_do_nothing(index_elements=[waitlist_requests.c.request_id])
             )
+            if result.rowcount == 1:
+                from app.storage.outbox import values as outbox_values
+
+                event = waitlist_sms_event(
+                    request.request_id, request.client_id, request.created_at
+                )
+                await connection.execute(
+                    insert(outbox_jobs)
+                    .values(**outbox_values(event))
+                    .on_conflict_do_nothing(
+                        index_elements=[outbox_jobs.c.source_id, outbox_jobs.c.kind]
+                    )
+                )
             row = await connection.execute(
                 select(waitlist_requests).where(
                     waitlist_requests.c.request_id == request.request_id

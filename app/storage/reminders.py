@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.dialogue.reminder_guard import check_reminder_guard
-from app.outbox.models import OutboxJob, reminder_sms_event
+from app.outbox.models import OutboxJob, no_answer_sms_event, reminder_sms_event
 from app.recovery.models import OwnershipLost
 from app.reminders.memory import channel_for
 from app.reminders.models import (
@@ -63,6 +63,18 @@ class PostgresReminderStore:
                 insert(days).values(call_day=call_day).on_conflict_do_nothing()
             )
 
+    async def notification_opted_out(self, client_id: int) -> bool:
+        async with self.engine.connect() as connection:
+            contact_opt_out = await connection.scalar(
+                select(contacts.c.notification_opt_out_at).where(contacts.c.client_id == client_id)
+            )
+            mark_opt_out = await connection.scalar(
+                select(marks.c.id)
+                .where(marks.c.client_id == client_id, marks.c.kind == "opt_out_all")
+                .limit(1)
+            )
+            return bool(contact_opt_out) or mark_opt_out is not None
+
     async def add_job(self, job, now=None):
         async with self.engine.begin() as connection:
             result = await connection.execute(
@@ -70,7 +82,12 @@ class PostgresReminderStore:
             )
             if result.rowcount == 1 and job.sms_pending:
                 event = reminder_sms_event(
-                    job.id, job.client_id, job.scheduled_at, job.room, now or job.next_at
+                    job.id,
+                    job.client_id,
+                    job.visit_id,
+                    job.scheduled_at,
+                    job.room,
+                    now or job.next_at,
                 )
                 await connection.execute(
                     insert(event_jobs)
@@ -213,8 +230,27 @@ class PostgresReminderStore:
                 if reminder is None:
                     raise RuntimeError("напоминание исчезло при завершении попытки")
                 event = reminder_sms_event(
-                    reminder.id, reminder.client_id, reminder.scheduled_at, reminder.room, now
+                    reminder.id,
+                    reminder.client_id,
+                    reminder.visit_id,
+                    reminder.scheduled_at,
+                    reminder.room,
+                    now,
                 )
+                await connection.execute(
+                    insert(event_jobs)
+                    .values(**outbox_values(event))
+                    .on_conflict_do_nothing(
+                        index_elements=[event_jobs.c.source_id, event_jobs.c.kind]
+                    )
+                )
+            if job.get("state") == "done" and job.get("outcome") == "NO_ANSWER":
+                reminder = (
+                    await connection.execute(select(jobs).where(jobs.c.id == row.job_id))
+                ).first()
+                if reminder is None:
+                    raise RuntimeError("напоминание исчезло при завершении попытки")
+                event = no_answer_sms_event(reminder.id, reminder.client_id, reminder.visit_id, now)
                 await connection.execute(
                     insert(event_jobs)
                     .values(**outbox_values(event))
@@ -225,13 +261,17 @@ class PostgresReminderStore:
             return True
 
     async def outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
+        return tuple(
+            event
+            for event in await self.all_outbox_events(source_id)
+            if event.payload.kind == "reminder_sms"
+        )
+
+    async def all_outbox_events(self, source_id: str) -> tuple[OutboxJob, ...]:
         async with self.engine.connect() as connection:
             rows = (
                 await connection.execute(
-                    select(event_jobs).where(
-                        event_jobs.c.source_id == source_id,
-                        event_jobs.c.kind == "reminder_sms",
-                    )
+                    select(event_jobs).where(event_jobs.c.source_id == source_id)
                 )
             ).all()
         return tuple(decode_outbox(row) for row in rows)
@@ -486,6 +526,9 @@ class PostgresReminderStore:
             return [_mark(row) for row in rows]
 
     async def lock_client(self, client_id, owner, now, ttl):
+        return await self.lock_comment_client(client_id, owner, now, ttl)
+
+    async def lock_comment_client(self, client_id, owner, now, ttl, *, event_id=None):
         async with self.engine.begin() as connection:
             # Не начинаем новый PATCH поверх неизвестного прежнего, даже после истечения TTL.
             unresolved = await connection.scalar(
@@ -505,6 +548,29 @@ class PostgresReminderStore:
                 .limit(1)
             )
             if unresolved is not None:
+                return False
+            # The same lock protects ReminderMarks and outbox comment writers. An unresolved
+            # PATCH is a barrier until read-only reconciliation determines its outcome.
+            pending = await connection.scalar(
+                select(event_jobs.c.event_id)
+                .where(
+                    event_jobs.c.kind.in_(
+                        [
+                            "appointment_sms",
+                            "cancellation_sms",
+                            "reschedule_sms",
+                            "reminder_sms",
+                            "waitlist_sms",
+                            "no_answer_sms",
+                        ]
+                    ),
+                    event_jobs.c.state.in_(["processing", "unknown"]),
+                    event_jobs.c.payload["client_id"].astext == str(client_id),
+                    event_jobs.c.event_id != (event_id or ""),
+                )
+                .limit(1)
+            )
+            if pending is not None:
                 return False
             row = (
                 await connection.execute(

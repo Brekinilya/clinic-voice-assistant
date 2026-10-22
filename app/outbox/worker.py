@@ -31,8 +31,8 @@ class OutboxWorker:
         except TemporaryDeliveryFailure as failure:
             state, error = JobState.RETRY, "TEMPORARY_FAILURE"
             delay = max(5 * 2 ** (job.attempts - 1), failure.retry_after)
-        except PermanentDeliveryFailure:
-            state, error = JobState.FAILED, "PERMANENT_FAILURE"
+        except PermanentDeliveryFailure as failure:
+            state, error = JobState.FAILED, failure.code[:40]
         except DeliveryUnknown:
             state, error = JobState.UNKNOWN, "OUTCOME_UNKNOWN"
         except Exception:

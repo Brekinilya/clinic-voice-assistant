@@ -11,6 +11,7 @@ LIVE = {
     "scheduling/cli.py",
     "recovery/__main__.py",
     "handoffs/cli.py",
+    "outbox/cli.py",
 }
 # Эмулятор через MockTransport: бюджет стенда не расходуется.
 EMULATED = {"demo.py", "dialogue/bootstrap.py"}

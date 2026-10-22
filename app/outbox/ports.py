@@ -51,6 +51,9 @@ class TemporaryDeliveryFailure(Exception):
 class PermanentDeliveryFailure(Exception):
     """Известный окончательный отказ до принятия задания."""
 
+    def __init__(self, code: str = "PERMANENT_FAILURE"):
+        self.code = code
+
 
 class DeliveryUnknown(Exception):
     """Действие могло быть принято: требуется lookup, а не повтор отправления."""

@@ -16,6 +16,7 @@ from app.demo import DemoClock, DemoSchedule, EmulatorBudget, demo_emulator
 from app.mis.budget import Priority, demand
 from app.mis.http import HttpMedicalSystem
 from app.mis.ports import MisError
+from app.outbox.models import EventKind
 from app.storage.booking import (
     PostgresBookingStore,
     PostgresBudget,
@@ -24,6 +25,7 @@ from app.storage.booking import (
     migrate,
     schema_versions,
 )
+from app.storage.outbox import PostgresOutboxStore
 from app.storage.schema import SCHEMA_VERSION
 
 
@@ -220,3 +222,19 @@ async def test_real_budget_is_shared_and_survives_new_objects(pg_engine):
         await PostgresBudget(pg_engine, "fictional-team-token").reserve()
     assert error.value.retry_after >= 119
     await PostgresBudget(pg_engine, "different-fictional-token").reserve()
+
+
+@pytest.mark.postgres
+async def test_verified_booking_enqueues_one_comment_event_atomically(pg_engine):
+    clock = DemoClock()
+    store = PostgresBookingStore(pg_engine)
+    action = await store.hold(
+        "sms-booking-call", 91, DemoSchedule(clock.now()).slots()[0], clock.now()
+    )
+    await store.claim(approval(action), clock.now())
+    await store.finish(action.action_id, ActionState.BOOKED, 171, clock.now())
+    await store.finish(action.action_id, ActionState.BOOKED, 171, clock.now())
+    jobs = await PostgresOutboxStore(pg_engine).list()
+    assert len(jobs) == 1
+    assert jobs[0].payload.kind == EventKind.APPOINTMENT_SMS
+    assert jobs[0].payload.client_id == 91 and jobs[0].payload.visit_id == 171
